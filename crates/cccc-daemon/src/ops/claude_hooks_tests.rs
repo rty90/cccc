@@ -1,5 +1,8 @@
 use super::version::{MIN_CLAUDE_VERSION, parse_version};
-use super::{NOTIFICATION_MATCHER, append_settings, is_direct_claude_command};
+use super::{
+    NOTIFICATION_MATCHER, append_settings, is_direct_claude_command, pretrust_workspace,
+    workspace_key,
+};
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
@@ -198,4 +201,127 @@ fn probes_a_relative_claude_executable_from_actor_cwd() {
         temp.path(),
         &BTreeMap::new()
     ));
+}
+
+#[test]
+fn acknowledges_the_bypass_permissions_warning_when_bypass_is_requested() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let managed = temp.path().join("managed.json");
+    let read = |command: &Vec<String>| -> Value {
+        serde_json::from_slice(&fs::read(command.last().expect("path")).expect("managed"))
+            .expect("settings JSON")
+    };
+
+    let mut command = vec!["claude".into(), "--dangerously-skip-permissions".into()];
+    append_settings(
+        &mut command,
+        Path::new("/workspace"),
+        Path::new("/bin/cccc"),
+        &managed,
+    )
+    .expect("append settings");
+    assert_eq!(read(&command)["skipDangerousModePermissionPrompt"], true);
+
+    let mut command = vec![
+        "claude".into(),
+        "--permission-mode".into(),
+        "bypassPermissions".into(),
+    ];
+    append_settings(
+        &mut command,
+        Path::new("/workspace"),
+        Path::new("/bin/cccc"),
+        &managed,
+    )
+    .expect("append settings");
+    assert_eq!(read(&command)["skipDangerousModePermissionPrompt"], true);
+
+    // Without a bypass flag nothing is acknowledged.
+    let mut command = vec!["claude".into()];
+    append_settings(
+        &mut command,
+        Path::new("/workspace"),
+        Path::new("/bin/cccc"),
+        &managed,
+    )
+    .expect("append settings");
+    assert!(read(&command)["skipDangerousModePermissionPrompt"].is_null());
+
+    // The operator's explicit choice is kept.
+    let mut command = vec![
+        "claude".into(),
+        "--settings".into(),
+        r#"{"skipDangerousModePermissionPrompt":false}"#.into(),
+        "--dangerously-skip-permissions".into(),
+    ];
+    append_settings(
+        &mut command,
+        Path::new("/workspace"),
+        Path::new("/bin/cccc"),
+        &managed,
+    )
+    .expect("append settings");
+    assert_eq!(read(&command)["skipDangerousModePermissionPrompt"], false);
+}
+
+#[test]
+fn records_workspace_trust_in_the_claude_config() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_dir = temp.path().join("config");
+    let config_path = config_dir.join(".claude.json");
+    let mut env = std::collections::BTreeMap::new();
+    env.insert(
+        "CLAUDE_CONFIG_DIR".to_owned(),
+        config_dir.to_string_lossy().into_owned(),
+    );
+    let scope = temp.path().join("scope");
+    let other = temp.path().join("other");
+
+    // A missing config file is created with just the trust entry.
+    assert!(pretrust_workspace(&scope, &env).expect("first write"));
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).expect("config")).expect("json");
+    assert_eq!(
+        config["projects"][workspace_key(&scope)]["hasTrustDialogAccepted"],
+        true
+    );
+
+    // Existing content is preserved and an already-trusted scope is a no-op.
+    let mut project = serde_json::Map::new();
+    project.insert("hasTrustDialogAccepted".into(), Value::Bool(true));
+    project.insert("allowedTools".into(), serde_json::json!(["Bash"]));
+    let mut projects = serde_json::Map::new();
+    projects.insert(workspace_key(&scope), Value::Object(project));
+    let mut root = serde_json::Map::new();
+    root.insert("numStartups".into(), serde_json::json!(3));
+    root.insert("projects".into(), Value::Object(projects));
+    fs::write(&config_path, Value::Object(root).to_string()).expect("seed config");
+    assert!(!pretrust_workspace(&scope, &env).expect("already trusted"));
+    assert!(pretrust_workspace(&other, &env).expect("second scope"));
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).expect("config")).expect("json");
+    assert_eq!(config["numStartups"], 3);
+    assert_eq!(
+        config["projects"][workspace_key(&scope)]["allowedTools"][0],
+        "Bash"
+    );
+    assert_eq!(
+        config["projects"][workspace_key(&other)]["hasTrustDialogAccepted"],
+        true
+    );
+    assert!(
+        fs::read_dir(&config_dir)
+            .expect("config dir")
+            .all(|entry| !entry.expect("entry").file_name().to_string_lossy().ends_with(".tmp"))
+    );
+}
+
+#[test]
+fn strips_the_windows_verbatim_prefix_from_workspace_keys() {
+    assert_eq!(workspace_key(Path::new("/home/user/scope")), "/home/user/scope");
+    let verbatim: String = ['\\', '\\', '?', '\\'].iter().collect();
+    assert_eq!(
+        workspace_key(Path::new(&format!("{verbatim}C:\\Users\\user\\scope"))),
+        r"C:\Users\user\scope"
+    );
 }

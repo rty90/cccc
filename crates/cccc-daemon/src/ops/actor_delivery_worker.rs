@@ -10,6 +10,7 @@ const SUBMIT_DELAY: Duration = Duration::from_millis(1_500);
 const REPEAT_SUBMIT_DELAY: Duration = Duration::from_millis(200);
 const PREAMBLE_DELAY: Duration = Duration::from_millis(500);
 const INPUT_MODE_TIMEOUT: Duration = Duration::from_secs(5);
+const SESSION_START_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn wait_for_delivery_slot(
     job: &DeliveryJob,
@@ -82,7 +83,13 @@ pub fn process_batch(
     };
     if *preamble_session != status.started_at {
         if current_actor.runtime != ActorRuntime::Custom
-            && !wait_for_input_mode(&current_group.group_id, &current_actor.id, cancelled)
+            && !wait_for_runtime_ready(
+                &job.home,
+                &current_group.group_id,
+                &current_actor,
+                &status,
+                cancelled,
+            )
         {
             return false;
         }
@@ -268,7 +275,10 @@ fn submit_text(group_id: &str, actor: &Actor, text: &str, cancelled: &AtomicBool
 fn submit_sequence(actor: &Actor) -> &'static [&'static [u8]] {
     match actor.submit {
         ActorSubmit::Enter
-            if matches!(actor.runtime, ActorRuntime::Codex | ActorRuntime::Copilot) =>
+            if matches!(
+                actor.runtime,
+                ActorRuntime::Codex | ActorRuntime::Copilot | ActorRuntime::Kimi
+            ) =>
         {
             &[b"\r", b"\r"]
         }
@@ -276,6 +286,57 @@ fn submit_sequence(actor: &Actor) -> &'static [&'static [u8]] {
         ActorSubmit::Newline => &[b"\n"],
         ActorSubmit::None => &[],
     }
+}
+
+/// Claude Code reports through its SessionStart hook when the session is
+/// actually accepting input. Before that the TUI may still be showing a
+/// startup dialog (workspace trust, bypass-permissions warning, login) whose
+/// default answer is "No, exit" - and bracketed paste is already enabled on
+/// those screens, so the input-mode heuristic cannot tell them apart from the
+/// prompt. Typing the preamble there and pressing Enter exits the process.
+/// Wait for the hook when this launch has hook projection; otherwise fall
+/// back to the bracketed-paste heuristic. Returning `false` defers the batch,
+/// so nothing is lost while the session is still starting.
+fn wait_for_runtime_ready(
+    home: &cccc_core::HomeLayout,
+    group_id: &str,
+    actor: &Actor,
+    status: &cccc_runtime::SessionStatus,
+    cancelled: &AtomicBool,
+) -> bool {
+    if actor.runtime != ActorRuntime::Claude {
+        return wait_for_input_mode(group_id, &actor.id, cancelled);
+    }
+    let Some(capability) =
+        super::runtime_hook_session::validated(home, "claude", group_id, &actor.id, status.pid)
+    else {
+        return wait_for_input_mode(group_id, &actor.id, cancelled);
+    };
+    let deadline = std::time::Instant::now() + SESSION_START_TIMEOUT;
+    while std::time::Instant::now() < deadline {
+        if !cccc_runtime::status(group_id, &actor.id).is_ok_and(|status| status.running) {
+            return false;
+        }
+        let session_started =
+            cccc_core::codex_hook_state::read_runtime(home, "claude", group_id, &actor.id)
+                .is_some_and(|state| {
+                    state.launch_token == capability.launch_token
+                        && !state.awaiting_session_start
+                        && !state.session_closed
+                });
+        if session_started {
+            return wait_for_input_mode(group_id, &actor.id, cancelled);
+        }
+        if !interruptible_sleep(Duration::from_millis(200), cancelled) {
+            return false;
+        }
+    }
+    tracing::warn!(
+        group_id = %group_id,
+        actor_id = %actor.id,
+        "Claude has not reported SessionStart; holding delivery so it is not typed into a startup dialog"
+    );
+    false
 }
 
 fn wait_for_input_mode(group_id: &str, actor_id: &str, cancelled: &AtomicBool) -> bool {
@@ -325,6 +386,12 @@ mod tests {
         );
 
         actor.runtime = ActorRuntime::Copilot;
+        assert_eq!(
+            submit_sequence(&actor),
+            &[b"\r".as_slice(), b"\r".as_slice()]
+        );
+
+        actor.runtime = ActorRuntime::Kimi;
         assert_eq!(
             submit_sequence(&actor),
             &[b"\r".as_slice(), b"\r".as_slice()]
