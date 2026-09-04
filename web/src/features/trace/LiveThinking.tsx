@@ -38,7 +38,7 @@ export function LiveThinking({ actors, isDark }: { actors: Actor[]; isDark: bool
   const actorStatus = useMeetingStore((state) => state.actorStatus);
   const statusEntries = Object.entries(actorStatus).filter(([, entry]) => {
     const age = now - Date.parse(entry.ts);
-    if (entry.status === "starting") return age < 10 * 60 * 1000;
+    if (entry.status === "starting" || entry.status === "handoff") return age < 10 * 60 * 1000;
     if (entry.status === "failed") return age < 30 * 60 * 1000;
     return age < 20 * 1000;
   });
@@ -76,12 +76,12 @@ export function LiveThinking({ actors, isDark }: { actors: Actor[]; isDark: bool
                 ? "border-rose-500/40 bg-rose-500/10 text-rose-600 dark:text-rose-300"
                 : entry.status === "online"
                   ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                  : entry.status === "starting"
+                  : entry.status === "starting" || entry.status === "handoff"
                     ? "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300"
                     : "border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] text-[var(--color-text-tertiary)]",
             )}
           >
-            {entry.status === "starting" ? <span className="knots-breathe" aria-hidden="true">⟳</span> : null}
+            {entry.status === "starting" || entry.status === "handoff" ? <span className="knots-breathe" aria-hidden="true">⟳</span> : null}
             <span className="font-semibold">{labelFor(actor)}</span>
             <span>{t(`actorStatus_${entry.status}`)}</span>
             {entry.detail ? <span className="truncate opacity-70">{entry.detail}</span> : null}

@@ -688,5 +688,6 @@
   "actorStatus_starting": "起動中…",
   "actorStatus_online": "オンライン",
   "actorStatus_offline": "オフライン",
-  "actorStatus_failed": "起動失敗"
+  "actorStatus_failed": "起動失敗",
+  "actorStatus_handoff": "引き継ぎ作成中…"
 }

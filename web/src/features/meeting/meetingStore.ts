@@ -106,7 +106,7 @@ export type Notice = { id: string; kind: NoticeKind; meetingId: string; voteId?:
 
 export type SidebarTab = "meetings" | "harness" | "log";
 
-export type ActorStatus = { status: "starting" | "online" | "offline" | "failed"; detail?: string; ts: string };
+export type ActorStatus = { status: "starting" | "online" | "offline" | "failed" | "handoff"; detail?: string; ts: string };
 
 type MeetingState = {
   connected: boolean;

@@ -688,5 +688,6 @@
   "actorStatus_starting": "starting…",
   "actorStatus_online": "online",
   "actorStatus_offline": "offline",
-  "actorStatus_failed": "failed to start"
+  "actorStatus_failed": "failed to start",
+  "actorStatus_handoff": "writing handoff…"
 }

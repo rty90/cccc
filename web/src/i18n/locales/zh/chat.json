@@ -688,5 +688,6 @@
   "actorStatus_starting": "启动中…",
   "actorStatus_online": "已上线",
   "actorStatus_offline": "已下线",
-  "actorStatus_failed": "启动失败"
+  "actorStatus_failed": "启动失败",
+  "actorStatus_handoff": "交接中…"
 }
