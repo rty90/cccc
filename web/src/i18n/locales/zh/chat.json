@@ -69,7 +69,9 @@
     "renderFailed": "无法渲染此图表，已改为显示源码。",
     "tooLarge": "此图表过大，无法安全渲染，已改为显示源码。"
   },
-  "table": { "scrollRegion": "可横向滚动的表格" },
+  "table": {
+    "scrollRegion": "可横向滚动的表格"
+  },
   "webModelDelivery": {
     "submitting": "正在投递到 ChatGPT",
     "submitted": "已投递到 ChatGPT",
@@ -567,5 +569,14 @@
   "presentationBrowserViewerReasonUnsupportedPlatform": "当前平台不支持",
   "presentationBrowserViewerReasonStartupTimeout": "VNC 启动超时",
   "presentationBrowserViewerIsolationXvfb": "Xvfb 隔离",
-  "presentationBrowserViewerTooltipIsolationXvfb": "浏览器运行在 CCCC 专用的虚拟显示器上，而非宿主机桌面。"
+  "presentationBrowserViewerTooltipIsolationXvfb": "浏览器运行在 CCCC 专用的虚拟显示器上，而非宿主机桌面。",
+  "traceThinking": "思考过程",
+  "traceSteps": "{{count}} 步",
+  "traceToolCalls": "{{count}} 次工具调用",
+  "traceStillThinking": "正在思考…",
+  "traceReceived": "收到消息，开始处理…",
+  "traceUsingTool": "正在调用工具…",
+  "traceWriting": "正在组织回复…",
+  "traceExpand": "展开思考过程",
+  "traceCollapse": "收起思考过程"
 }

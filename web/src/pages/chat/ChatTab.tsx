@@ -50,6 +50,7 @@ import { getGroupRouteDisplayName, type ComposerMentionKind } from "./chatMentio
 import { MobilePresentationTrigger } from "../../components/presentation/MobilePresentationTrigger";
 import { MobilePresentationSurface } from "../../components/presentation/MobilePresentationSurface";
 import { shouldShowMobilePresentationTrigger } from "../../components/presentation/mobilePresentationModel";
+import { LiveThinking } from "../../features/trace/LiveThinking";
 
 const PresentationRail = lazy(() =>
   import("../../components/presentation/PresentationRail").then((module) => ({
@@ -942,6 +943,12 @@ export function ChatTab({
                   onLoadMore={loadMoreHistory}
                 />
               )}
+
+              {!chatWindowProps ? (
+                <div className="pointer-events-none absolute inset-x-0 bottom-20 z-20 px-3 sm:bottom-24 sm:px-5">
+                  <LiveThinking actors={actors} isDark={isDark} />
+                </div>
+              ) : null}
 
               {!chatWindowProps && runtimeActors.length > 0 ? (
                 <div className="pointer-events-none absolute inset-x-0 bottom-1 z-20 sm:bottom-2">

@@ -69,7 +69,9 @@
     "renderFailed": "Could not render this diagram. Showing its source instead.",
     "tooLarge": "This diagram is too large to render safely. Showing its source instead."
   },
-  "table": { "scrollRegion": "Scrollable table" },
+  "table": {
+    "scrollRegion": "Scrollable table"
+  },
   "webModelDelivery": {
     "submitting": "Delivering to ChatGPT",
     "submitted": "Delivered to ChatGPT",
@@ -567,5 +569,14 @@
   "presentationBrowserViewerReasonUnsupportedPlatform": "Unsupported platform",
   "presentationBrowserViewerReasonStartupTimeout": "VNC startup timeout",
   "presentationBrowserViewerIsolationXvfb": "Xvfb isolated",
-  "presentationBrowserViewerTooltipIsolationXvfb": "The browser is running on a CCCC-owned virtual display, not the host desktop."
+  "presentationBrowserViewerTooltipIsolationXvfb": "The browser is running on a CCCC-owned virtual display, not the host desktop.",
+  "traceThinking": "Thinking",
+  "traceSteps": "{{count}} steps",
+  "traceToolCalls": "{{count}} tool calls",
+  "traceStillThinking": "Still thinking…",
+  "traceReceived": "Message received, starting…",
+  "traceUsingTool": "Using a tool…",
+  "traceWriting": "Writing a reply…",
+  "traceExpand": "Show thinking",
+  "traceCollapse": "Hide thinking"
 }

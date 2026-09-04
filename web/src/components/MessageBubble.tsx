@@ -51,6 +51,7 @@ import { MessageContent } from "./messageBubble/MessageContent";
 import { MessageBubbleSurface } from "./messageBubble/MessageBubbleSurface";
 import { buildMessageCopyText } from "./messageBubble/messageCopyText";
 import { MessageReferenceSections } from "./messageBubble/MessageReferenceSections";
+import { ThinkingTrace } from "../features/trace/ThinkingTrace";
 
 const ANIMATED_MESSAGE_BUBBLE_KEYS = new Set<string>();
 const NEW_MESSAGE_ANIMATION_WINDOW_MS = 12000;
@@ -225,6 +226,8 @@ function MessageBubbleBody({
             : null}
         </div>
       ) : null}
+
+      {!isUserMessage && event.id ? <ThinkingTrace messageId={String(event.id)} /> : null}
 
       {quoteText ? (
         canJumpToReplyTarget ? (

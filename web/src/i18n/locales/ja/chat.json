@@ -69,7 +69,9 @@
     "renderFailed": "この図をレンダリングできませんでした。代わりにソースを表示します。",
     "tooLarge": "この図は安全にレンダリングするには大きすぎます。代わりにソースを表示します。"
   },
-  "table": { "scrollRegion": "横方向にスクロールできる表" },
+  "table": {
+    "scrollRegion": "横方向にスクロールできる表"
+  },
   "webModelDelivery": {
     "submitting": "ChatGPT に配信中",
     "submitted": "ChatGPT に配信済み",
@@ -567,5 +569,14 @@
   "presentationBrowserViewerReasonUnsupportedPlatform": "未対応プラットフォーム",
   "presentationBrowserViewerReasonStartupTimeout": "VNC 起動タイムアウト",
   "presentationBrowserViewerIsolationXvfb": "Xvfb で分離",
-  "presentationBrowserViewerTooltipIsolationXvfb": "ブラウザーはホストのデスクトップではなく、CCCC 専用の仮想ディスプレイ上で実行されています。"
+  "presentationBrowserViewerTooltipIsolationXvfb": "ブラウザーはホストのデスクトップではなく、CCCC 専用の仮想ディスプレイ上で実行されています。",
+  "traceThinking": "思考プロセス",
+  "traceSteps": "{{count}} ステップ",
+  "traceToolCalls": "ツール呼び出し {{count}} 回",
+  "traceStillThinking": "考え中…",
+  "traceReceived": "メッセージを受信、処理中…",
+  "traceUsingTool": "ツールを実行中…",
+  "traceWriting": "返信を作成中…",
+  "traceExpand": "思考を表示",
+  "traceCollapse": "思考を隠す"
 }
