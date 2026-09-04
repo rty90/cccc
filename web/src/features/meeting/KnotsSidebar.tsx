@@ -4,6 +4,7 @@ import type { Actor } from "../../types";
 import { classNames } from "../../utils/classNames";
 import { HumanRulingForm } from "./HumanRuling";
 import { VoteDetails } from "./VoteDetails";
+import { HelpTicketCard } from "./HelpTicketCard";
 import { HarnessTab, MeetingsTab, ModeBadge } from "./MeetingPanel";
 import { useMeetingStore, type SidebarTab } from "./meetingStore";
 
@@ -24,7 +25,10 @@ export function KnotsSidebarToggle({ isDark }: { isDark: boolean }) {
     connect();
   }, [connect]);
   const active = meetings.filter((meeting) => meeting.status !== "closed").length;
-  const pending = meetings.flatMap((meeting) => meeting.votes).filter((vote) => vote.status === "closed" && vote.awaiting_human && !vote.human).length;
+  const help = useMeetingStore((state) => state.help);
+  const pending =
+    meetings.flatMap((meeting) => meeting.votes).filter((vote) => vote.status === "closed" && vote.awaiting_human && !vote.human).length +
+    help.filter((ticket) => ticket.status !== "resolved").length;
   return (
     <button
       type="button"
@@ -72,6 +76,7 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
   const meetings = useMeetingStore((state) => state.meetings);
   const log = useMeetingStore((state) => state.log);
   const harness = useMeetingStore((state) => state.harness);
+  const help = useMeetingStore((state) => state.help);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -87,6 +92,8 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
   const pending = meetings
     .flatMap((meeting) => meeting.votes.map((vote) => ({ meeting, vote })))
     .filter(({ vote }) => vote.status === "open" || (vote.status === "closed" && vote.awaiting_human && !vote.human));
+  const openHelp = help.filter((ticket) => ticket.status !== "resolved");
+  const actorIds = actors.map((actor) => String(actor.id || "")).filter(Boolean);
   const activeCount = meetings.filter((meeting) => meeting.status !== "closed").length;
   const tabs: Array<[SidebarTab, string]> = [
     ["meetings", `${t("sidebarTabMeetings")}${activeCount ? ` ${activeCount}` : ""}`],
@@ -121,9 +128,12 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
           </svg>
         </button>
       </div>
-      {pending.length > 0 ? (
+      {pending.length > 0 || openHelp.length > 0 ? (
         <div className={classNames("max-h-[46%] shrink-0 space-y-2 overflow-y-auto border-b px-2 py-2", isDark ? "border-white/8" : "border-black/8")}>
           <div className="text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("sidebarPending")}</div>
+          {openHelp.map((ticket) => (
+            <HelpTicketCard key={ticket.id} ticket={ticket} actorIds={actorIds} isDark={isDark} />
+          ))}
           {pending.map(({ meeting, vote }) => {
             const cast = Object.keys(vote.ballots).length;
             const total = meeting.participants.length;

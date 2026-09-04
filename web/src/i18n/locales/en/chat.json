@@ -669,5 +669,20 @@
   "detailsMore": "Show all",
   "detailsLess": "Collapse",
   "detailsHide": "Hide {{what}}",
-  "meetingBriefLabel": "Background"
+  "meetingBriefLabel": "Background",
+  "helpTicket": "Help",
+  "helpNeed_takeover": "needs takeover",
+  "helpNeed_permission": "needs permission",
+  "helpNeed_advice": "needs advice",
+  "helpStatus_open": "unclaimed",
+  "helpStatus_assigned": "assigned",
+  "helpStatus_resolved": "resolved",
+  "helpOutcome_granted": "Granted",
+  "helpOutcome_denied": "Denied",
+  "helpOutcome_done": "Done",
+  "helpAssignTo": "Assign to",
+  "helpNotePlaceholder": "Note to the requester (relayed verbatim)",
+  "helpGrant": "Grant",
+  "helpDeny": "Deny",
+  "helpClose": "Close ticket"
 }

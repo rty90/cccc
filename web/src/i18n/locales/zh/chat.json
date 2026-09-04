@@ -669,5 +669,20 @@
   "detailsMore": "展开全文",
   "detailsLess": "收起",
   "detailsHide": "收起{{what}}",
-  "meetingBriefLabel": "会议背景"
+  "meetingBriefLabel": "会议背景",
+  "helpTicket": "求助",
+  "helpNeed_takeover": "需要接手",
+  "helpNeed_permission": "需要权限",
+  "helpNeed_advice": "需要建议",
+  "helpStatus_open": "待认领",
+  "helpStatus_assigned": "已指派",
+  "helpStatus_resolved": "已解决",
+  "helpOutcome_granted": "已批准",
+  "helpOutcome_denied": "已拒绝",
+  "helpOutcome_done": "已完成",
+  "helpAssignTo": "指派给",
+  "helpNotePlaceholder": "给发起人的说明（原文转达）",
+  "helpGrant": "批准权限",
+  "helpDeny": "拒绝",
+  "helpClose": "关闭工单"
 }

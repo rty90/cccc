@@ -5,6 +5,8 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { classNames } from "../../utils/classNames";
 import { HumanRulingForm } from "./HumanRuling";
 import { VoteDetails } from "./VoteDetails";
+import { HelpTicketCard } from "./HelpTicketCard";
+import type { Actor } from "../../types";
 import { MeetingCard, ModeBadge, ROLE_TONE } from "./MeetingPanel";
 import { useMeetingStore, voteCounts, type Meeting, type Notice, type NoticeKind, type Vote } from "./meetingStore";
 
@@ -22,6 +24,7 @@ const AUTO_DISMISS_MS: Record<NoticeKind, number | null> = {
   human_decided: 10000,
   closed: 12000,
   escalated: 12000,
+  help: null,
 };
 const MAX_VISIBLE = 3;
 
@@ -216,12 +219,14 @@ function Toast({
   );
 }
 
-export function MeetingPopups({ isDark }: { isDark: boolean }) {
+export function MeetingPopups({ isDark, actors }: { isDark: boolean; actors?: Actor[] }) {
   const { t } = useTranslation("chat");
   const connect = useMeetingStore((state) => state.connect);
   const meetings = useMeetingStore((state) => state.meetings);
   const notices = useMeetingStore((state) => state.notices);
   const dismissNotice = useMeetingStore((state) => state.dismissNotice);
+  const help = useMeetingStore((state) => state.help);
+  const actorIds = (actors || []).map((actor) => String(actor.id || "")).filter(Boolean);
   const sidebarOpen = useMeetingStore((state) => state.ui.sidebarOpen);
   const [hovered, setHovered] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -273,6 +278,20 @@ export function MeetingPopups({ isDark }: { isDark: boolean }) {
           </button>
         ) : null}
         {visible.map((notice) => {
+          if (notice.kind === "help") {
+            const ticket = help.find((item) => item.id === notice.helpId);
+            if (!ticket) return null;
+            return (
+              <div key={notice.id} className={classNames("knots-toast pointer-events-auto rounded-2xl border p-3 shadow-2xl backdrop-blur border-amber-400/50", isDark ? "bg-slate-950/90 text-slate-100" : "bg-white/95 text-gray-800")} data-state="open" role="status">
+                <HelpTicketCard ticket={ticket} actorIds={actorIds} isDark={isDark} compact />
+                <div className="mt-2 flex items-center gap-2">
+                  <button type="button" className="knots-press rounded-full border border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] px-2.5 py-0.5 text-[11px] font-medium" onClick={() => dismissNotice(notice.id)}>
+                    {t("popupDismiss")}
+                  </button>
+                </div>
+              </div>
+            );
+          }
           const meeting = byId.get(notice.meetingId);
           if (!meeting) return null;
           const vote = notice.voteId ? meeting.votes.find((item) => item.id === notice.voteId) : undefined;

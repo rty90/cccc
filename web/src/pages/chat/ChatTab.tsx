@@ -952,7 +952,7 @@ export function ChatTab({
                 />
               )}
 
-              {!chatWindowProps ? <MeetingPopups isDark={isDark} /> : null}
+              {!chatWindowProps ? <MeetingPopups isDark={isDark} actors={actors} /> : null}
 
               {!chatWindowProps && runtimeActors.length > 0 ? (
                 <div className="pointer-events-none absolute inset-x-0 bottom-1 z-20 sm:bottom-2">

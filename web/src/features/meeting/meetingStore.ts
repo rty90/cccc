@@ -83,10 +83,24 @@ export type Harness = {
 
 export type ModeratorLogEntry = { ts: string; kind: string; text: string };
 
-export type NoticeKind = "opened" | "vote_opened" | "vote_closed" | "needs_human" | "human_decided" | "closed" | "escalated";
+export type HelpTicket = {
+  id: string;
+  by: string;
+  need: "takeover" | "permission" | "advice";
+  text: string;
+  status: "open" | "assigned" | "resolved";
+  assignee?: string | null;
+  created_at: string;
+  resolved_at?: string | null;
+  resolution?: string | null;
+  outcome?: "granted" | "denied" | "done" | null;
+  escalated?: boolean;
+};
+
+export type NoticeKind = "opened" | "vote_opened" | "vote_closed" | "needs_human" | "human_decided" | "closed" | "escalated" | "help";
 
 /** Something the human should see now; rendered as a popup by MeetingPopups. */
-export type Notice = { id: string; kind: NoticeKind; meetingId: string; voteId?: string; ts: number };
+export type Notice = { id: string; kind: NoticeKind; meetingId: string; voteId?: string; helpId?: string; ts: number };
 
 export type SidebarTab = "meetings" | "harness" | "log";
 
@@ -95,6 +109,7 @@ type MeetingState = {
   meetings: Meeting[];
   log: ModeratorLogEntry[];
   harness: Harness | null;
+  help: HelpTicket[];
   notices: Notice[];
   ui: { sidebarOpen: boolean; tab: SidebarTab };
   connect: () => void;
@@ -158,6 +173,20 @@ function pushNotice(kind: NoticeKind, meeting: Meeting, voteId?: string) {
   markSeen(id);
   useMeetingStore.setState((state) => ({
     notices: [...state.notices.filter((notice) => notice.id !== id), { id, kind, meetingId: meeting.id, voteId, ts: Date.now() }],
+  }));
+}
+
+function upsertHelp(list: HelpTicket[], ticket: HelpTicket): HelpTicket[] {
+  const next = list.filter((item) => item.id !== ticket.id);
+  next.push(ticket);
+  next.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  return next;
+}
+
+function pushHelpNotice(ticket: HelpTicket) {
+  const id = `help:${ticket.id}`;
+  useMeetingStore.setState((state) => ({
+    notices: [...state.notices.filter((notice) => notice.id !== id), { id, kind: "help", meetingId: "", helpId: ticket.id, ts: Date.now() }],
   }));
 }
 
@@ -231,6 +260,7 @@ export const useMeetingStore = create<MeetingState>(() => ({
   meetings: [],
   log: [],
   harness: null,
+  help: [],
   notices: [],
   ui: typeof window === "undefined" ? { sidebarOpen: false, tab: "meetings" } : loadSidebar(),
   connect: () => {
@@ -256,6 +286,16 @@ export const useMeetingStore = create<MeetingState>(() => ({
           harness: (data.harness as Harness | undefined) ? { ...(state.harness || {}), ...(data.harness as Harness) } : state.harness,
         }));
         noticesFromSnapshot(meetings);
+        const help = ((data.help as HelpTicket[] | undefined) || []).slice();
+        useMeetingStore.setState({ help });
+        for (const ticket of help) if (ticket.status !== "resolved") pushHelpNotice(ticket);
+      } else if (type === "help") {
+        const ticket = data.ticket as HelpTicket | undefined;
+        if (ticket?.id) {
+          useMeetingStore.setState((state) => ({ help: upsertHelp(state.help, ticket) }));
+          if (ticket.status === "resolved") dropNotices((notice) => notice.kind === "help" && notice.helpId === ticket.id);
+          else pushHelpNotice(ticket);
+        }
       } else if (type === "meeting") {
         const meeting = data.meeting as Meeting | undefined;
         if (meeting?.id) {

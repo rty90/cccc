@@ -669,5 +669,20 @@
   "detailsMore": "全文を表示",
   "detailsLess": "折りたたむ",
   "detailsHide": "{{what}}を閉じる",
-  "meetingBriefLabel": "会議の背景"
+  "meetingBriefLabel": "会議の背景",
+  "helpTicket": "ヘルプ",
+  "helpNeed_takeover": "引き継ぎ希望",
+  "helpNeed_permission": "権限が必要",
+  "helpNeed_advice": "助言が必要",
+  "helpStatus_open": "未担当",
+  "helpStatus_assigned": "担当済み",
+  "helpStatus_resolved": "解決済み",
+  "helpOutcome_granted": "承認",
+  "helpOutcome_denied": "却下",
+  "helpOutcome_done": "完了",
+  "helpAssignTo": "担当を割り当て",
+  "helpNotePlaceholder": "依頼者へのメモ（そのまま転送）",
+  "helpGrant": "権限を承認",
+  "helpDeny": "却下",
+  "helpClose": "チケットを閉じる"
 }
