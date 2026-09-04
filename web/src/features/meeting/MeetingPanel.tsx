@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import type { Actor } from "../../types";
 import { classNames } from "../../utils/classNames";
@@ -249,8 +250,9 @@ export function MeetingPanel({ actors, isDark }: { actors: Actor[]; isDark: bool
     setShowForm(false);
   };
 
-  return (
-    <div className="pointer-events-auto flex flex-col items-end gap-2">
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <div className="pointer-events-auto fixed right-3 top-14 z-[900] flex flex-col items-end gap-2 sm:right-5 sm:top-16">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -312,6 +314,7 @@ export function MeetingPanel({ actors, isDark }: { actors: Actor[]; isDark: bool
           ))}
         </div>
       ) : null}
-    </div>
+    </div>,
+    document.body,
   );
 }

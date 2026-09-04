@@ -945,17 +945,7 @@ export function ChatTab({
                 />
               )}
 
-              {!chatWindowProps ? (
-                <div className="pointer-events-none absolute inset-x-0 bottom-20 z-20 px-3 sm:bottom-24 sm:px-5">
-                  <LiveThinking actors={actors} isDark={isDark} />
-                </div>
-              ) : null}
-
-              {!chatWindowProps ? (
-                <div className="pointer-events-none absolute right-3 top-3 z-30 sm:right-5 sm:top-4">
-                  <MeetingPanel actors={actors} isDark={isDark} />
-                </div>
-              ) : null}
+              {!chatWindowProps ? <MeetingPanel actors={actors} isDark={isDark} /> : null}
 
               {!chatWindowProps && runtimeActors.length > 0 ? (
                 <div className="pointer-events-none absolute inset-x-0 bottom-1 z-20 sm:bottom-2">
@@ -1096,6 +1086,13 @@ export function ChatTab({
         <>
           {showAppPermissionNotice ? (
             <ChatGptAppPermissionNotice isDark={isDark} onDismiss={dismissAppPermissionNotice} />
+          ) : null}
+          {!chatWindowProps ? (
+            <div className="flex-shrink-0 px-2 sm:px-2.5">
+              <div className="mx-auto max-w-5xl pb-1">
+                <LiveThinking actors={actors} isDark={isDark} />
+              </div>
+            </div>
           ) : null}
           <ChatComposer
             isDark={isDark}
