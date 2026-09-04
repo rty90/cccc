@@ -2,6 +2,7 @@ import { memo, useMemo, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 
 import { ActorAvatar } from "../../components/ActorAvatar";
+import { ModelSwitchPopover } from "../../features/trace/ModelSwitchPopover";
 import { PlusIcon } from "../../components/Icons";
 import { useActorDisplayState } from "../../hooks/useActorDisplayState";
 import { ShineBorder } from "@/registry/magicui/shine-border";
@@ -245,9 +246,26 @@ function RuntimeDockActorButtonView({
       >
         {item.actorLabel}
       </span>
+      <ModelSwitchPopover
+        actorId={item.actorId}
+        runtime={item.runtime}
+        label={item.actorLabel}
+        isDark={isDark}
+        onOpenInspector={handleOpenInspector}
+        openInspectorLabel={
+          item.runner === "headless"
+            ? t("chat:runtimeDockOpenLiveWork", {
+                name: item.actorLabel,
+                defaultValue: `Open live work for ${item.actorLabel}`,
+              })
+            : t("chat:runtimeDockOpenTerminal", {
+                name: item.actorLabel,
+                defaultValue: `Open terminal for ${item.actorLabel}`,
+              })
+        }
+      >
       <button
         type="button"
-        onClick={handleOpenInspector}
         className={classNames(
           "group relative flex h-[50px] w-[50px] items-center justify-center rounded-full shadow-[0_14px_34px_-30px_rgba(15,23,42,0.52)] transition-all duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(143,163,187)]/40 focus-visible:ring-offset-0",
           item.runner === "headless"
@@ -310,6 +328,7 @@ function RuntimeDockActorButtonView({
           </span>
         ) : null}
       </button>
+      </ModelSwitchPopover>
       <span id={`runtime-dock-status-${item.actorId}`} className="sr-only">
         {item.actorLabel} · {item.runtime} · {statusLabel}
         {queuedLabel ? ` · ${queuedLabel}` : ""}

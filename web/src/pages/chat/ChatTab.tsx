@@ -51,6 +51,7 @@ import { MobilePresentationTrigger } from "../../components/presentation/MobileP
 import { MobilePresentationSurface } from "../../components/presentation/MobilePresentationSurface";
 import { shouldShowMobilePresentationTrigger } from "../../components/presentation/mobilePresentationModel";
 import { LiveThinking } from "../../features/trace/LiveThinking";
+import { MeetingPanel } from "../../features/meeting/MeetingPanel";
 
 const PresentationRail = lazy(() =>
   import("../../components/presentation/PresentationRail").then((module) => ({
@@ -947,6 +948,12 @@ export function ChatTab({
               {!chatWindowProps ? (
                 <div className="pointer-events-none absolute inset-x-0 bottom-20 z-20 px-3 sm:bottom-24 sm:px-5">
                   <LiveThinking actors={actors} isDark={isDark} />
+                </div>
+              ) : null}
+
+              {!chatWindowProps ? (
+                <div className="pointer-events-none absolute right-3 top-3 z-30 sm:right-5 sm:top-4">
+                  <MeetingPanel actors={actors} isDark={isDark} />
                 </div>
               ) : null}
 
