@@ -51,7 +51,7 @@ import { MobilePresentationTrigger } from "../../components/presentation/MobileP
 import { MobilePresentationSurface } from "../../components/presentation/MobilePresentationSurface";
 import { shouldShowMobilePresentationTrigger } from "../../components/presentation/mobilePresentationModel";
 import { LiveThinking } from "../../features/trace/LiveThinking";
-import { MeetingPanel } from "../../features/meeting/MeetingPanel";
+import { KnotsSidebar, KnotsSidebarToggle } from "../../features/meeting/KnotsSidebar";
 import { MeetingPopups } from "../../features/meeting/MeetingPopups";
 
 const PresentationRail = lazy(() =>
@@ -863,6 +863,12 @@ export function ChatTab({
                 </div>
               )}
 
+              {!chatWindowProps ? (
+                <div className="pointer-events-none absolute right-4 top-4 z-20 hidden md:block">
+                  <KnotsSidebarToggle isDark={isDark} />
+                </div>
+              ) : null}
+
               {isBusinessEmptyState && showSetupCard ? (
                 <div
                   ref={scrollRef}
@@ -946,10 +952,7 @@ export function ChatTab({
                 />
               )}
 
-              {!chatWindowProps ? <>
-        <MeetingPanel actors={actors} isDark={isDark} />
-        <MeetingPopups isDark={isDark} />
-      </> : null}
+              {!chatWindowProps ? <MeetingPopups isDark={isDark} /> : null}
 
               {!chatWindowProps && runtimeActors.length > 0 ? (
                 <div className="pointer-events-none absolute inset-x-0 bottom-1 z-20 sm:bottom-2">
@@ -968,6 +971,10 @@ export function ChatTab({
                 </div>
               ) : null}
             </section>
+          ) : null}
+
+          {!chatWindowProps && (!isSmallScreen || mobileSurface === "messages") ? (
+            <KnotsSidebar actors={actors} isDark={isDark} />
           ) : null}
 
           {showDesktopSplitPresentation ? (

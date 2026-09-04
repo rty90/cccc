@@ -657,5 +657,13 @@
   "harnessProposalBodyLabel": "提案原文",
   "harnessProposalHint": "提案会开一场人类裁决模式的会议并自动发投票卡；采纳后由主持人落地（安装技能 / 修改协议）。",
   "harnessSubmit": "提交提案",
-  "harnessRuntimes": "已链接到"
+  "harnessRuntimes": "已链接到",
+  "knotsToggle": "会议",
+  "sidebarTabMeetings": "会议",
+  "sidebarTabHarness": "规则",
+  "sidebarTabLog": "日志",
+  "sidebarPending": "待你处理",
+  "sidebarClose": "关闭侧栏",
+  "sidebarNoLog": "还没有记录",
+  "liveWorking": "正在工作"
 }

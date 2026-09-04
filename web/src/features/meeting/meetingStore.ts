@@ -88,19 +88,24 @@ export type NoticeKind = "opened" | "vote_opened" | "vote_closed" | "needs_human
 /** Something the human should see now; rendered as a popup by MeetingPopups. */
 export type Notice = { id: string; kind: NoticeKind; meetingId: string; voteId?: string; ts: number };
 
+export type SidebarTab = "meetings" | "harness" | "log";
+
 type MeetingState = {
   connected: boolean;
   meetings: Meeting[];
   log: ModeratorLogEntry[];
   harness: Harness | null;
   notices: Notice[];
+  ui: { sidebarOpen: boolean; tab: SidebarTab };
   connect: () => void;
   dismissNotice: (id: string) => void;
   fetchHarness: () => Promise<void>;
+  setSidebar: (open: boolean, tab?: SidebarTab) => void;
 };
 
 const MODERATOR_URL_STORAGE_KEY = "knots.moderatorUrl";
 const SEEN_STORAGE_KEY = "knots.popups.seen";
+const SIDEBAR_STORAGE_KEY = "knots.sidebar";
 const DEFAULT_MODERATOR_PORT = 18850;
 const FRESH_WINDOW_MS = 15 * 60 * 1000;
 
@@ -206,6 +211,19 @@ function applyMeetingEvent(meeting: Meeting, event: string, voteId?: string) {
   }
 }
 
+function loadSidebar(): { sidebarOpen: boolean; tab: SidebarTab } {
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as { sidebarOpen?: boolean; tab?: SidebarTab };
+      return { sidebarOpen: !!parsed.sidebarOpen, tab: parsed.tab === "harness" || parsed.tab === "log" ? parsed.tab : "meetings" };
+    }
+  } catch {
+    // storage may be unavailable
+  }
+  return { sidebarOpen: false, tab: "meetings" };
+}
+
 let started = false;
 
 export const useMeetingStore = create<MeetingState>(() => ({
@@ -214,6 +232,7 @@ export const useMeetingStore = create<MeetingState>(() => ({
   log: [],
   harness: null,
   notices: [],
+  ui: typeof window === "undefined" ? { sidebarOpen: false, tab: "meetings" } : loadSidebar(),
   connect: () => {
     if (started || typeof window === "undefined" || typeof EventSource === "undefined") return;
     started = true;
@@ -254,6 +273,17 @@ export const useMeetingStore = create<MeetingState>(() => ({
   },
   dismissNotice: (id: string) => {
     useMeetingStore.setState((state) => ({ notices: state.notices.filter((notice) => notice.id !== id) }));
+  },
+  setSidebar: (open: boolean, tab?: SidebarTab) => {
+    useMeetingStore.setState((state) => {
+      const ui = { sidebarOpen: open, tab: tab || state.ui.tab };
+      try {
+        window.localStorage.setItem(SIDEBAR_STORAGE_KEY, JSON.stringify(ui));
+      } catch {
+        // ignore
+      }
+      return { ui };
+    });
   },
   fetchHarness: async () => {
     try {

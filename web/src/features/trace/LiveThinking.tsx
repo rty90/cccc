@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { Actor } from "../../types";
 import { classNames } from "../../utils/classNames";
 import { TraceEventList } from "./ThinkingTrace";
-import { formatTraceDuration, useTraceStore, type LiveTrace } from "./traceStore";
+import { formatTraceDuration, useTraceStore } from "./traceStore";
 
 function phaseLabel(phase: string, t: (key: string) => string): string {
   switch (phase) {
@@ -18,61 +18,18 @@ function phaseLabel(phase: string, t: (key: string) => string): string {
   }
 }
 
-function LiveRow({ live, label, isDark, now }: { live: LiveTrace; label: string; isDark: boolean; now: number }) {
-  const { t } = useTranslation("chat");
-  const [open, setOpen] = useState(false);
-  const startedAt = Date.parse(live.started_at || live.since || "");
-  const elapsed = Number.isFinite(startedAt) ? Math.max(0, now - startedAt) : 0;
-  const steps = live.steps.thinking + live.steps.tool + live.steps.text;
-  return (
-    <div
-      className={classNames(
-        "pointer-events-auto max-w-[min(720px,100%)] rounded-2xl border px-3 py-2 text-[12px] shadow-lg backdrop-blur",
-        isDark ? "border-white/10 bg-slate-950/80 text-slate-200" : "border-black/8 bg-white/90 text-gray-700",
-      )}
-    >
-      <button
-        type="button"
-        className="flex w-full items-center gap-2 text-left"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-      >
-        <span className="knots-breathe text-[14px] leading-none text-violet-500 dark:text-violet-300" aria-hidden="true">
-          ✳
-        </span>
-        <span className="font-semibold">{label}</span>
-        <span className="opacity-50">·</span>
-        <span className="tabular-nums">{formatTraceDuration(elapsed)}</span>
-        <span className="opacity-50">·</span>
-        <span>{t("traceSteps", { count: steps })}</span>
-        {live.steps.tool > 0 ? (
-          <>
-            <span className="opacity-50">·</span>
-            <span>{t("traceToolCalls", { count: live.steps.tool })}</span>
-          </>
-        ) : null}
-        <span className="opacity-50">·</span>
-        <span className="min-w-0 flex-1 truncate opacity-80">{phaseLabel(live.phase, t)}</span>
-        <span className={classNames("text-[10px] transition-transform", open ? "rotate-90" : "")} aria-hidden="true">
-          ▸
-        </span>
-      </button>
-      {!open && live.last ? (
-        <div className="mt-1 truncate pl-6 text-[11px] text-[var(--color-text-tertiary)]">{live.last}</div>
-      ) : null}
-      {open ? <TraceEventList events={live.events} /> : null}
-    </div>
-  );
-}
-
 /**
- * "Still thinking" rows for actors that are mid-turn: breathing indicator, elapsed time,
- * step counts and the latest reasoning snippet; expands to the steps so far.
+ * One status line for the actors that are mid-turn: a breathing marker, then one chip per actor
+ * (name, elapsed, phase). Clicking a chip unfolds that actor's steps so far below the line.
+ * Replaces the earlier stack of one card per actor, which pushed the composer down and competed
+ * with the runtime dock for the same band of the screen.
  */
 export function LiveThinking({ actors, isDark }: { actors: Actor[]; isDark: boolean }) {
+  const { t } = useTranslation("chat");
   const connect = useTraceStore((state) => state.connect);
   const live = useTraceStore((state) => state.live);
   const [now, setNow] = useState(() => Date.now());
+  const [openActor, setOpenActor] = useState<string | null>(null);
   useEffect(() => {
     connect();
   }, [connect]);
@@ -88,11 +45,54 @@ export function LiveThinking({ actors, isDark }: { actors: Actor[]; isDark: bool
     const title = String(actor?.title || "").trim();
     return title || actorId;
   };
+  const opened = openActor ? working.find((entry) => entry.actor === openActor) : undefined;
   return (
-    <div className="flex flex-col items-start gap-2">
-      {working.map((entry) => (
-        <LiveRow key={entry.actor} live={entry} label={labelFor(entry.actor)} isDark={isDark} now={now} />
-      ))}
+    <div
+      className={classNames(
+        "rounded-2xl border px-2.5 py-1.5 text-[11px] shadow-sm backdrop-blur",
+        isDark ? "border-white/10 bg-slate-950/70 text-slate-200" : "border-black/8 bg-white/85 text-gray-700",
+      )}
+    >
+      <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide">
+        <span className="knots-breathe shrink-0 text-[13px] leading-none text-violet-500 dark:text-violet-300" aria-hidden="true">
+          ✳
+        </span>
+        <span className="shrink-0 opacity-60">{t("liveWorking")}</span>
+        {working.map((entry) => {
+          const startedAt = Date.parse(entry.started_at || entry.since || "");
+          const elapsed = Number.isFinite(startedAt) ? Math.max(0, now - startedAt) : 0;
+          const active = openActor === entry.actor;
+          return (
+            <button
+              key={entry.actor}
+              type="button"
+              aria-expanded={active}
+              onClick={() => setOpenActor((current) => (current === entry.actor ? null : entry.actor))}
+              className={classNames(
+                "knots-press inline-flex max-w-[260px] shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5",
+                active
+                  ? isDark
+                    ? "border-transparent bg-white/10"
+                    : "border-transparent bg-black/[0.06]"
+                  : "border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)]",
+              )}
+            >
+              <span className="font-semibold">{labelFor(entry.actor)}</span>
+              <span className="tabular-nums opacity-70">{formatTraceDuration(elapsed)}</span>
+              <span className="truncate opacity-80">{phaseLabel(entry.phase, t)}</span>
+              {entry.steps.tool > 0 ? <span className="opacity-60">{t("traceToolCalls", { count: entry.steps.tool })}</span> : null}
+            </button>
+          );
+        })}
+      </div>
+      {opened ? (
+        <div className="mt-1.5 border-t border-[var(--glass-border-subtle)] pt-1.5">
+          {opened.last ? <div className="truncate text-[var(--color-text-tertiary)]">{opened.last}</div> : null}
+          <div className="max-h-40 overflow-y-auto">
+            <TraceEventList events={opened.events} />
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

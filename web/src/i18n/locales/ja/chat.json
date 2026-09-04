@@ -657,5 +657,13 @@
   "harnessProposalBodyLabel": "提案原文",
   "harnessProposalHint": "人間裁定モードの会議が開かれ投票カードが自動送信されます。採用後は司会が適用（スキル導入 / プロトコル改訂）。",
   "harnessSubmit": "提案を送信",
-  "harnessRuntimes": "リンク先"
+  "harnessRuntimes": "リンク先",
+  "knotsToggle": "会議",
+  "sidebarTabMeetings": "会議",
+  "sidebarTabHarness": "ルール",
+  "sidebarTabLog": "ログ",
+  "sidebarPending": "要対応",
+  "sidebarClose": "サイドバーを閉じる",
+  "sidebarNoLog": "まだ記録はありません",
+  "liveWorking": "作業中"
 }

@@ -221,6 +221,7 @@ export function MeetingPopups({ isDark }: { isDark: boolean }) {
   const meetings = useMeetingStore((state) => state.meetings);
   const notices = useMeetingStore((state) => state.notices);
   const dismissNotice = useMeetingStore((state) => state.dismissNotice);
+  const sidebarOpen = useMeetingStore((state) => state.ui.sidebarOpen);
   const [hovered, setHovered] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [viewId, setViewId] = useState<string | null>(null);
@@ -239,7 +240,7 @@ export function MeetingPopups({ isDark }: { isDark: boolean }) {
     if (!hidden) setExpanded(false);
   }, [hidden]);
 
-  if (typeof document === "undefined") return null;
+  if (typeof document === "undefined" || sidebarOpen) return null;
   return createPortal(
     <>
       <div

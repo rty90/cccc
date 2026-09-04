@@ -657,5 +657,13 @@
   "harnessProposalBodyLabel": "Proposal text",
   "harnessProposalHint": "Opens a human-mode meeting with an automatic vote card; on adopt the moderator applies it (installs the skill / amends the protocol).",
   "harnessSubmit": "Submit proposal",
-  "harnessRuntimes": "Linked into"
+  "harnessRuntimes": "Linked into",
+  "knotsToggle": "Meetings",
+  "sidebarTabMeetings": "Meetings",
+  "sidebarTabHarness": "Rules",
+  "sidebarTabLog": "Log",
+  "sidebarPending": "Needs you",
+  "sidebarClose": "Close sidebar",
+  "sidebarNoLog": "Nothing logged yet",
+  "liveWorking": "Working"
 }

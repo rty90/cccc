@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import type { Actor } from "../../types";
 import { classNames } from "../../utils/classNames";
 import { HumanRulingForm } from "./HumanRuling";
@@ -269,7 +267,8 @@ export function MeetingCard({ meeting, isDark }: { meeting: Meeting; isDark: boo
   );
 }
 
-function HarnessDialog({ open, onOpenChange, isDark }: { open: boolean; onOpenChange: (open: boolean) => void; isDark: boolean }) {
+/** Protocol, adopted skills, history and the human's proposal form (sidebar tab). */
+export function HarnessTab({ isDark }: { isDark: boolean }) {
   const { t } = useTranslation("chat");
   const harness = useMeetingStore((state) => state.harness);
   const fetchHarness = useMeetingStore((state) => state.fetchHarness);
@@ -278,8 +277,8 @@ function HarnessDialog({ open, onOpenChange, isDark }: { open: boolean; onOpenCh
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   useEffect(() => {
-    if (open) void fetchHarness();
-  }, [open, fetchHarness]);
+    void fetchHarness();
+  }, [fetchHarness]);
   const submit = async () => {
     setBusy(true);
     setStatus("");
@@ -294,85 +293,73 @@ function HarnessDialog({ open, onOpenChange, isDark }: { open: boolean; onOpenCh
     }
   };
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[min(calc(100vw-1rem),40rem)] p-4" aria-describedby={undefined}>
-        <DialogTitle className="pr-8 text-[14px]">
-          {t("harnessTitle")} · v{harness?.version ?? "?"}
-        </DialogTitle>
-        <DialogDescription className="sr-only">{t("harnessTitle")}</DialogDescription>
-        <div className="mt-3 max-h-[72vh] space-y-3 overflow-y-auto pr-1 text-[12px]">
-          <section>
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessSkills")}</div>
-            {harness?.skills?.length ? (
-              <div className="space-y-1">
-                {harness.skills.map((skill) => (
-                  <div key={skill.name} className={classNames("rounded-lg px-2 py-1", isDark ? "bg-white/5" : "bg-black/[0.04]")}>
-                    <span className="font-semibold">{skill.name}</span>
-                    <span className="text-[var(--color-text-tertiary)]">
-                      {" "}· {skill.source}
-                      {skill.path && skill.path !== "." ? `/${skill.path}` : ""}
-                    </span>
-                    {skill.runtimes ? (
-                      <div className="text-[10px] text-[var(--color-text-tertiary)]">
-                        {t("harnessRuntimes")}: {Object.keys(skill.runtimes).filter((runtime) => !String(skill.runtimes?.[runtime] || "").startsWith("error")).join(", ")}
-                      </div>
-                    ) : null}
+    <div className="space-y-3 text-[12px]">
+      <section>
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessSkills")}</div>
+        {harness?.skills?.length ? (
+          <div className="space-y-1">
+            {harness.skills.map((skill) => (
+              <div key={skill.name} className={classNames("rounded-lg px-2 py-1", isDark ? "bg-white/5" : "bg-black/[0.04]")}>
+                <span className="font-semibold">{skill.name}</span>
+                <span className="text-[var(--color-text-tertiary)]">
+                  {" "}· {skill.source}
+                  {skill.path && skill.path !== "." && skill.path !== "inline" ? `/${skill.path}` : ""}
+                </span>
+                {skill.runtimes ? (
+                  <div className="text-[10px] text-[var(--color-text-tertiary)]">
+                    {t("harnessRuntimes")}: {Object.keys(skill.runtimes).filter((runtime) => !String(skill.runtimes?.[runtime] || "").startsWith("error")).join(", ")}
                   </div>
-                ))}
+                ) : null}
               </div>
-            ) : (
-              <div className="text-[var(--color-text-tertiary)]">{t("harnessNoSkills")}</div>
-            )}
-          </section>
-          <section>
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessPropose")}</div>
-            <input className={fieldClass(isDark)} placeholder={t("harnessProposalTitle")} value={title} onChange={(event) => setTitle(event.target.value)} />
-            <textarea className={classNames(fieldClass(isDark), "mt-1.5 font-mono text-[11px]")} rows={6} placeholder={t("harnessProposalBody")} value={body} onChange={(event) => setBody(event.target.value)} />
-            <div className="mt-1 text-[10px] text-[var(--color-text-tertiary)]">{t("harnessProposalHint")}</div>
-            <div className="mt-1.5 flex items-center gap-2">
-              <button type="button" className={buttonClass("primary")} disabled={busy || !title.trim()} onClick={() => void submit()}>
-                {t("harnessSubmit")}
-              </button>
-              <span className="text-[11px] text-[var(--color-text-tertiary)]">{status}</span>
-            </div>
-          </section>
-          {harness?.history?.length ? (
-            <section>
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessHistory")}</div>
-              <div className="space-y-1">
-                {harness.history
-                  .slice()
-                  .reverse()
-                  .map((entry, index) => (
-                    <div key={`${entry.ts}-${index}`} className="text-[11px]">
-                      <span className="text-[var(--color-text-tertiary)]">{String(entry.ts).slice(5, 16)} </span>
-                      <span className="font-medium">{entry.outcome}</span> · {entry.title}
-                      {entry.detail ? <span className="text-[var(--color-text-tertiary)]"> — {entry.detail}</span> : null}
-                    </div>
-                  ))}
-              </div>
-            </section>
-          ) : null}
-          <section>
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessProtocol")}</div>
-            <pre className={classNames("max-h-[40vh] overflow-auto whitespace-pre-wrap rounded-xl p-2 text-[11px] leading-5", isDark ? "bg-white/5" : "bg-black/[0.04]")}>
-              {harness?.protocol || "…"}
-            </pre>
-          </section>
+            ))}
+          </div>
+        ) : (
+          <div className="text-[var(--color-text-tertiary)]">{t("harnessNoSkills")}</div>
+        )}
+      </section>
+      <section>
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessPropose")}</div>
+        <input className={fieldClass(isDark)} placeholder={t("harnessProposalTitle")} value={title} onChange={(event) => setTitle(event.target.value)} />
+        <textarea className={classNames(fieldClass(isDark), "mt-1.5 font-mono text-[11px]")} rows={5} placeholder={t("harnessProposalBody")} value={body} onChange={(event) => setBody(event.target.value)} />
+        <div className="mt-1 text-[10px] text-[var(--color-text-tertiary)]">{t("harnessProposalHint")}</div>
+        <div className="mt-1.5 flex items-center gap-2">
+          <button type="button" className={buttonClass("primary")} disabled={busy || !title.trim()} onClick={() => void submit()}>
+            {t("harnessSubmit")}
+          </button>
+          <span className="text-[11px] text-[var(--color-text-tertiary)]">{status}</span>
         </div>
-      </DialogContent>
-    </Dialog>
+      </section>
+      {harness?.history?.length ? (
+        <section>
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessHistory")}</div>
+          <div className="space-y-1">
+            {harness.history
+              .slice()
+              .reverse()
+              .map((entry, index) => (
+                <div key={`${entry.ts}-${index}`} className="text-[11px]">
+                  <span className="text-[var(--color-text-tertiary)]">{String(entry.ts).slice(5, 16)} </span>
+                  <span className="font-medium">{entry.outcome}</span> · {entry.title}
+                  {entry.detail ? <span className="text-[var(--color-text-tertiary)]"> — {entry.detail}</span> : null}
+                </div>
+              ))}
+          </div>
+        </section>
+      ) : null}
+      <section>
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessProtocol")}</div>
+        <pre className={classNames("max-h-[48vh] overflow-auto whitespace-pre-wrap rounded-xl p-2 text-[11px] leading-5", isDark ? "bg-white/5" : "bg-black/[0.04]")}>
+          {harness?.protocol || "…"}
+        </pre>
+      </section>
+    </div>
   );
 }
 
-export function MeetingPanel({ actors, isDark }: { actors: Actor[]; isDark: boolean }) {
+/** Meeting list plus the "start a meeting" form (sidebar tab). */
+export function MeetingsTab({ actors, isDark }: { actors: Actor[]; isDark: boolean }) {
   const { t } = useTranslation("chat");
-  const connect = useMeetingStore((state) => state.connect);
   const meetings = useMeetingStore((state) => state.meetings);
-  const connected = useMeetingStore((state) => state.connected);
-  const harness = useMeetingStore((state) => state.harness);
-  const [open, setOpen] = useState(false);
-  const [harnessOpen, setHarnessOpen] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [topic, setTopic] = useState("");
   const [brief, setBrief] = useState("");
@@ -380,14 +367,10 @@ export function MeetingPanel({ actors, isDark }: { actors: Actor[]; isDark: bool
   const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    connect();
-  }, [connect]);
   const actorIds = useMemo(() => actors.map((actor) => String(actor.id || "")).filter(Boolean), [actors]);
   useEffect(() => {
     setSelected((current) => (current.length ? current.filter((id) => actorIds.includes(id)) : actorIds));
   }, [actorIds]);
-  const active = meetings.filter((meeting) => meeting.status !== "closed").length;
   const ordered = meetings.slice().reverse();
 
   const start = async () => {
@@ -404,100 +387,61 @@ export function MeetingPanel({ actors, isDark }: { actors: Actor[]; isDark: bool
     setShowForm(false);
   };
 
-  if (typeof document === "undefined") return null;
-  return createPortal(
-    <div className="pointer-events-auto fixed right-3 top-14 z-[900] flex flex-col items-end gap-2 sm:right-5 sm:top-16">
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setHarnessOpen(true)}
-          className={classNames(
-            "knots-press flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-semibold shadow-lg backdrop-blur",
-            isDark ? "border-white/10 bg-slate-950/80 text-slate-100" : "border-black/8 bg-white/90 text-gray-800",
-          )}
-          title={t("harnessTitle")}
-        >
-          {t("harnessChip", { version: harness?.version ?? "?" })}
-          {harness?.skills?.length ? <span className="rounded-full bg-fuchsia-600 px-1.5 text-[10px] text-white">{harness.skills.length}</span> : null}
-        </button>
-        <button
-          type="button"
-          onClick={() => setOpen((value) => !value)}
-          className={classNames(
-            "knots-press flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-semibold shadow-lg backdrop-blur",
-            isDark ? "border-white/10 bg-slate-950/80 text-slate-100" : "border-black/8 bg-white/90 text-gray-800",
-          )}
-          title={connected ? "" : t("meetingOffline")}
-        >
-          <span className={classNames("h-1.5 w-1.5 rounded-full", connected ? "bg-emerald-500" : "bg-amber-500")} aria-hidden="true" />
-          {t("meetingPanel")}
-          {active > 0 ? <span className="rounded-full bg-violet-600 px-1.5 text-[10px] text-white">{active}</span> : null}
-        </button>
-      </div>
-      <HarnessDialog open={harnessOpen} onOpenChange={setHarnessOpen} isDark={isDark} />
-      {open ? (
-        <div
-          className={classNames(
-            "flex max-h-[70vh] w-[360px] max-w-[92vw] flex-col gap-2 overflow-y-auto rounded-2xl border p-3 shadow-2xl backdrop-blur",
-            isDark ? "border-white/10 bg-slate-950/85" : "border-black/8 bg-white/95",
-          )}
-        >
-          {showForm ? (
-            <div className="space-y-1.5">
-              <input className={fieldClass(isDark)} placeholder={t("meetingTopicPlaceholder")} value={topic} onChange={(event) => setTopic(event.target.value)} />
-              <textarea className={fieldClass(isDark)} rows={3} placeholder={t("meetingBriefPlaceholder")} value={brief} onChange={(event) => setBrief(event.target.value)} />
-              <div className="flex flex-wrap gap-1">
-                {actorIds.map((id) => {
-                  const on = selected.includes(id);
-                  return (
-                    <button
-                      key={id}
-                      type="button"
-                      className={classNames("knots-press rounded-full border px-2 py-0.5 text-[11px]", on ? "border-transparent bg-violet-600 text-white" : "border-[var(--glass-border-subtle)]")}
-                      onClick={() => setSelected((current) => (on ? current.filter((item) => item !== id) : [...current, id]))}
-                    >
-                      {id}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                <span className="text-[var(--color-text-tertiary)]">{t("meetingMode")}</span>
-                {(["agents", "human"] as MeetingMode[]).map((item) => (
-                  <button
-                    key={item}
-                    type="button"
-                    className={classNames("knots-press rounded-full border px-2 py-0.5", mode === item ? "border-transparent bg-violet-600 text-white" : "border-[var(--glass-border-subtle)]")}
-                    onClick={() => setMode(item)}
-                  >
-                    {t(`meetingMode_${item}`)}
-                  </button>
-                ))}
-              </div>
-              <div className="text-[10px] text-[var(--color-text-tertiary)]">{t("meetingModeHint")}</div>
-              <div className="text-[10px] text-[var(--color-text-tertiary)]">{t("meetingRolesHint")}</div>
-              {error ? <div className="text-[11px] text-rose-500">{error}</div> : null}
-              <div className="flex items-center gap-2">
-                <button type="button" className={buttonClass("primary")} disabled={busy || !topic.trim() || selected.length < 3} onClick={() => void start()}>
-                  {t("meetingStart")}
+  return (
+    <div className="flex flex-col gap-2">
+      {showForm ? (
+        <div className="space-y-1.5">
+          <input className={fieldClass(isDark)} placeholder={t("meetingTopicPlaceholder")} value={topic} onChange={(event) => setTopic(event.target.value)} />
+          <textarea className={fieldClass(isDark)} rows={3} placeholder={t("meetingBriefPlaceholder")} value={brief} onChange={(event) => setBrief(event.target.value)} />
+          <div className="flex flex-wrap gap-1">
+            {actorIds.map((id) => {
+              const on = selected.includes(id);
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  className={classNames("knots-press rounded-full border px-2 py-0.5 text-[11px]", on ? "border-transparent bg-violet-600 text-white" : "border-[var(--glass-border-subtle)]")}
+                  onClick={() => setSelected((current) => (on ? current.filter((item) => item !== id) : [...current, id]))}
+                >
+                  {id}
                 </button>
-                <button type="button" className={buttonClass("ghost")} onClick={() => setShowForm(false)}>
-                  {t("meetingCancel")}
-                </button>
-              </div>
-            </div>
-          ) : (
-            <button type="button" className={buttonClass("primary")} onClick={() => setShowForm(true)}>
-              {t("meetingNew")}
+              );
+            })}
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+            <span className="text-[var(--color-text-tertiary)]">{t("meetingMode")}</span>
+            {(["agents", "human"] as MeetingMode[]).map((item) => (
+              <button
+                key={item}
+                type="button"
+                className={classNames("knots-press rounded-full border px-2 py-0.5", mode === item ? "border-transparent bg-violet-600 text-white" : "border-[var(--glass-border-subtle)]")}
+                onClick={() => setMode(item)}
+              >
+                {t(`meetingMode_${item}`)}
+              </button>
+            ))}
+          </div>
+          <div className="text-[10px] text-[var(--color-text-tertiary)]">{t("meetingModeHint")}</div>
+          <div className="text-[10px] text-[var(--color-text-tertiary)]">{t("meetingRolesHint")}</div>
+          {error ? <div className="text-[11px] text-rose-500">{error}</div> : null}
+          <div className="flex items-center gap-2">
+            <button type="button" className={buttonClass("primary")} disabled={busy || !topic.trim() || selected.length < 3} onClick={() => void start()}>
+              {t("meetingStart")}
             </button>
-          )}
-          {ordered.length === 0 ? <div className="text-[11px] text-[var(--color-text-tertiary)]">{t("meetingNone")}</div> : null}
-          {ordered.map((meeting) => (
-            <MeetingCard key={meeting.id} meeting={meeting} isDark={isDark} />
-          ))}
+            <button type="button" className={buttonClass("ghost")} onClick={() => setShowForm(false)}>
+              {t("meetingCancel")}
+            </button>
+          </div>
         </div>
-      ) : null}
-    </div>,
-    document.body,
+      ) : (
+        <button type="button" className={buttonClass("primary")} onClick={() => setShowForm(true)}>
+          {t("meetingNew")}
+        </button>
+      )}
+      {ordered.length === 0 ? <div className="text-[11px] text-[var(--color-text-tertiary)]">{t("meetingNone")}</div> : null}
+      {ordered.map((meeting) => (
+        <MeetingCard key={meeting.id} meeting={meeting} isDark={isDark} />
+      ))}
+    </div>
   );
 }
