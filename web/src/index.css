@@ -1905,3 +1905,39 @@ input.border-none {
 }
 .knots-breathe { display: inline-block; animation: knots-breathe 1.6s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .knots-breathe { animation: none; } }
+
+/* Knots meeting popups: enter/exit with transitions (interruptible), transform + opacity only. */
+:root {
+  --knots-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+}
+.knots-toast {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition: opacity 220ms var(--knots-ease-out), transform 220ms var(--knots-ease-out);
+  will-change: transform, opacity;
+}
+.knots-toast[data-state="entering"],
+.knots-toast[data-state="closing"] {
+  opacity: 0;
+  transform: translateY(12px) scale(0.97);
+}
+.knots-toast[data-state="closing"] {
+  transition-duration: 160ms;
+}
+.knots-press {
+  transition: transform 160ms var(--knots-ease-out), opacity 160ms var(--knots-ease-out);
+}
+.knots-press:active {
+  transform: scale(0.97);
+}
+@media (prefers-reduced-motion: reduce) {
+  .knots-toast,
+  .knots-toast[data-state="entering"],
+  .knots-toast[data-state="closing"] {
+    transform: none;
+    transition: opacity 180ms ease;
+  }
+  .knots-press:active {
+    transform: none;
+  }
+}

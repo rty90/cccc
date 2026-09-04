@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import type { Actor } from "../../types";
 import { classNames } from "../../utils/classNames";
-import { moderatorPost, useMeetingStore, type Meeting, type Vote } from "./meetingStore";
+import { HumanRulingForm } from "./HumanRuling";
+import { moderatorPost, useMeetingStore, voteCounts, type Meeting, type MeetingMode, type Vote } from "./meetingStore";
 
-const ROLE_TONE: Record<string, string> = {
+export const ROLE_TONE: Record<string, string> = {
   proposer: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
   "red-team": "bg-rose-500/15 text-rose-700 dark:text-rose-300",
   auditor: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
@@ -23,7 +25,7 @@ function fieldClass(isDark: boolean): string {
 
 function buttonClass(tone: "primary" | "ghost" | "danger"): string {
   return classNames(
-    "rounded-full px-3 py-1 text-[11px] font-semibold transition-opacity disabled:opacity-50",
+    "knots-press rounded-full px-3 py-1 text-[11px] font-semibold disabled:opacity-50",
     tone === "primary"
       ? "bg-violet-600 text-white hover:opacity-90"
       : tone === "danger"
@@ -32,7 +34,7 @@ function buttonClass(tone: "primary" | "ghost" | "danger"): string {
   );
 }
 
-function StatusPill({ status }: { status: Meeting["status"] | Vote["status"] }) {
+export function StatusPill({ status }: { status: Meeting["status"] | Vote["status"] }) {
   const { t } = useTranslation("chat");
   const tone =
     status === "closed"
@@ -43,20 +45,38 @@ function StatusPill({ status }: { status: Meeting["status"] | Vote["status"] }) 
   return <span className={classNames("rounded-full px-2 py-0.5 text-[10px] font-semibold", tone)}>{t(`meetingStatus_${status}`)}</span>;
 }
 
+export function ModeBadge({ mode }: { mode: MeetingMode }) {
+  const { t } = useTranslation("chat");
+  return (
+    <span
+      className={classNames(
+        "rounded-full px-2 py-0.5 text-[10px] font-semibold",
+        mode === "human" ? "bg-violet-500/15 text-violet-700 dark:text-violet-300" : "bg-sky-500/15 text-sky-700 dark:text-sky-300",
+      )}
+      title={t("meetingModeHint")}
+    >
+      {t(`meetingMode_${mode}`)}
+    </span>
+  );
+}
+
 function VoteCard({ vote, meeting, isDark }: { vote: Vote; meeting: Meeting; isDark: boolean }) {
   const { t } = useTranslation("chat");
   const [detail, setDetail] = useState(false);
   const total = meeting.participants.length;
-  const counts = vote.result?.counts || vote.options.reduce<Record<string, number>>((acc, option) => ({ ...acc, [option]: 0 }), {});
-  if (!vote.result) {
-    for (const ballot of Object.values(vote.ballots)) counts[ballot.option] = (counts[ballot.option] || 0) + 1;
-  }
+  const counts = voteCounts(vote);
   const cast = Object.keys(vote.ballots).length;
+  const humanMode = (meeting.mode || "agents") === "human";
+  const needsHuman = vote.status === "closed" && !vote.human && (vote.awaiting_human || humanMode);
   return (
     <div className={classNames("rounded-xl border p-2", isDark ? "border-white/10 bg-white/[0.03]" : "border-black/8 bg-black/[0.02]")}>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <span className="text-[11px] font-semibold">{t("voteCard")} #{vote.id}</span>
         <StatusPill status={vote.status} />
+        {humanMode ? <span className="text-[10px] text-violet-600 dark:text-violet-300">{t("voteAdvisory")}</span> : null}
+        {vote.source && vote.source !== "moderator" && vote.source !== "harness" ? (
+          <span className="text-[10px] text-[var(--color-text-tertiary)]">{t("voteRequestedBy", { by: vote.source })}</span>
+        ) : null}
         <span className="ml-auto text-[10px] text-[var(--color-text-tertiary)]">
           {cast}/{total}
         </span>
@@ -70,22 +90,35 @@ function VoteCard({ vote, meeting, isDark }: { vote: Vote; meeting: Meeting; isD
       <div className="mt-2 space-y-1">
         {vote.options.map((option) => {
           const value = counts[option] || 0;
-          const width = total > 0 ? Math.round((value / total) * 100) : 0;
-          const winner = vote.result?.winner === option;
+          const ratio = total > 0 ? value / total : 0;
+          const winner = (vote.human?.option || vote.result?.winner) === option;
           return (
             <div key={option} className="flex items-center gap-2 text-[11px]">
               <span className={classNames("w-16 shrink-0 truncate", winner ? "font-semibold" : "")}>{option}</span>
               <span className={classNames("h-2 flex-1 overflow-hidden rounded-full", isDark ? "bg-white/8" : "bg-black/8")}>
-                <span className={classNames("block h-full rounded-full", winner ? "bg-violet-500" : "bg-sky-500/70")} style={{ width: `${width}%` }} />
+                <span
+                  className={classNames("block h-full origin-left rounded-full transition-transform duration-200", winner ? "bg-violet-500" : "bg-sky-500/70")}
+                  style={{ transform: `scaleX(${ratio})`, transitionTimingFunction: "var(--knots-ease-out)" }}
+                />
               </span>
               <span className="w-5 text-right tabular-nums">{value}</span>
             </div>
           );
         })}
       </div>
-      {vote.result ? (
+      {vote.human ? (
+        <div className="mt-1.5 rounded-lg bg-violet-500/10 px-2 py-1 text-[11px]">
+          <span className="font-semibold">{t("voteHumanDecided", { option: vote.human.option })}</span>
+          {vote.human.reason ? <span className="text-[var(--color-text-secondary)]"> — {vote.human.reason}</span> : null}
+        </div>
+      ) : vote.result ? (
         <div className="mt-1 text-[11px] text-[var(--color-text-secondary)]">
-          {vote.result.tie ? t("voteTie") : vote.result.winner ? t("voteWinner", { option: vote.result.winner }) : ""}
+          {needsHuman ? t("voteAwaitingHuman") : vote.result.tie ? t("voteTie") : vote.result.winner ? t("voteWinner", { option: vote.result.winner }) : ""}
+        </div>
+      ) : null}
+      {needsHuman ? (
+        <div className="mt-2">
+          <HumanRulingForm vote={vote} meeting={meeting} isDark={isDark} />
         </div>
       ) : null}
       <button type="button" className={classNames("mt-2 text-[11px] underline-offset-2 hover:underline", "text-[var(--color-text-tertiary)]")} onClick={() => setDetail((value) => !value)}>
@@ -113,7 +146,7 @@ function VoteCard({ vote, meeting, isDark }: { vote: Vote; meeting: Meeting; isD
   );
 }
 
-function MeetingCard({ meeting, isDark }: { meeting: Meeting; isDark: boolean }) {
+export function MeetingCard({ meeting, isDark }: { meeting: Meeting; isDark: boolean }) {
   const { t } = useTranslation("chat");
   const [voteForm, setVoteForm] = useState(false);
   const [summary, setSummary] = useState("");
@@ -121,6 +154,7 @@ function MeetingCard({ meeting, isDark }: { meeting: Meeting; isDark: boolean })
   const [minutes, setMinutes] = useState("5");
   const [decision, setDecision] = useState("");
   const [busy, setBusy] = useState("");
+  const mode: MeetingMode = meeting.mode || "agents";
   const openVote = async () => {
     setBusy("vote");
     await moderatorPost(`/api/meetings/${meeting.id}/vote`, {
@@ -142,16 +176,28 @@ function MeetingCard({ meeting, isDark }: { meeting: Meeting; isDark: boolean })
     await moderatorPost(`/api/meetings/${meeting.id}/stop`, {});
     setBusy("");
   };
+  const switchMode = async () => {
+    setBusy("mode");
+    await moderatorPost(`/api/meetings/${meeting.id}/mode`, { mode: mode === "human" ? "agents" : "human" });
+    setBusy("");
+  };
+  const lastEscalation = meeting.escalations && meeting.escalations.length ? meeting.escalations[meeting.escalations.length - 1] : "";
   return (
     <div className={classNames("rounded-2xl border p-3", isDark ? "border-white/10 bg-slate-950/60" : "border-black/8 bg-white/80")}>
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="text-[12px] font-semibold">#{meeting.id}</span>
+            {meeting.kind === "harness" ? (
+              <span className="rounded-full bg-fuchsia-500/15 px-2 py-0.5 text-[10px] font-semibold text-fuchsia-700 dark:text-fuchsia-300">{t("meetingKind_harness")}</span>
+            ) : null}
             <StatusPill status={meeting.status} />
+            <ModeBadge mode={mode} />
             <span className="text-[10px] text-[var(--color-text-tertiary)]">{String(meeting.created_at).slice(11, 16)}</span>
           </div>
           <div className="mt-0.5 text-[13px] font-medium">{meeting.topic}</div>
+          {meeting.requested_by ? <div className="text-[10px] text-[var(--color-text-tertiary)]">{t("meetingRequestedBy", { by: meeting.requested_by })}</div> : null}
+          {lastEscalation ? <div className="mt-0.5 text-[10px] text-violet-600 dark:text-violet-300">{t("meetingEscalated", { reason: lastEscalation })}</div> : null}
         </div>
       </div>
       <div className="mt-2 flex flex-wrap gap-1">
@@ -162,6 +208,12 @@ function MeetingCard({ meeting, isDark }: { meeting: Meeting; isDark: boolean })
           </span>
         ))}
       </div>
+      {meeting.kind === "harness" && meeting.brief ? (
+        <details className="mt-2 text-[11px]">
+          <summary className="cursor-pointer text-[var(--color-text-tertiary)]">{t("harnessProposalBodyLabel")}</summary>
+          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-black/5 p-2 text-[11px] dark:bg-white/5">{meeting.brief}</pre>
+        </details>
+      ) : null}
       {meeting.messages && meeting.messages.length > 0 ? (
         <div className="mt-1 text-[10px] text-[var(--color-text-tertiary)]">{t("meetingMessages", { count: meeting.messages.length })}</div>
       ) : null}
@@ -192,6 +244,9 @@ function MeetingCard({ meeting, isDark }: { meeting: Meeting; isDark: boolean })
               <button type="button" className={buttonClass("primary")} onClick={() => setVoteForm(true)}>
                 {t("voteStart")}
               </button>
+              <button type="button" className={buttonClass("ghost")} disabled={busy === "mode"} onClick={() => void switchMode()}>
+                {t("meetingSwitchMode", { mode: t(`meetingMode_${mode === "human" ? "agents" : "human"}`) })}
+              </button>
               <button type="button" className={buttonClass("danger")} disabled={busy === "stop"} onClick={() => void stop()}>
                 {t("meetingStop")}
               </button>
@@ -214,15 +269,114 @@ function MeetingCard({ meeting, isDark }: { meeting: Meeting; isDark: boolean })
   );
 }
 
+function HarnessDialog({ open, onOpenChange, isDark }: { open: boolean; onOpenChange: (open: boolean) => void; isDark: boolean }) {
+  const { t } = useTranslation("chat");
+  const harness = useMeetingStore((state) => state.harness);
+  const fetchHarness = useMeetingStore((state) => state.fetchHarness);
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+  useEffect(() => {
+    if (open) void fetchHarness();
+  }, [open, fetchHarness]);
+  const submit = async () => {
+    setBusy(true);
+    setStatus("");
+    const result = await moderatorPost<{ ok: boolean; error?: string; meeting?: Meeting }>("/api/harness/proposals", { title, body });
+    setBusy(false);
+    if (result.ok) {
+      setStatus(`#${result.meeting?.id || ""}`);
+      setTitle("");
+      setBody("");
+    } else {
+      setStatus(result.error || t("meetingStartFailed"));
+    }
+  };
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[min(calc(100vw-1rem),40rem)] p-4" aria-describedby={undefined}>
+        <DialogTitle className="pr-8 text-[14px]">
+          {t("harnessTitle")} · v{harness?.version ?? "?"}
+        </DialogTitle>
+        <DialogDescription className="sr-only">{t("harnessTitle")}</DialogDescription>
+        <div className="mt-3 max-h-[72vh] space-y-3 overflow-y-auto pr-1 text-[12px]">
+          <section>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessSkills")}</div>
+            {harness?.skills?.length ? (
+              <div className="space-y-1">
+                {harness.skills.map((skill) => (
+                  <div key={skill.name} className={classNames("rounded-lg px-2 py-1", isDark ? "bg-white/5" : "bg-black/[0.04]")}>
+                    <span className="font-semibold">{skill.name}</span>
+                    <span className="text-[var(--color-text-tertiary)]">
+                      {" "}· {skill.source}
+                      {skill.path && skill.path !== "." ? `/${skill.path}` : ""}
+                    </span>
+                    {skill.runtimes ? (
+                      <div className="text-[10px] text-[var(--color-text-tertiary)]">
+                        {t("harnessRuntimes")}: {Object.keys(skill.runtimes).filter((runtime) => !String(skill.runtimes?.[runtime] || "").startsWith("error")).join(", ")}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-[var(--color-text-tertiary)]">{t("harnessNoSkills")}</div>
+            )}
+          </section>
+          <section>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessPropose")}</div>
+            <input className={fieldClass(isDark)} placeholder={t("harnessProposalTitle")} value={title} onChange={(event) => setTitle(event.target.value)} />
+            <textarea className={classNames(fieldClass(isDark), "mt-1.5 font-mono text-[11px]")} rows={6} placeholder={t("harnessProposalBody")} value={body} onChange={(event) => setBody(event.target.value)} />
+            <div className="mt-1 text-[10px] text-[var(--color-text-tertiary)]">{t("harnessProposalHint")}</div>
+            <div className="mt-1.5 flex items-center gap-2">
+              <button type="button" className={buttonClass("primary")} disabled={busy || !title.trim()} onClick={() => void submit()}>
+                {t("harnessSubmit")}
+              </button>
+              <span className="text-[11px] text-[var(--color-text-tertiary)]">{status}</span>
+            </div>
+          </section>
+          {harness?.history?.length ? (
+            <section>
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessHistory")}</div>
+              <div className="space-y-1">
+                {harness.history
+                  .slice()
+                  .reverse()
+                  .map((entry, index) => (
+                    <div key={`${entry.ts}-${index}`} className="text-[11px]">
+                      <span className="text-[var(--color-text-tertiary)]">{String(entry.ts).slice(5, 16)} </span>
+                      <span className="font-medium">{entry.outcome}</span> · {entry.title}
+                      {entry.detail ? <span className="text-[var(--color-text-tertiary)]"> — {entry.detail}</span> : null}
+                    </div>
+                  ))}
+              </div>
+            </section>
+          ) : null}
+          <section>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessProtocol")}</div>
+            <pre className={classNames("max-h-[40vh] overflow-auto whitespace-pre-wrap rounded-xl p-2 text-[11px] leading-5", isDark ? "bg-white/5" : "bg-black/[0.04]")}>
+              {harness?.protocol || "…"}
+            </pre>
+          </section>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function MeetingPanel({ actors, isDark }: { actors: Actor[]; isDark: boolean }) {
   const { t } = useTranslation("chat");
   const connect = useMeetingStore((state) => state.connect);
   const meetings = useMeetingStore((state) => state.meetings);
   const connected = useMeetingStore((state) => state.connected);
+  const harness = useMeetingStore((state) => state.harness);
   const [open, setOpen] = useState(false);
+  const [harnessOpen, setHarnessOpen] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [topic, setTopic] = useState("");
   const [brief, setBrief] = useState("");
+  const [mode, setMode] = useState<MeetingMode>("agents");
   const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -239,7 +393,7 @@ export function MeetingPanel({ actors, isDark }: { actors: Actor[]; isDark: bool
   const start = async () => {
     setBusy(true);
     setError("");
-    const result = await moderatorPost<{ ok: boolean; error?: string }>("/api/meetings", { topic, brief, participants: selected });
+    const result = await moderatorPost<{ ok: boolean; error?: string }>("/api/meetings", { topic, brief, participants: selected, mode });
     setBusy(false);
     if (!result.ok) {
       setError(result.error || t("meetingStartFailed"));
@@ -253,19 +407,34 @@ export function MeetingPanel({ actors, isDark }: { actors: Actor[]; isDark: bool
   if (typeof document === "undefined") return null;
   return createPortal(
     <div className="pointer-events-auto fixed right-3 top-14 z-[900] flex flex-col items-end gap-2 sm:right-5 sm:top-16">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className={classNames(
-          "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-semibold shadow-lg backdrop-blur",
-          isDark ? "border-white/10 bg-slate-950/80 text-slate-100" : "border-black/8 bg-white/90 text-gray-800",
-        )}
-        title={connected ? "" : t("meetingOffline")}
-      >
-        <span className={classNames("h-1.5 w-1.5 rounded-full", connected ? "bg-emerald-500" : "bg-amber-500")} aria-hidden="true" />
-        {t("meetingPanel")}
-        {active > 0 ? <span className="rounded-full bg-violet-600 px-1.5 text-[10px] text-white">{active}</span> : null}
-      </button>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setHarnessOpen(true)}
+          className={classNames(
+            "knots-press flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-semibold shadow-lg backdrop-blur",
+            isDark ? "border-white/10 bg-slate-950/80 text-slate-100" : "border-black/8 bg-white/90 text-gray-800",
+          )}
+          title={t("harnessTitle")}
+        >
+          {t("harnessChip", { version: harness?.version ?? "?" })}
+          {harness?.skills?.length ? <span className="rounded-full bg-fuchsia-600 px-1.5 text-[10px] text-white">{harness.skills.length}</span> : null}
+        </button>
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className={classNames(
+            "knots-press flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-semibold shadow-lg backdrop-blur",
+            isDark ? "border-white/10 bg-slate-950/80 text-slate-100" : "border-black/8 bg-white/90 text-gray-800",
+          )}
+          title={connected ? "" : t("meetingOffline")}
+        >
+          <span className={classNames("h-1.5 w-1.5 rounded-full", connected ? "bg-emerald-500" : "bg-amber-500")} aria-hidden="true" />
+          {t("meetingPanel")}
+          {active > 0 ? <span className="rounded-full bg-violet-600 px-1.5 text-[10px] text-white">{active}</span> : null}
+        </button>
+      </div>
+      <HarnessDialog open={harnessOpen} onOpenChange={setHarnessOpen} isDark={isDark} />
       {open ? (
         <div
           className={classNames(
@@ -284,7 +453,7 @@ export function MeetingPanel({ actors, isDark }: { actors: Actor[]; isDark: bool
                     <button
                       key={id}
                       type="button"
-                      className={classNames("rounded-full border px-2 py-0.5 text-[11px]", on ? "border-transparent bg-violet-600 text-white" : "border-[var(--glass-border-subtle)]")}
+                      className={classNames("knots-press rounded-full border px-2 py-0.5 text-[11px]", on ? "border-transparent bg-violet-600 text-white" : "border-[var(--glass-border-subtle)]")}
                       onClick={() => setSelected((current) => (on ? current.filter((item) => item !== id) : [...current, id]))}
                     >
                       {id}
@@ -292,6 +461,20 @@ export function MeetingPanel({ actors, isDark }: { actors: Actor[]; isDark: bool
                   );
                 })}
               </div>
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                <span className="text-[var(--color-text-tertiary)]">{t("meetingMode")}</span>
+                {(["agents", "human"] as MeetingMode[]).map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    className={classNames("knots-press rounded-full border px-2 py-0.5", mode === item ? "border-transparent bg-violet-600 text-white" : "border-[var(--glass-border-subtle)]")}
+                    onClick={() => setMode(item)}
+                  >
+                    {t(`meetingMode_${item}`)}
+                  </button>
+                ))}
+              </div>
+              <div className="text-[10px] text-[var(--color-text-tertiary)]">{t("meetingModeHint")}</div>
               <div className="text-[10px] text-[var(--color-text-tertiary)]">{t("meetingRolesHint")}</div>
               {error ? <div className="text-[11px] text-rose-500">{error}</div> : null}
               <div className="flex items-center gap-2">
