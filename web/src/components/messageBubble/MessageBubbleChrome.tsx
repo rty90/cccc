@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { LedgerEvent } from "../../types";
 import { classNames } from "../../utils/classNames";
@@ -17,6 +18,7 @@ export function MessageMetadataHeader({
   senderRuntime,
   avatarRingClassName,
   remoteBadgeLabel,
+  renderAvatar,
 }: {
   mobile?: boolean;
   isUserMessage: boolean;
@@ -29,6 +31,7 @@ export function MessageMetadataHeader({
   senderRuntime?: string;
   avatarRingClassName?: string;
   remoteBadgeLabel?: string;
+  renderAvatar?: (avatar: ReactNode) => ReactNode;
 }) {
   const senderTextClass = isUserMessage
     ? isDark
@@ -40,6 +43,8 @@ export function MessageMetadataHeader({
         ? "text-slate-300"
         : "text-gray-700";
 
+  const wrapAvatar = renderAvatar ?? ((node: ReactNode) => node);
+
   if (mobile) {
     return (
       <div
@@ -48,16 +53,18 @@ export function MessageMetadataHeader({
           isUserMessage ? "justify-end" : "justify-start",
         )}
       >
-        <ActorAvatar
-          avatarUrl={senderAvatarUrl}
-          runtime={senderRuntime}
-          title={senderDisplayName}
-          isUser={isUserMessage}
-          isDark={isDark}
-          accentRingClassName={avatarRingClassName}
-          sizeClassName="h-6 w-6"
-          textClassName="text-[10px]"
-        />
+        {wrapAvatar(
+          <ActorAvatar
+            avatarUrl={senderAvatarUrl}
+            runtime={senderRuntime}
+            title={senderDisplayName}
+            isUser={isUserMessage}
+            isDark={isDark}
+            accentRingClassName={avatarRingClassName}
+            sizeClassName="h-6 w-6"
+            textClassName="text-[10px]"
+          />,
+        )}
         <span className={classNames("shrink-0 text-xs font-medium", senderTextClass)}>
           {senderDisplayName}
         </span>

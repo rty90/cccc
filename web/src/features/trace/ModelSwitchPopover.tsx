@@ -28,18 +28,24 @@ export function ModelSwitchPopover({
   isDark,
   openInspectorLabel,
   onOpenInspector,
+  onOpenChange,
   children,
 }: {
   actorId: string;
   runtime: string;
   label: string;
   isDark: boolean;
-  openInspectorLabel: string;
-  onOpenInspector: () => void;
+  openInspectorLabel?: string;
+  onOpenInspector?: () => void;
+  onOpenChange?: (open: boolean) => void;
   children: ReactNode;
 }) {
   const { t } = useTranslation("chat");
   const [open, setOpen] = useState(false);
+  const updateOpen = (next: boolean) => {
+    setOpen(next);
+    onOpenChange?.(next);
+  };
   const [presets, setPresets] = useState<Presets>({});
   const [currentModel, setCurrentModel] = useState("");
   const [currentEffort, setCurrentEffort] = useState("");
@@ -93,7 +99,7 @@ export function ModelSwitchPopover({
         setStatus(t("switchDone"));
         setCurrentModel(model);
         setCurrentEffort(effort);
-        window.setTimeout(() => setOpen(false), 1200);
+        window.setTimeout(() => updateOpen(false), 1200);
       } else {
         setStatus(`${t("switchFailed")}: ${result.error || (result.log || []).join(" ")}`);
       }
@@ -117,7 +123,7 @@ export function ModelSwitchPopover({
     );
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={updateOpen}>
       <PopoverTrigger asChild>{children}</PopoverTrigger>
       <PopoverContent align="center" side="top" sideOffset={12} className="w-[300px] p-3">
         <div className="mb-2 flex items-center justify-between gap-2">
@@ -129,19 +135,21 @@ export function ModelSwitchPopover({
               {currentEffort ? ` · ${currentEffort}` : ""}
             </div>
           </div>
-          <button
-            type="button"
-            className={classNames(
-              "shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium",
-              "border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] text-[var(--color-text-secondary)]",
-            )}
-            onClick={() => {
-              setOpen(false);
-              onOpenInspector();
-            }}
-          >
-            {openInspectorLabel}
-          </button>
+          {onOpenInspector && openInspectorLabel ? (
+            <button
+              type="button"
+              className={classNames(
+                "shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium",
+                "border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] text-[var(--color-text-secondary)]",
+              )}
+              onClick={() => {
+                updateOpen(false);
+                onOpenInspector();
+              }}
+            >
+              {openInspectorLabel}
+            </button>
+          ) : null}
         </div>
         <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("switchModel")}</div>
         {loadError ? (

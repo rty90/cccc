@@ -52,6 +52,7 @@ import { MessageBubbleSurface } from "./messageBubble/MessageBubbleSurface";
 import { buildMessageCopyText } from "./messageBubble/messageCopyText";
 import { MessageReferenceSections } from "./messageBubble/MessageReferenceSections";
 import { ThinkingTrace } from "../features/trace/ThinkingTrace";
+import { ModelSwitchPopover } from "../features/trace/ModelSwitchPopover";
 
 const ANIMATED_MESSAGE_BUBBLE_KEYS = new Set<string>();
 const NEW_MESSAGE_ANIMATION_WINDOW_MS = 12000;
@@ -360,6 +361,7 @@ export const MessageBubble = memo(
     const messageText = useMemo(() => formatEventLine(ev), [ev]);
 
     const [isAgentStateOpen, setIsAgentStateOpen] = useState(false);
+    const [switcherOpen, setSwitcherOpen] = useState(false);
     const [copiedMessageText, setCopiedMessageText] = useState(false);
     const floatingMiddleware = useMemo(() => [offset(8), flip(), shift({ padding: 8 })], []);
     const { refs, floatingStyles, context } = useFloating({
@@ -704,19 +706,44 @@ export const MessageBubble = memo(
                 : undefined
             }
           >
-            <ActorAvatar
-              avatarUrl={senderAvatarUrl || undefined}
-              runtime={senderRuntime || undefined}
-              title={senderDisplayName}
-              isUser={isUserMessage}
-              isDark={isDark}
-              accentRingClassName={senderAccent?.ring}
-            />
+            {!isUserMessage && senderActor?.id ? (
+              <ModelSwitchPopover
+                actorId={String(senderActor.id)}
+                runtime={senderRuntime || String(senderActor.runtime || "")}
+                label={senderDisplayName}
+                isDark={isDark} onOpenChange={setSwitcherOpen}
+              >
+                <button
+                  type="button"
+                  className="rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60"
+                  aria-label={t("switchModel")}
+                  title={t("switchModel")}
+                >
+                  <ActorAvatar
+                    avatarUrl={senderAvatarUrl || undefined}
+                    runtime={senderRuntime || undefined}
+                    title={senderDisplayName}
+                    isUser={isUserMessage}
+                    isDark={isDark}
+                    accentRingClassName={senderAccent?.ring}
+                  />
+                </button>
+              </ModelSwitchPopover>
+            ) : (
+              <ActorAvatar
+                avatarUrl={senderAvatarUrl || undefined}
+                runtime={senderRuntime || undefined}
+                title={senderDisplayName}
+                isUser={isUserMessage}
+                isDark={isDark}
+                accentRingClassName={senderAccent?.ring}
+              />
+            )}
           </div>
         </div>
         <FloatingPortal>
           <AgentStateTooltip
-            isOpen={isAgentStateOpen && !collapseHeader}
+            isOpen={isAgentStateOpen && !collapseHeader && !switcherOpen}
             canShow={canShowAgentState && !collapseHeader}
             isPositioned={isAgentStatePositioned}
             setFloating={setAgentStateFloating}
@@ -755,6 +782,27 @@ export const MessageBubble = memo(
                 senderRuntime={senderRuntime || undefined}
                 avatarRingClassName={senderAccent?.ring}
                 remoteBadgeLabel={remoteBadgeLabel || undefined}
+                renderAvatar={
+                  !isUserMessage && senderActor?.id
+                    ? (node) => (
+                        <ModelSwitchPopover
+                          actorId={String(senderActor.id)}
+                          runtime={senderRuntime || String(senderActor.runtime || "")}
+                          label={senderDisplayName}
+                          isDark={isDark} onOpenChange={setSwitcherOpen}
+                        >
+                          <button
+                            type="button"
+                            className="rounded-full"
+                            aria-label={t("switchModel")}
+                            title={t("switchModel")}
+                          >
+                            {node}
+                          </button>
+                        </ModelSwitchPopover>
+                      )
+                    : undefined
+                }
               />
 
               <MessageMetadataHeader
