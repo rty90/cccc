@@ -149,7 +149,7 @@ fn profile_paths_escape_yaml_apostrophes() {
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).expect("permissions");
     let profile = temp.path().join("profile");
 
-    write_profile_files(&profile, &executable).expect("profile");
+    write_profile_files(&profile, &executable, cccc_contracts::deepseek::DEEPSEEK_DEFAULT_MODEL).expect("profile");
 
     let escaped_path = executable.to_string_lossy().replace('\'', "''");
     let config = fs::read_to_string(profile.join("cordis.yml")).expect("config");
@@ -303,7 +303,7 @@ fn upgrades_legacy_bundle_root_and_removes_obsolete_profile_patch() {
     )
     .expect("write legacy root manifest");
     let profile = dsh_home.join("profiles/cccc-acp");
-    write_profile_files(&profile, &cccc_executable(temp.path())).expect("managed profile");
+    write_profile_files(&profile, &cccc_executable(temp.path()), cccc_contracts::deepseek::DEEPSEEK_DEFAULT_MODEL).expect("managed profile");
     fs::write(profile.join("cordis.patch.yml"), "- insert: []\n").expect("legacy patch");
 
     let installs = std::cell::Cell::new(0_u32);

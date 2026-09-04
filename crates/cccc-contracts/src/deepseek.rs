@@ -21,3 +21,27 @@ pub const DEEPSEEK_ACP_SDK_VERSION: &str = "0.25.1";
 pub const DEEPSEEK_TURN_TIMEOUT_SECONDS: u64 = 300;
 /// Output budget that preserves room for prompt and MCP tool context.
 pub const DEEPSEEK_MAX_OUTPUT_TOKENS: u64 = 65536;
+
+/// Model the managed ACP profile is generated with when nothing overrides it.
+pub const DEEPSEEK_DEFAULT_MODEL: &str = "deepseek-v4-flash";
+
+/// Model for the managed ACP profile: `CCCC_DEEPSEEK_MODEL` from the launch
+/// environment (actor env included) when it names a DeepSeek model, else the
+/// default. Only the model line of the canonical profile is affected.
+pub fn deepseek_model(env: &std::collections::BTreeMap<String, String>) -> String {
+    match env
+        .get("CCCC_DEEPSEEK_MODEL")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        Some(model)
+            if model.starts_with("deepseek-")
+                && model
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.') =>
+        {
+            model.to_owned()
+        }
+        _ => DEEPSEEK_DEFAULT_MODEL.to_owned(),
+    }
+}
