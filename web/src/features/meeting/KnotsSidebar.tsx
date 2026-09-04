@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { Actor } from "../../types";
 import { classNames } from "../../utils/classNames";
 import { HumanRulingForm } from "./HumanRuling";
+import { VoteDetails } from "./VoteDetails";
 import { HarnessTab, MeetingsTab, ModeBadge } from "./MeetingPanel";
 import { useMeetingStore, type SidebarTab } from "./meetingStore";
 
@@ -137,7 +138,7 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
                     {cast}/{total}
                   </span>
                 </div>
-                <div className="mt-0.5 line-clamp-2 text-[11px] text-[var(--color-text-secondary)]">{vote.summary}</div>
+                <VoteDetails vote={vote} meeting={meeting} isDark={isDark} />
                 {vote.status === "open" ? (
                   <div className={classNames("mt-1.5 h-1.5 overflow-hidden rounded-full", isDark ? "bg-white/8" : "bg-black/8")}>
                     <span

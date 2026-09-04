@@ -665,5 +665,9 @@
   "sidebarPending": "要対応",
   "sidebarClose": "サイドバーを閉じる",
   "sidebarNoLog": "まだ記録はありません",
-  "liveWorking": "作業中"
+  "liveWorking": "作業中",
+  "detailsMore": "全文を表示",
+  "detailsLess": "折りたたむ",
+  "detailsHide": "{{what}}を閉じる",
+  "meetingBriefLabel": "会議の背景"
 }

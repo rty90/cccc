@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { classNames } from "../../utils/classNames";
 import { HumanRulingForm } from "./HumanRuling";
+import { VoteDetails } from "./VoteDetails";
 import { MeetingCard, ModeBadge, ROLE_TONE } from "./MeetingPanel";
 import { useMeetingStore, voteCounts, type Meeting, type Notice, type NoticeKind, type Vote } from "./meetingStore";
 
@@ -163,7 +164,7 @@ function Toast({
           ) : null}
           {notice.kind === "vote_opened" && vote ? (
             <>
-              <div className="mt-1 line-clamp-3 text-[12px] text-[var(--color-text-secondary)]">{vote.summary}</div>
+              <VoteDetails vote={vote} meeting={meeting} isDark={isDark} />
               <div className={classNames("mt-1.5 h-1.5 overflow-hidden rounded-full", isDark ? "bg-white/8" : "bg-black/8")}>
                 <span
                   className="block h-full origin-left rounded-full bg-violet-500 transition-transform duration-200"
@@ -174,7 +175,7 @@ function Toast({
           ) : null}
           {(notice.kind === "vote_closed" || notice.kind === "needs_human") && vote ? (
             <>
-              <div className="mt-1 line-clamp-2 text-[12px] text-[var(--color-text-secondary)]">{vote.summary}</div>
+              <VoteDetails vote={vote} meeting={meeting} isDark={isDark} />
               <TallyBars vote={vote} total={total} isDark={isDark} />
               {notice.kind === "needs_human" && !vote.human ? (
                 <div className="mt-2">

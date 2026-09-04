@@ -665,5 +665,9 @@
   "sidebarPending": "Needs you",
   "sidebarClose": "Close sidebar",
   "sidebarNoLog": "Nothing logged yet",
-  "liveWorking": "Working"
+  "liveWorking": "Working",
+  "detailsMore": "Show all",
+  "detailsLess": "Collapse",
+  "detailsHide": "Hide {{what}}",
+  "meetingBriefLabel": "Background"
 }

@@ -665,5 +665,9 @@
   "sidebarPending": "待你处理",
   "sidebarClose": "关闭侧栏",
   "sidebarNoLog": "还没有记录",
-  "liveWorking": "正在工作"
+  "liveWorking": "正在工作",
+  "detailsMore": "展开全文",
+  "detailsLess": "收起",
+  "detailsHide": "收起{{what}}",
+  "meetingBriefLabel": "会议背景"
 }
