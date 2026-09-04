@@ -14,6 +14,8 @@ export type ActorAvatarProps = {
   sizeClassName?: string;
   textClassName?: string;
   className?: string;
+  /** Offline / disabled actor: greyed out. */
+  dimmed?: boolean;
 };
 
 export const ActorAvatar = memo(function ActorAvatar({
@@ -27,6 +29,7 @@ export const ActorAvatar = memo(function ActorAvatar({
   sizeClassName = "h-8 w-8",
   textClassName = "text-xs",
   className,
+  dimmed = false,
 }: ActorAvatarProps) {
   const previewSrc = useMemo(() => {
     if (isUser) return null;
@@ -81,6 +84,7 @@ export const ActorAvatar = memo(function ActorAvatar({
             ? "bg-[linear-gradient(135deg,var(--glass-tab-bg-hover)_0%,var(--glass-tab-bg-active)_100%)] text-[var(--color-text-secondary)] border border-[var(--glass-border-subtle)]"
             : "border border-gray-200 bg-white text-gray-700",
         !isUser && accentRingClassName ? `ring-1 ring-inset ${accentRingClassName}` : "",
+        dimmed ? "grayscale opacity-50" : "",
         className,
       )}
     >

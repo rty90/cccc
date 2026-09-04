@@ -305,6 +305,7 @@ function RuntimeDockActorButtonView({
           runtime={item.runtime}
           title={item.actorLabel}
           isDark={isDark}
+          dimmed={item.actor.enabled === false}
           sizeClassName={isSmallScreen ? "h-[33px] w-[33px]" : "h-[37px] w-[37px]"}
           className={classNames(
             "relative z-10 border-transparent shadow-[0_18px_34px_-22px_rgba(15,23,42,0.68)]",

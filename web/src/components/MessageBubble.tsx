@@ -726,6 +726,7 @@ export const MessageBubble = memo(
                     isUser={isUserMessage}
                     isDark={isDark}
                     accentRingClassName={senderAccent?.ring}
+                    dimmed={senderActor?.enabled === false}
                   />
                 </button>
               </ModelSwitchPopover>
@@ -737,6 +738,7 @@ export const MessageBubble = memo(
                 isUser={isUserMessage}
                 isDark={isDark}
                 accentRingClassName={senderAccent?.ring}
+                dimmed={senderActor?.enabled === false}
               />
             )}
           </div>

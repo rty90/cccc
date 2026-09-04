@@ -684,5 +684,9 @@
   "helpNotePlaceholder": "给发起人的说明（原文转达）",
   "helpGrant": "批准权限",
   "helpDeny": "拒绝",
-  "helpClose": "关闭工单"
+  "helpClose": "关闭工单",
+  "actorStatus_starting": "启动中…",
+  "actorStatus_online": "已上线",
+  "actorStatus_offline": "已下线",
+  "actorStatus_failed": "启动失败"
 }

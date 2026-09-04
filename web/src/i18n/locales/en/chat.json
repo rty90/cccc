@@ -684,5 +684,9 @@
   "helpNotePlaceholder": "Note to the requester (relayed verbatim)",
   "helpGrant": "Grant",
   "helpDeny": "Deny",
-  "helpClose": "Close ticket"
+  "helpClose": "Close ticket",
+  "actorStatus_starting": "starting…",
+  "actorStatus_online": "online",
+  "actorStatus_offline": "offline",
+  "actorStatus_failed": "failed to start"
 }

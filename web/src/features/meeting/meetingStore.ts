@@ -1,4 +1,6 @@
 import { create } from "zustand";
+import i18n from "../../i18n";
+import { normalizeLanguageCode } from "../../i18n/languages";
 
 /** Meetings, role tags, votes, decision modes and harness state managed by the Knots moderator (knots_moderator.py). */
 export type Ballot = {
@@ -104,6 +106,8 @@ export type Notice = { id: string; kind: NoticeKind; meetingId: string; voteId?:
 
 export type SidebarTab = "meetings" | "harness" | "log";
 
+export type ActorStatus = { status: "starting" | "online" | "offline" | "failed"; detail?: string; ts: string };
+
 type MeetingState = {
   connected: boolean;
   meetings: Meeting[];
@@ -111,6 +115,8 @@ type MeetingState = {
   harness: Harness | null;
   help: HelpTicket[];
   notices: Notice[];
+  language: string;
+  actorStatus: Record<string, ActorStatus>;
   ui: { sidebarOpen: boolean; tab: SidebarTab };
   connect: () => void;
   dismissNotice: (id: string) => void;
@@ -262,12 +268,20 @@ export const useMeetingStore = create<MeetingState>(() => ({
   harness: null,
   help: [],
   notices: [],
+  language: "",
+  actorStatus: {},
   ui: typeof window === "undefined" ? { sidebarOpen: false, tab: "meetings" } : loadSidebar(),
   connect: () => {
     if (started || typeof window === "undefined" || typeof EventSource === "undefined") return;
     started = true;
     const source = new EventSource(`${moderatorBaseUrl()}/api/events`);
-    source.onopen = () => useMeetingStore.setState({ connected: true });
+    source.onopen = () => {
+      useMeetingStore.setState({ connected: true });
+      void syncLanguage();
+    };
+    i18n.on("languageChanged", () => {
+      void syncLanguage();
+    });
     source.onerror = () => useMeetingStore.setState({ connected: false });
     source.onmessage = (message) => {
       let data: Record<string, unknown>;
@@ -287,8 +301,25 @@ export const useMeetingStore = create<MeetingState>(() => ({
         }));
         noticesFromSnapshot(meetings);
         const help = ((data.help as HelpTicket[] | undefined) || []).slice();
-        useMeetingStore.setState({ help });
+        useMeetingStore.setState({
+          help,
+          language: String(data.language || ""),
+          actorStatus: (data.actor_status as Record<string, ActorStatus> | undefined) || {},
+        });
+        void syncLanguage();
         for (const ticket of help) if (ticket.status !== "resolved") pushHelpNotice(ticket);
+      } else if (type === "language") {
+        useMeetingStore.setState({ language: String(data.language || "") });
+      } else if (type === "actor") {
+        const actor = String(data.actor || "");
+        if (actor) {
+          useMeetingStore.setState((state) => ({
+            actorStatus: {
+              ...state.actorStatus,
+              [actor]: { status: data.status as ActorStatus["status"], detail: String(data.detail || ""), ts: String(data.ts || new Date().toISOString()) },
+            },
+          }));
+        }
       } else if (type === "help") {
         const ticket = data.ticket as HelpTicket | undefined;
         if (ticket?.id) {
@@ -335,6 +366,22 @@ export const useMeetingStore = create<MeetingState>(() => ({
     }
   },
 }));
+
+/** Tell the moderator which language the UI shows, so the agents write their messages in it. */
+async function syncLanguage() {
+  const wanted = normalizeLanguageCode(i18n.language);
+  if (useMeetingStore.getState().language === wanted) return;
+  try {
+    await moderatorPost("/api/language", { language: wanted, by: "the human moderator" });
+    useMeetingStore.setState({ language: wanted });
+  } catch {
+    // moderator offline
+  }
+}
+
+export async function setActorEnabled(actorId: string, enabled: boolean): Promise<void> {
+  await moderatorPost(`/api/actors/${encodeURIComponent(actorId)}/${enabled ? "enable" : "disable"}`, {});
+}
 
 export async function moderatorPost<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${moderatorBaseUrl()}${path}`, {

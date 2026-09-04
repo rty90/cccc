@@ -4,6 +4,7 @@ import type { Actor } from "../../types";
 import { classNames } from "../../utils/classNames";
 import { TraceEventList } from "./ThinkingTrace";
 import { formatTraceDuration, useTraceStore } from "./traceStore";
+import { useMeetingStore } from "../meeting/meetingStore";
 
 function phaseLabel(phase: string, t: (key: string) => string): string {
   switch (phase) {
@@ -34,12 +35,19 @@ export function LiveThinking({ actors, isDark }: { actors: Actor[]; isDark: bool
     connect();
   }, [connect]);
   const working = Object.values(live).filter((entry) => entry && entry.working);
+  const actorStatus = useMeetingStore((state) => state.actorStatus);
+  const statusEntries = Object.entries(actorStatus).filter(([, entry]) => {
+    const age = now - Date.parse(entry.ts);
+    if (entry.status === "starting") return age < 10 * 60 * 1000;
+    if (entry.status === "failed") return age < 30 * 60 * 1000;
+    return age < 20 * 1000;
+  });
   useEffect(() => {
-    if (working.length === 0) return undefined;
+    if (working.length === 0 && statusEntries.length === 0) return undefined;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [working.length]);
-  if (working.length === 0) return null;
+  }, [working.length, statusEntries.length]);
+  if (working.length === 0 && statusEntries.length === 0) return null;
   const labelFor = (actorId: string): string => {
     const actor = actors.find((item) => item.id === actorId);
     const title = String(actor?.title || "").trim();
@@ -57,7 +65,28 @@ export function LiveThinking({ actors, isDark }: { actors: Actor[]; isDark: bool
         <span className="knots-breathe shrink-0 text-[13px] leading-none text-violet-500 dark:text-violet-300" aria-hidden="true">
           ✳
         </span>
-        <span className="shrink-0 opacity-60">{t("liveWorking")}</span>
+        {working.length > 0 ? <span className="shrink-0 opacity-60">{t("liveWorking")}</span> : null}
+        {statusEntries.map(([actor, entry]) => (
+          <span
+            key={`status-${actor}`}
+            title={entry.detail || ""}
+            className={classNames(
+              "inline-flex max-w-[280px] shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5",
+              entry.status === "failed"
+                ? "border-rose-500/40 bg-rose-500/10 text-rose-600 dark:text-rose-300"
+                : entry.status === "online"
+                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                  : entry.status === "starting"
+                    ? "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300"
+                    : "border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] text-[var(--color-text-tertiary)]",
+            )}
+          >
+            {entry.status === "starting" ? <span className="knots-breathe" aria-hidden="true">⟳</span> : null}
+            <span className="font-semibold">{labelFor(actor)}</span>
+            <span>{t(`actorStatus_${entry.status}`)}</span>
+            {entry.detail ? <span className="truncate opacity-70">{entry.detail}</span> : null}
+          </span>
+        ))}
         {working.map((entry) => {
           const startedAt = Date.parse(entry.started_at || entry.since || "");
           const elapsed = Number.isFinite(startedAt) ? Math.max(0, now - startedAt) : 0;
