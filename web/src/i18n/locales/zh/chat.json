@@ -689,5 +689,8 @@
   "actorStatus_online": "已上线",
   "actorStatus_offline": "已下线",
   "actorStatus_failed": "启动失败",
-  "actorStatus_handoff": "交接中…"
+  "actorStatus_handoff": "交接中…",
+  "knotsTokenLabel": "主持人令牌",
+  "knotsTokenHint": "裁决、开会、上下线这些操作只认人类。把 WSL 里 ~/.knots/moderator.token 的内容粘贴到这里，保存一次即可（只存在本浏览器）。",
+  "knotsTokenSave": "保存"
 }

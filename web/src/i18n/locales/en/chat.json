@@ -689,5 +689,8 @@
   "actorStatus_online": "online",
   "actorStatus_offline": "offline",
   "actorStatus_failed": "failed to start",
-  "actorStatus_handoff": "writing handoff…"
+  "actorStatus_handoff": "writing handoff…",
+  "knotsTokenLabel": "Moderator token",
+  "knotsTokenHint": "Rulings, meetings and actor control accept the human only. Paste the contents of ~/.knots/moderator.token (WSL) once; it stays in this browser.",
+  "knotsTokenSave": "Save"
 }

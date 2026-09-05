@@ -689,5 +689,8 @@
   "actorStatus_online": "オンライン",
   "actorStatus_offline": "オフライン",
   "actorStatus_failed": "起動失敗",
-  "actorStatus_handoff": "引き継ぎ作成中…"
+  "actorStatus_handoff": "引き継ぎ作成中…",
+  "knotsTokenLabel": "司会トークン",
+  "knotsTokenHint": "裁定・会議・アクター操作は人間のみ。WSL の ~/.knots/moderator.token の内容を一度貼り付けて保存してください（このブラウザにのみ保存）。",
+  "knotsTokenSave": "保存"
 }

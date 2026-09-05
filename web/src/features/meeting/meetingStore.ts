@@ -117,18 +117,30 @@ type MeetingState = {
   notices: Notice[];
   language: string;
   actorStatus: Record<string, ActorStatus>;
+  authRequired: boolean;
   ui: { sidebarOpen: boolean; tab: SidebarTab };
   connect: () => void;
   dismissNotice: (id: string) => void;
   fetchHarness: () => Promise<void>;
   setSidebar: (open: boolean, tab?: SidebarTab) => void;
+  setModeratorToken: (token: string) => void;
 };
 
 const MODERATOR_URL_STORAGE_KEY = "knots.moderatorUrl";
 const SEEN_STORAGE_KEY = "knots.popups.seen";
 const SIDEBAR_STORAGE_KEY = "knots.sidebar";
+const TOKEN_STORAGE_KEY = "knots.moderatorToken";
 const DEFAULT_MODERATOR_PORT = 18850;
 const FRESH_WINDOW_MS = 15 * 60 * 1000;
+
+/** The human token from ~/.knots/moderator.token, pasted once into the UI; never sent anywhere but the moderator. */
+export function moderatorToken(): string {
+  try {
+    return String(window.localStorage.getItem(TOKEN_STORAGE_KEY) || "").trim();
+  } catch {
+    return "";
+  }
+}
 
 export function moderatorBaseUrl(): string {
   try {
@@ -270,13 +282,16 @@ export const useMeetingStore = create<MeetingState>(() => ({
   notices: [],
   language: "",
   actorStatus: {},
+  authRequired: false,
   ui: typeof window === "undefined" ? { sidebarOpen: false, tab: "meetings" } : loadSidebar(),
   connect: () => {
     if (started || typeof window === "undefined" || typeof EventSource === "undefined") return;
     started = true;
-    const source = new EventSource(`${moderatorBaseUrl()}/api/events`);
+    const token = moderatorToken();
+    if (!token) useMeetingStore.setState({ authRequired: true });
+    const source = new EventSource(`${moderatorBaseUrl()}/api/events?token=${encodeURIComponent(token)}`);
     source.onopen = () => {
-      useMeetingStore.setState({ connected: true });
+      useMeetingStore.setState({ connected: true, authRequired: false });
       void syncLanguage();
     };
     i18n.on("languageChanged", () => {
@@ -345,6 +360,15 @@ export const useMeetingStore = create<MeetingState>(() => ({
   dismissNotice: (id: string) => {
     useMeetingStore.setState((state) => ({ notices: state.notices.filter((notice) => notice.id !== id) }));
   },
+  setModeratorToken: (token: string) => {
+    try {
+      window.localStorage.setItem(TOKEN_STORAGE_KEY, token.trim());
+    } catch {
+      // ignore
+    }
+    useMeetingStore.setState({ authRequired: !token.trim() });
+    window.setTimeout(() => window.location.reload(), 150);
+  },
   setSidebar: (open: boolean, tab?: SidebarTab) => {
     useMeetingStore.setState((state) => {
       const ui = { sidebarOpen: open, tab: tab || state.ui.tab };
@@ -358,8 +382,7 @@ export const useMeetingStore = create<MeetingState>(() => ({
   },
   fetchHarness: async () => {
     try {
-      const response = await fetch(`${moderatorBaseUrl()}/api/harness`);
-      const harness = (await response.json()) as Harness;
+      const harness = await moderatorGet<Harness>("/api/harness");
       useMeetingStore.setState({ harness });
     } catch {
       // moderator offline
@@ -383,12 +406,24 @@ export async function setActorEnabled(actorId: string, enabled: boolean): Promis
   await moderatorPost(`/api/actors/${encodeURIComponent(actorId)}/${enabled ? "enable" : "disable"}`, {});
 }
 
+export function moderatorHeaders(): Record<string, string> {
+  const token = moderatorToken();
+  return token ? { "Content-Type": "application/json", "X-Knots-Token": token } : { "Content-Type": "application/json" };
+}
+
 export async function moderatorPost<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${moderatorBaseUrl()}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: moderatorHeaders(),
     body: JSON.stringify(body ?? {}),
   });
+  if (response.status === 401) useMeetingStore.setState({ authRequired: true });
+  return (await response.json()) as T;
+}
+
+export async function moderatorGet<T>(path: string): Promise<T> {
+  const response = await fetch(`${moderatorBaseUrl()}${path}`, { headers: moderatorHeaders() });
+  if (response.status === 401) useMeetingStore.setState({ authRequired: true });
   return (await response.json()) as T;
 }
 

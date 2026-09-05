@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { classNames } from "../../utils/classNames";
 import { traceBaseUrl } from "./traceStore";
+import { moderatorHeaders } from "../meeting/meetingStore";
 
 type ModelOption = {
   id: string;
@@ -91,7 +92,7 @@ export function ModelSwitchPopover({
     try {
       const response = await fetch(`${traceBaseUrl()}/api/switch`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: moderatorHeaders(),
         body: JSON.stringify({ actor: actorId, model, effort }),
       });
       const result = (await response.json()) as SwitchResult;

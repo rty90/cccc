@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { Actor } from "../../types";
 import { classNames } from "../../utils/classNames";
@@ -77,6 +77,9 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
   const log = useMeetingStore((state) => state.log);
   const harness = useMeetingStore((state) => state.harness);
   const help = useMeetingStore((state) => state.help);
+  const authRequired = useMeetingStore((state) => state.authRequired);
+  const setModeratorToken = useMeetingStore((state) => state.setModeratorToken);
+  const [tokenDraft, setTokenDraft] = useState("");
 
   useEffect(() => {
     if (!open) return undefined;
@@ -128,6 +131,27 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
           </svg>
         </button>
       </div>
+      {authRequired ? (
+        <div className={classNames("space-y-1.5 border-b px-2 py-2", isDark ? "border-white/8" : "border-black/8")}>
+          <div className="text-[11px] font-semibold">{t("knotsTokenLabel")}</div>
+          <div className="text-[10px] text-[var(--color-text-tertiary)]">{t("knotsTokenHint")}</div>
+          <div className="flex items-center gap-1.5">
+            <input
+              type="password"
+              className={classNames("min-w-0 flex-1 rounded-xl border px-2.5 py-1.5 text-[12px] outline-none", isDark ? "border-white/10 bg-white/5 text-slate-100" : "border-black/10 bg-white text-gray-800")}
+              value={tokenDraft}
+              onChange={(event) => setTokenDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && tokenDraft.trim()) setModeratorToken(tokenDraft);
+              }}
+              placeholder="knots-…"
+            />
+            <button type="button" className="knots-press rounded-full bg-violet-600 px-3 py-1 text-[11px] font-semibold text-white disabled:opacity-50" disabled={!tokenDraft.trim()} onClick={() => setModeratorToken(tokenDraft)}>
+              {t("knotsTokenSave")}
+            </button>
+          </div>
+        </div>
+      ) : null}
       {pending.length > 0 || openHelp.length > 0 ? (
         <div className={classNames("max-h-[46%] shrink-0 space-y-2 overflow-y-auto border-b px-2 py-2", isDark ? "border-white/8" : "border-black/8")}>
           <div className="text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("sidebarPending")}</div>
