@@ -127,6 +127,43 @@ pub fn deepseek_bootstrap_preflight(env: &BTreeMap<String, String>) -> Result<()
     Ok(())
 }
 
+const DEEPSEEK_NODE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// `node --version`, bounded: a wedged Node (seen with a stalled NODE_OPTIONS resolver) must fail the preflight
+/// instead of hanging the actor start forever.
+fn bounded_node_version(mut command: Command) -> Option<String> {
+    let mut child = command
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut buf = String::new();
+        std::io::Read::read_to_string(&mut stdout, &mut buf).ok();
+        buf
+    });
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let out = reader.join().unwrap_or_default();
+                return status.success().then(|| out.trim().to_owned());
+            }
+            Ok(None) if started.elapsed() < DEEPSEEK_NODE_PROBE_TIMEOUT => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 fn deepseek_node_preflight(env: &BTreeMap<String, String>) -> Result<(), String> {
     let mut node_command = Command::new("node");
     for (key, value) in env {
@@ -134,13 +171,7 @@ fn deepseek_node_preflight(env: &BTreeMap<String, String>) -> Result<(), String>
             node_command.env(key, value);
         }
     }
-    let node = node_command
-        .arg("--version")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        .unwrap_or_default();
+    let node = bounded_node_version(node_command).unwrap_or_default();
     if !node_supported(&node) {
         return Err(format!(
             "DeepSeek Harness requires Node {DEEPSEEK_NODE_RANGE} (found {})",
@@ -236,11 +267,19 @@ pub fn is_canonical_deepseek_config(config: &str) -> bool {
 
 /// Same check, for the model the current launch environment asks for.
 pub fn is_canonical_deepseek_config_for(config: &str, model: &str, reasoning: &str) -> bool {
+    // Profiles written before the reasoning line existed stay canonical for the default level, so a
+    // restart does not rewrite them; a non-default level must be present in the file.
+    canonical_deepseek_config_matches(config, model, Some(reasoning))
+        || (reasoning == cccc_contracts::deepseek::DEEPSEEK_DEFAULT_REASONING
+            && canonical_deepseek_config_matches(config, model, None))
+}
+
+fn canonical_deepseek_config_matches(config: &str, model: &str, reasoning: Option<&str>) -> bool {
     let lines = config.lines().collect::<Vec<_>>();
     let max_tokens = format!("    maxTokens: {DEEPSEEK_MAX_OUTPUT_TOKENS}");
-    let reasoning_line = format!("    reasoningEffort: {reasoning}");
+    let reasoning_line = format!("    reasoningEffort: {}", reasoning.unwrap_or(""));
     let model_line = format!("    model: {model}");
-    let expected = [
+    let mut expected = vec![
         Some("- id: llm-deepseek"),
         Some("  name: '@deepseek-ai/dsh-llm-deepseek'"),
         Some("  config:"),
@@ -266,10 +305,13 @@ pub fn is_canonical_deepseek_config_for(config: &str, model: &str, reasoning: &s
         Some("      CCCC_ACTOR_ID: !!js process.env.CCCC_ACTOR_ID"),
         Some("    failOnStartupError: true"),
     ];
+    if reasoning.is_none() {
+        expected.retain(|line| *line != Some(reasoning_line.as_str()));
+    }
     if lines.len() != expected.len()
         || lines
             .iter()
-            .zip(expected)
+            .zip(expected.iter().copied())
             .any(|(actual, wanted)| wanted.is_some_and(|wanted| actual != &wanted))
     {
         return false;
