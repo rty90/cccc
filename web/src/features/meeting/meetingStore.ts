@@ -104,7 +104,10 @@ export type NoticeKind = "opened" | "vote_opened" | "vote_closed" | "needs_human
 /** Something the human should see now; rendered as a popup by MeetingPopups. */
 export type Notice = { id: string; kind: NoticeKind; meetingId: string; voteId?: string; helpId?: string; ts: number };
 
-export type SidebarTab = "meetings" | "projects" | "harness" | "log";
+export type SidebarTab = "overview" | "meetings" | "projects" | "harness" | "log";
+export type RailFocusKind = "meeting" | "vote" | "help" | "project" | "lesson" | "update";
+/** What the right rail shows in detail (a row the human clicked, or "view" on a post in the chat). */
+export type RailFocus = { kind: RailFocusKind; id: string };
 
 export type HarnessUpdate = {
   runtime: string;
@@ -186,11 +189,12 @@ type MeetingState = {
   actorStatus: Record<string, ActorStatus>;
   authRequired: boolean;
   updates: Record<string, HarnessUpdate>;
-  ui: { sidebarOpen: boolean; tab: SidebarTab };
+  ui: { sidebarOpen: boolean; tab: SidebarTab; focus: RailFocus | null };
   connect: () => void;
   dismissNotice: (id: string) => void;
   fetchHarness: () => Promise<void>;
-  setSidebar: (open: boolean, tab?: SidebarTab) => void;
+  setSidebar: (open: boolean, tab?: SidebarTab, focus?: RailFocus | null) => void;
+  setFocus: (focus: RailFocus | null) => void;
   setModeratorToken: (token: string) => void;
 };
 
@@ -326,17 +330,18 @@ function applyMeetingEvent(meeting: Meeting, event: string, voteId?: string) {
   }
 }
 
-function loadSidebar(): { sidebarOpen: boolean; tab: SidebarTab } {
+function loadSidebar(): { sidebarOpen: boolean; tab: SidebarTab; focus: RailFocus | null } {
+  // Only whether the rail is open survives a reload; it always reopens on the overview.
   try {
     const raw = window.localStorage.getItem(SIDEBAR_STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as { sidebarOpen?: boolean; tab?: SidebarTab };
-      return { sidebarOpen: !!parsed.sidebarOpen, tab: parsed.tab === "harness" || parsed.tab === "log" || parsed.tab === "projects" ? parsed.tab : "meetings" };
+      const parsed = JSON.parse(raw) as { sidebarOpen?: boolean };
+      return { sidebarOpen: !!parsed.sidebarOpen, tab: "overview", focus: null };
     }
   } catch {
     // storage may be unavailable
   }
-  return { sidebarOpen: false, tab: "meetings" };
+  return { sidebarOpen: false, tab: "overview", focus: null };
 }
 
 let started = false;
@@ -354,7 +359,7 @@ export const useMeetingStore = create<MeetingState>(() => ({
   actorStatus: {},
   authRequired: false,
   updates: {},
-  ui: typeof window === "undefined" ? { sidebarOpen: false, tab: "meetings" } : loadSidebar(),
+  ui: typeof window === "undefined" ? { sidebarOpen: false, tab: "overview", focus: null } : loadSidebar(),
   connect: () => {
     if (started || typeof window === "undefined" || typeof EventSource === "undefined") return;
     started = true;
@@ -476,16 +481,23 @@ export const useMeetingStore = create<MeetingState>(() => ({
     useMeetingStore.setState({ authRequired: !token.trim() });
     window.setTimeout(() => window.location.reload(), 150);
   },
-  setSidebar: (open: boolean, tab?: SidebarTab) => {
+  setSidebar: (open: boolean, tab?: SidebarTab, focus?: RailFocus | null) => {
     useMeetingStore.setState((state) => {
-      const ui = { sidebarOpen: open, tab: tab || state.ui.tab };
+      const ui = {
+        sidebarOpen: open,
+        tab: tab || state.ui.tab,
+        focus: focus !== undefined ? focus : tab ? null : state.ui.focus,
+      };
       try {
-        window.localStorage.setItem(SIDEBAR_STORAGE_KEY, JSON.stringify(ui));
+        window.localStorage.setItem(SIDEBAR_STORAGE_KEY, JSON.stringify({ sidebarOpen: open }));
       } catch {
         // ignore
       }
       return { ui };
     });
+  },
+  setFocus: (focus: RailFocus | null) => {
+    useMeetingStore.setState((state) => ({ ui: { ...state.ui, focus } }));
   },
   fetchHarness: async () => {
     try {

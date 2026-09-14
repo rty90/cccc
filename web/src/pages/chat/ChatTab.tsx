@@ -51,8 +51,8 @@ import { MobilePresentationTrigger } from "../../components/presentation/MobileP
 import { MobilePresentationSurface } from "../../components/presentation/MobilePresentationSurface";
 import { shouldShowMobilePresentationTrigger } from "../../components/presentation/mobilePresentationModel";
 import { LiveThinking } from "../../features/trace/LiveThinking";
-import { useMeetingStore } from "../../features/meeting/meetingStore";
-import { KnotsSidebar, KnotsSidebarToggle } from "../../features/meeting/KnotsSidebar";
+import { KnotsSidebar } from "../../features/meeting/KnotsSidebar";
+import { ChatToolbar } from "./ChatToolbar";
 import { MeetingPopups } from "../../features/meeting/MeetingPopups";
 
 const PresentationRail = lazy(() =>
@@ -200,7 +200,6 @@ export function ChatTab({
   setMentionTargetGroupId,
 }: ChatTabProps) {
   // Use the refactored hook for business logic
-  const knotsSidebarOpen = useMeetingStore((state) => state.ui.sidebarOpen);
   const {
     // Chat state
     chatMessages,
@@ -762,6 +761,22 @@ export function ChatTab({
         <div ref={splitLayoutRef} className="relative flex min-h-0 flex-1">
           {!isSmallScreen || mobileSurface === "messages" ? (
             <section className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+              {!isSmallScreen && !chatWindowProps ? (
+                <ChatToolbar
+                  isDark={isDark}
+                  groupId={selectedGroupId}
+                  runtimeActors={runtimeActors}
+                  liveWorkCards={liveWorkCards}
+                  actorStatusProvisional={selectedGroupActorStatusProvisional}
+                  readOnly={readOnly}
+                  onOpenRuntimeActor={onOpenRuntimeActor}
+                  onAddAgent={!readOnly ? addAgent : undefined}
+                  showFilters={showMessageFilters}
+                  chatFilter={chatFilter}
+                  onChangeFilter={setChatFilter}
+                  filterOptions={filterOptions}
+                />
+              ) : null}
               {showMobileFloatingControls && (
                 <div
                   className="pointer-events-none absolute inset-x-0 z-30 px-3"
@@ -822,54 +837,6 @@ export function ChatTab({
                   </div>
                 </div>
               )}
-
-              {showMessageFilters && (
-                <div
-                  className="hidden md:block absolute top-4 left-4 z-20 pointer-events-none"
-                  style={{ width: "calc(100% - 32px)" }}
-                >
-                  <div
-                    className={classNames(
-                      "inline-flex items-center gap-1 xl:gap-2 rounded-full border p-1 sm:p-1.5 shadow-xl pointer-events-auto backdrop-blur-xl transition-all duration-300",
-                      isDark
-                        ? "border-white/10 bg-slate-900/60 shadow-black/40 ring-1 ring-white/5"
-                        : "border-black/5 bg-white/70 shadow-gray-200/50 ring-1 ring-black/5",
-                    )}
-                    role="tablist"
-                    aria-label={t("chatFilters")}
-                  >
-                    {filterOptions.map(([key, label]) => {
-                      const active = chatFilter === key;
-                      return (
-                        <button
-                          key={key}
-                          type="button"
-                          className={classNames(
-                            "text-xs px-4 py-1.5 rounded-full transition-all font-medium",
-                            active
-                              ? isDark
-                                ? "border border-white/12 bg-white/[0.08] text-white shadow-sm"
-                                : "border border-black/10 bg-[rgb(245,245,245)] text-[rgb(35,36,37)] shadow-sm"
-                              : isDark
-                                ? "text-slate-400 hover:text-white hover:bg-white/[0.05]"
-                                : "text-gray-500 hover:text-[rgb(35,36,37)] hover:bg-black/[0.04]",
-                          )}
-                          onClick={() => setChatFilter(key)}
-                          aria-pressed={active}
-                        >
-                          {label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {!chatWindowProps && !knotsSidebarOpen ? (
-                <div className="pointer-events-none absolute right-[4.5rem] top-4 z-20 hidden md:block">
-                  <KnotsSidebarToggle isDark={isDark} />
-                </div>
-              ) : null}
 
               {isBusinessEmptyState && showSetupCard ? (
                 <div
@@ -956,7 +923,7 @@ export function ChatTab({
 
               {!chatWindowProps ? <MeetingPopups isDark={isDark} actors={actors} /> : null}
 
-              {!chatWindowProps && runtimeActors.length > 0 ? (
+              {isSmallScreen && !chatWindowProps && runtimeActors.length > 0 ? (
                 <div className="pointer-events-none absolute inset-x-0 bottom-1 z-20 sm:bottom-2">
                   <RuntimeDock
                     groupId={selectedGroupId}
@@ -976,7 +943,7 @@ export function ChatTab({
           ) : null}
 
           {!chatWindowProps && (!isSmallScreen || mobileSurface === "messages") ? (
-            <KnotsSidebar actors={actors} isDark={isDark} />
+            <KnotsSidebar actors={actors} isDark={isDark} taskById={taskById} />
           ) : null}
 
           {showDesktopSplitPresentation ? (

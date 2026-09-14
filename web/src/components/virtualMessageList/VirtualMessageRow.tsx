@@ -14,6 +14,7 @@ type VirtualMessageRowProps = {
   virtualRow: { key: React.Key; index: number; start: number };
   message: LedgerEvent;
   resolvedReplyQuoteText?: string;
+  resolvedReplyQuoteBy?: string;
   collapseHeader?: boolean;
   compactSpacing?: boolean;
   actorById: Map<string, Actor>;
@@ -43,6 +44,7 @@ export const VirtualMessageRow = memo(function VirtualMessageRow({
   virtualRow,
   message,
   resolvedReplyQuoteText,
+  resolvedReplyQuoteBy,
   collapseHeader,
   compactSpacing,
   measureElement,
@@ -74,6 +76,7 @@ export const VirtualMessageRow = memo(function VirtualMessageRow({
         {...messageBubbleProps}
         event={message}
         resolvedReplyQuoteText={resolvedReplyQuoteText}
+        resolvedReplyQuoteBy={resolvedReplyQuoteBy}
         collapseHeader={collapseHeader}
         isHighlighted={!!highlightEventId && String(message.id || "") === String(highlightEventId)}
         onReply={() => onReply(message)}

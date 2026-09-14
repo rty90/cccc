@@ -204,6 +204,17 @@ export function getReplyQuoteText(
   return replyTo ? String(messageTextById.get(replyTo) || "").trim() : "";
 }
 
+/** The author of the message a reply answers (by event id), for the one-line "replying to" header. */
+export function getReplyQuoteBy(
+  message: LedgerEvent | undefined,
+  messageSenderById: ReadonlyMap<string, string>,
+): string {
+  if (!message?.data || typeof message.data !== "object") return "";
+  const data = message.data as { reply_to?: unknown };
+  const replyTo = typeof data.reply_to === "string" ? data.reply_to.trim() : "";
+  return replyTo ? String(messageSenderById.get(replyTo) || "").trim() : "";
+}
+
 export function shouldUseVirtualizedMessageList(messageCount: number): boolean {
   return Math.max(0, Number(messageCount) || 0) >= VIRTUALIZATION_THRESHOLD;
 }

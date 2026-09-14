@@ -52,6 +52,9 @@ import { MessageBubbleSurface } from "./messageBubble/MessageBubbleSurface";
 import { buildMessageCopyText } from "./messageBubble/messageCopyText";
 import { MessageReferenceSections } from "./messageBubble/MessageReferenceSections";
 import { ThinkingTrace } from "../features/trace/ThinkingTrace";
+import { KnotsPostRow } from "../features/meeting/KnotsPostRow";
+import { parseKnotsPost } from "../features/meeting/knotsPosts";
+import { ReplyIcon } from "./Icons";
 import { ModelSwitchPopover } from "../features/trace/ModelSwitchPopover";
 
 const ANIMATED_MESSAGE_BUBBLE_KEYS = new Set<string>();
@@ -87,6 +90,65 @@ function shouldAnimateIncomingBubble(messageKey: string, eventTs?: string): bool
   return true;
 }
 
+/** One line of context above a reply: who is answered and the first line of what they said. */
+function ReplyLine({
+  quoteText,
+  replyToName,
+  canJump,
+  onJump,
+}: {
+  quoteText: string;
+  replyToName?: string;
+  canJump: boolean;
+  onJump: () => void;
+}) {
+  const { t } = useTranslation("chat");
+  const firstLine =
+    quoteText
+      .split("\n")
+      .map((line) => line.trim())
+      .find(Boolean) || quoteText;
+  const className = classNames(
+    "mb-2 flex w-full max-w-full items-center gap-1.5 text-left text-[12px] leading-5 text-[var(--color-text-secondary)]",
+    canJump
+      ? "cursor-pointer appearance-none bg-transparent hover:text-[var(--color-text-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(35,36,37)]/20 dark:focus-visible:ring-white/25"
+      : "",
+  );
+  const body = (
+    <>
+      <ReplyIcon size={12} className="shrink-0 opacity-60" aria-hidden="true" />
+      <span className="shrink-0 font-medium">
+        {replyToName ? t("replyToLine", { name: replyToName }) : t("quoteLine")}
+      </span>
+      <span className="shrink-0 opacity-50" aria-hidden="true">
+        ·
+      </span>
+      <span className="min-w-0 truncate">{firstLine}</span>
+    </>
+  );
+  if (!canJump) {
+    return (
+      <div className={className} title={quoteText}>
+        {body}
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className={className}
+      title={t("jumpToRepliedMessage")}
+      aria-label={t("jumpToRepliedMessage")}
+      onClick={(mouseEvent) => {
+        mouseEvent.stopPropagation();
+        onJump();
+      }}
+    >
+      {body}
+    </button>
+  );
+}
+
 function MessageBubbleBody({
   event,
   isUserMessage,
@@ -105,6 +167,7 @@ function MessageBubbleBody({
   relayChipClass,
   quoteText,
   replyToEventId,
+  replyToName,
   presentationRefs,
   voiceDocumentRefs,
   taskRefs,
@@ -138,6 +201,7 @@ function MessageBubbleBody({
   relayChipClass: string;
   quoteText?: string;
   replyToEventId?: string;
+  replyToName?: string;
   presentationRefs: PresentationMessageRef[];
   voiceDocumentRefs: VoiceDocumentMessageRef[];
   taskRefs: TaskMessageRef[];
@@ -163,10 +227,6 @@ function MessageBubbleBody({
 }) {
   const { t } = useTranslation("chat");
   const canJumpToReplyTarget = !!(replyToEventId && onOpenReplyTarget);
-  const quoteClassName = classNames(
-    "rounded-2xl border px-3 py-2 text-[12px] leading-5",
-    "border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] text-[var(--color-text-secondary)]",
-  );
   const metaChipClass = classNames(
     "inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium",
     "border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] text-[var(--color-text-secondary)]",
@@ -231,33 +291,12 @@ function MessageBubbleBody({
       {!isUserMessage && event.id ? <ThinkingTrace messageId={String(event.id)} /> : null}
 
       {quoteText ? (
-        canJumpToReplyTarget ? (
-          <button
-            type="button"
-            className={classNames(
-              quoteClassName,
-              "mb-3 block w-full cursor-pointer appearance-none bg-transparent text-left text-inherit transition-opacity hover:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(35,36,37)]/20 dark:focus-visible:ring-white/25",
-            )}
-            onClick={(mouseEvent) => {
-              mouseEvent.stopPropagation();
-              onOpenReplyTarget?.(String(replyToEventId || ""));
-            }}
-            title={t("jumpToRepliedMessage")}
-            aria-label={t("jumpToRepliedMessage")}
-          >
-            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.14em] opacity-55">
-              {t("reply")}
-            </span>
-            <span className="block">"{quoteText}"</span>
-          </button>
-        ) : (
-          <div className={classNames(quoteClassName, "mb-3")}>
-            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.14em] opacity-55">
-              {t("reply")}
-            </span>
-            <span className="block">"{quoteText}"</span>
-          </div>
-        )
+        <ReplyLine
+          quoteText={quoteText}
+          replyToName={replyToName}
+          canJump={canJumpToReplyTarget}
+          onJump={() => onOpenReplyTarget?.(String(replyToEventId || ""))}
+        />
       ) : null}
 
       <MessageReferenceSections
@@ -316,6 +355,7 @@ export interface MessageBubbleProps {
   isHighlighted?: boolean;
   collapseHeader?: boolean;
   resolvedReplyQuoteText?: string;
+  resolvedReplyQuoteBy?: string;
   onReply: () => void;
   onShowRecipients: () => void;
   onCopyLink?: (eventId: string) => void;
@@ -343,6 +383,7 @@ export const MessageBubble = memo(
     isHighlighted,
     collapseHeader,
     resolvedReplyQuoteText,
+    resolvedReplyQuoteBy,
     onReply,
     onShowRecipients,
     onCopyLink,
@@ -412,6 +453,12 @@ export const MessageBubble = memo(
       String(msgData?.quote_text || resolvedReplyQuoteText || "").trim() || undefined;
     const replyToEventId =
       typeof msgData?.reply_to === "string" ? String(msgData.reply_to || "").trim() : "";
+    const replyToName = useMemo(() => {
+      const by = String(resolvedReplyQuoteBy || "").trim();
+      if (!by) return "";
+      if (by === "user") return t("replyTargetYou");
+      return String(displayNameMap.get(by) || actorById.get(by)?.title || by);
+    }, [actorById, displayNameMap, resolvedReplyQuoteBy, t]);
     const senderSnapshotTitle =
       typeof msgData?.sender_title === "string" ? String(msgData.sender_title || "").trim() : "";
     const groupBridgeSourceName =
@@ -465,6 +512,13 @@ export const MessageBubble = memo(
       }
       return messageText;
     }, [blobAttachments, messageText, sourcePlatform]);
+    // The moderator's own posts (kickoffs, vote cards, decisions, notices) render as one compact row
+    // unless the reader asks for the full text.
+    const [showRawPost, setShowRawPost] = useState(false);
+    const knotsPost = useMemo(
+      () => parseKnotsPost(String(ev.by || ""), displayMessageText),
+      [displayMessageText, ev.by],
+    );
     const delegationSourceOutbound = useMemo(
       () => isDelegationSourceOutbound({ rawText: displayMessageText, srcGroupId, dstGroupId }),
       [displayMessageText, dstGroupId, srcGroupId],
@@ -668,6 +722,24 @@ export const MessageBubble = memo(
       }
     }, [copyWithFeedback, copyableMessageText, t]);
 
+    if (knotsPost && !showRawPost) {
+      return (
+        <div
+          className={classNames("relative flex w-full min-w-0", isOptimistic ? "opacity-95" : "")}
+          data-knots-post={knotsPost.kind}
+        >
+          <KnotsPostRow
+            post={knotsPost}
+            timestamp={messageTimestamp}
+            fullTimestamp={fullMessageTimestamp}
+            isDark={isDark}
+            isHighlighted={Boolean(isHighlighted)}
+            onShowRaw={() => setShowRawPost(true)}
+          />
+        </div>
+      );
+    }
+
     return (
       <div
         className={classNames(
@@ -770,6 +842,15 @@ export const MessageBubble = memo(
             isUserMessage ? "items-end" : "items-start",
           )}
         >
+          {knotsPost ? (
+            <button
+              type="button"
+              className="mb-1 text-[12px] text-[var(--color-text-tertiary)] underline-offset-2 hover:underline"
+              onClick={() => setShowRawPost(false)}
+            >
+              {t("knotsPostHideRaw")}
+            </button>
+          ) : null}
           {!collapseHeader ? (
             <>
               <MessageMetadataHeader
@@ -863,6 +944,7 @@ export const MessageBubble = memo(
                 relayChipClass={relayChipClass}
                 quoteText={quoteText}
                 replyToEventId={replyToEventId}
+                replyToName={replyToName}
                 presentationRefs={presentationRefs}
                 voiceDocumentRefs={voiceDocumentRefs}
                 taskRefs={taskRefs}
@@ -921,6 +1003,8 @@ export const MessageBubble = memo(
       prevProps.webModelDeliveryStatus === nextProps.webModelDeliveryStatus &&
       prevProps.isHighlighted === nextProps.isHighlighted &&
       prevProps.collapseHeader === nextProps.collapseHeader &&
+      prevProps.resolvedReplyQuoteText === nextProps.resolvedReplyQuoteText &&
+      prevProps.resolvedReplyQuoteBy === nextProps.resolvedReplyQuoteBy &&
       prevProps.onRelay === nextProps.onRelay &&
       prevProps.onOpenSource === nextProps.onOpenSource &&
       prevProps.onOpenPresentationRef === nextProps.onOpenPresentationRef &&
