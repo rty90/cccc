@@ -245,9 +245,13 @@ fn submit_text(group_id: &str, actor: &Actor, text: &str, cancelled: &AtomicBool
     if raw.is_empty() {
         return false;
     }
-    // A fresh TUI must have its input loop up before the first write, or it opens one conversation per input
-    // (seen with Antigravity). Waits at most 15 s, once per session; a cancelled or exited session aborts.
-    if !cccc_runtime::wait_for_input_ready(group_id, &actor.id, Duration::from_secs(15), cancelled).unwrap_or(true) {
+    // Prompt-assisted TUIs get the MCP-setup preamble typed before the first message; a fresh Antigravity opened one
+    // conversation per input when both arrived before its input loop existed. Wait (once per session, at most 15 s)
+    // until the terminal enables bracketed paste. Only for those runtimes: a plain shell or a test fixture never
+    // enables it and must not pay the wait.
+    if matches!(actor.runtime, ActorRuntime::Antigravity | ActorRuntime::Cursor | ActorRuntime::Kilo)
+        && !cccc_runtime::wait_for_input_ready(group_id, &actor.id, Duration::from_secs(15), cancelled).unwrap_or(true)
+    {
         return false;
     }
     let bracketed = raw.contains(['\r', '\n'])
