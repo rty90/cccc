@@ -21,10 +21,12 @@ type Bucket = {
   provider?: string;
 };
 type DayUsage = { actors: Record<string, Bucket>; models: Record<string, Bucket>; providers: Record<string, Bucket> };
+type Balance = { currency: string; total: number; spent_today?: number; ts: string };
 type MonitorUsage = {
   today: string;
   days: Record<string, DayUsage>;
   rate_limits: Record<string, Record<string, unknown>>;
+  balances?: Record<string, Balance>;
   actor_providers: Record<string, string>;
   notes: Record<string, string>;
 };
@@ -109,6 +111,7 @@ function UsagePanel() {
   const tiers = moderator?.tiers || {};
   const actorIds = Array.from(new Set([...Object.keys(day.actors || {}), ...Object.keys(turns)])).sort();
   const numeric = (b: Bucket) => [fmt(b.requests), fmt(b.input), fmt(b.cached), fmt(b.output), fmt(b.thinking)];
+  const balances = Object.entries(monitor?.balances || {});
   const notes = Object.entries(monitor?.notes || {}).filter(([provider]) => providers.some(([p]) => p === provider) || Object.values(monitor?.actor_providers || {}).includes(provider));
   return (
     <div className="space-y-4">
@@ -123,6 +126,19 @@ function UsagePanel() {
         <Section title={t("usageProviders")}>
           <Table head={[t("usageProviders"), t("usageRequests"), t("usageInput"), t("usageCached"), t("usageOutput"), t("usageThinking")]} rows={providers.map(([name, b]) => [name, ...numeric(b)])} />
         </Section>
+      ) : null}
+      {balances.length > 0 ? (
+        <div className="space-y-0.5 text-[13px] text-[var(--color-text-secondary)]">
+          {balances.map(([provider, b]) => (
+            <div key={provider}>
+              {t("usageBalance", {
+                provider,
+                amount: `${b.currency} ${Number(b.total || 0).toFixed(2)}`,
+                spent: `${b.currency} ${Number(b.spent_today || 0).toFixed(2)}`,
+              })}
+            </div>
+          ))}
+        </div>
       ) : null}
       {models.length > 0 ? (
         <Section title={t("usageModels")}>

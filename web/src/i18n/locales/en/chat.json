@@ -804,5 +804,6 @@
   "statusRunning": "running",
   "statusStopped": "stopped",
   "statusPhase": "phase",
-  "statusModel": "model"
+  "statusModel": "model",
+  "usageBalance": "{{provider}} balance {{amount}}, about {{spent}} spent today (balance delta; a top-up hides spend)"
 }

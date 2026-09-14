@@ -804,5 +804,6 @@
   "statusRunning": "稼働中",
   "statusStopped": "停止",
   "statusPhase": "状態",
-  "statusModel": "モデル"
+  "statusModel": "モデル",
+  "usageBalance": "{{provider}} 残高 {{amount}}、本日の消費 約 {{spent}}（残高差で算出、チャージ分は反映されません）"
 }
