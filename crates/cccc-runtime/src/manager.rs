@@ -233,6 +233,60 @@ fn write_locked(group_id: &str, actor_id: &str, data: &[u8]) -> Result<(), Runti
     with_session(group_id, actor_id, |session| session.write(data))
 }
 
+/// Wait, once per session, until the actor's terminal has enabled bracketed paste: the sign that its TUI
+/// input loop exists. Antigravity (agy) opened one conversation per input when the daemon's preamble and the
+/// first message both arrived in the seconds before that loop was up (two trajectories, two replies). Ported
+/// from upstream v0.4.38 (`wait_for_input_ready`) and applied to every PTY runtime here. A session that never
+/// enables bracketed paste waits `timeout` on its first delivery only; later deliveries pass straight through.
+/// Returns Ok(false) only when the session is gone or the wait was cancelled.
+pub fn wait_for_input_ready(
+    group_id: &str,
+    actor_id: &str,
+    timeout: Duration,
+    cancelled: &AtomicBool,
+) -> Result<bool, RuntimeError> {
+    let current = status(group_id, actor_id)?;
+    if !current.running {
+        return Ok(false);
+    }
+    let session_key = format!("{group_id}\u{0}{actor_id}\u{0}{}", current.started_at);
+    {
+        let mut waited = readiness_waited().lock().map_err(|_| RuntimeError::Poisoned)?;
+        if waited.contains(&session_key) {
+            return Ok(true);
+        }
+        waited.insert(session_key.clone());
+        if waited.len() > 512 {
+            waited.clear();
+            waited.insert(session_key);
+        }
+    }
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        if !status(group_id, actor_id)?.running {
+            return Ok(false);
+        }
+        if crate::bracketed_paste_enabled(group_id, actor_id).unwrap_or(false) {
+            return Ok(true);
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(true);
+        }
+        if !wait_interruptibly(remaining.min(Duration::from_millis(25)), cancelled) {
+            return Ok(false);
+        }
+    }
+}
+
+fn readiness_waited() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static WAITED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    WAITED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
 pub fn resize(group_id: &str, actor_id: &str, cols: u16, rows: u16) -> Result<(), RuntimeError> {
     with_session(group_id, actor_id, |session| session.resize(cols, rows))
 }

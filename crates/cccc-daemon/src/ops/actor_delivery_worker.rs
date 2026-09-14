@@ -245,6 +245,11 @@ fn submit_text(group_id: &str, actor: &Actor, text: &str, cancelled: &AtomicBool
     if raw.is_empty() {
         return false;
     }
+    // A fresh TUI must have its input loop up before the first write, or it opens one conversation per input
+    // (seen with Antigravity). Waits at most 15 s, once per session; a cancelled or exited session aborts.
+    if !cccc_runtime::wait_for_input_ready(group_id, &actor.id, Duration::from_secs(15), cancelled).unwrap_or(true) {
+        return false;
+    }
     let bracketed = raw.contains(['\r', '\n'])
         && cccc_runtime::bracketed_paste_enabled(group_id, &actor.id).unwrap_or(false);
     let payload = if bracketed {
