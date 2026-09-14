@@ -321,7 +321,7 @@ export function MessageFooter({
       </div>
 
       {!readOnly ? (
-        <div className="flex flex-wrap items-center justify-end gap-1">
+        <div className="flex flex-wrap items-center justify-end gap-1 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
           {copyableMessageText ? (
             <button
               type="button"

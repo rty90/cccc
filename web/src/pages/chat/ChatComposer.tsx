@@ -1081,6 +1081,9 @@ export function ChatComposer({
       {/* Integrated composer */}
       <div className="flex flex-col">
         <div className="relative flex min-w-0 flex-1 flex-col">
+          {/* Knots: routing is typed as @mentions in the text, so the chip row only appears once something
+              beyond the default recipient was chosen (a reply target, an explicit chip, a remote group). */}
+          {toTokens.some((token) => token !== "@foreman") || (Array.isArray(selectedRemoteGroupIds) && selectedRemoteGroupIds.length > 0) ? (
           <ComposerRecipientsRow
             isDark={isDark}
             isSmallScreen={isSmallScreen}
@@ -1095,6 +1098,7 @@ export function ChatComposer({
             onToggleRemoteGroup={onToggleRemoteGroup}
             onClearRecipients={onClearRecipients}
           />
+          ) : null}
 
           {/* Row 2 — Textarea */}
           <div className="relative min-w-0 flex-1">
@@ -1260,7 +1264,8 @@ export function ChatComposer({
                 <button
                   type="button"
                   className={classNames(
-                    "inline-flex h-11 w-11 items-center justify-center gap-0.5 rounded-lg px-0 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60 sm:h-9 sm:w-auto sm:gap-1.5 sm:px-2.5",
+                    "inline-flex h-11 w-11 items-center justify-center gap-0.5 rounded-lg border px-0 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60 sm:h-9 sm:w-auto sm:gap-1.5 sm:px-2.5",
+                    isDark ? "border-white/10" : "border-black/10",
                     busy === "send" || !selectedGroupId
                       ? isDark
                         ? "text-[var(--color-text-tertiary)]"
@@ -1291,7 +1296,7 @@ export function ChatComposer({
                   ) : (
                     <SendIcon size={13} />
                   )}
-                  <span className="hidden sm:inline">{activeMode.label}</span>
+                  {effectiveMessageMode !== "send" ? <span className="hidden sm:inline">{activeMode.label}</span> : null}
                   <ChevronDownIcon size={12} className="opacity-70" />
                 </button>
 

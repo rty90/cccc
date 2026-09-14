@@ -24,10 +24,22 @@ function eventToneClass(kind: string): string {
 }
 
 export function TraceEventList({ events }: { events: TraceEvent[] }) {
+  const { t } = useTranslation("chat");
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const toggle = (key: string) => setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
   return (
     <ol className="mt-2 max-h-72 space-y-1 overflow-y-auto pr-1 text-[12px] leading-5">
-      {events.map((event, index) => (
-        <li key={`${event.ts}-${index}`} className="flex gap-2">
+      {events.map((event, index) => {
+        const key = `${event.ts}-${index}`;
+        const canExpand = typeof event.full === "string" && event.full.length > 0;
+        const isOpen = canExpand && !!expanded[key];
+        return (
+        <li
+          key={key}
+          className={classNames("flex gap-2", canExpand ? "cursor-pointer" : "")}
+          onClick={canExpand ? () => toggle(key) : undefined}
+          title={canExpand ? (isOpen ? t("traceCollapseFull") : t("traceShowFull")) : undefined}
+        >
           <span
             className={classNames("w-3 shrink-0 text-center font-semibold", eventToneClass(event.kind))}
             aria-hidden="true"
@@ -37,16 +49,18 @@ export function TraceEventList({ events }: { events: TraceEvent[] }) {
           <span
             className={classNames(
               "min-w-0 flex-1 break-words [overflow-wrap:anywhere]",
+              isOpen ? "whitespace-pre-wrap" : "",
               event.opaque ? "italic text-[var(--color-text-tertiary)]" : "text-[var(--color-text-secondary)]",
             )}
           >
-            {event.summary}
+            {isOpen ? event.full : event.summary}
           </span>
           <span className="shrink-0 text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
             {String(event.ts || "").slice(11, 19)}
           </span>
         </li>
-      ))}
+        );
+      })}
     </ol>
   );
 }

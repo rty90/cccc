@@ -80,7 +80,11 @@ pub fn deepseek_preflight(
     }
     let config = fs::read_to_string(profile.join("cordis.yml"))
         .map_err(|_| "deepseek cccc-acp profile config is missing")?;
-    if !is_canonical_deepseek_config_for(&config, &cccc_contracts::deepseek::deepseek_model(env)) {
+    if !is_canonical_deepseek_config_for(
+        &config,
+        &cccc_contracts::deepseek::deepseek_model(env),
+        &cccc_contracts::deepseek::deepseek_reasoning(env),
+    ) {
         return Err("deepseek cccc-acp profile config is invalid".to_owned());
     }
     Ok(())
@@ -223,19 +227,25 @@ fn deepseek_dependency_map() -> serde_json::Map<String, Value> {
 /// could accept initialize; the app composition is intentionally small and
 /// must not contain the headless CLI runner.
 pub fn is_canonical_deepseek_config(config: &str) -> bool {
-    is_canonical_deepseek_config_for(config, cccc_contracts::deepseek::DEEPSEEK_DEFAULT_MODEL)
+    is_canonical_deepseek_config_for(
+        config,
+        cccc_contracts::deepseek::DEEPSEEK_DEFAULT_MODEL,
+        cccc_contracts::deepseek::DEEPSEEK_DEFAULT_REASONING,
+    )
 }
 
 /// Same check, for the model the current launch environment asks for.
-pub fn is_canonical_deepseek_config_for(config: &str, model: &str) -> bool {
+pub fn is_canonical_deepseek_config_for(config: &str, model: &str, reasoning: &str) -> bool {
     let lines = config.lines().collect::<Vec<_>>();
     let max_tokens = format!("    maxTokens: {DEEPSEEK_MAX_OUTPUT_TOKENS}");
+    let reasoning_line = format!("    reasoningEffort: {reasoning}");
     let model_line = format!("    model: {model}");
     let expected = [
         Some("- id: llm-deepseek"),
         Some("  name: '@deepseek-ai/dsh-llm-deepseek'"),
         Some("  config:"),
         Some(max_tokens.as_str()),
+        Some(reasoning_line.as_str()),
         Some("- id: acp-demo"),
         Some("  name: '@deepseek-ai/dsh-acp-demo'"),
         Some("  config:"),

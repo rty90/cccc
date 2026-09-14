@@ -6,6 +6,8 @@ import { TraceEventList } from "./ThinkingTrace";
 import { formatTraceDuration, useTraceStore } from "./traceStore";
 import { useMeetingStore } from "../meeting/meetingStore";
 
+const MAX_WORKING_CHIPS = 3;
+
 function phaseLabel(phase: string, t: (key: string) => string): string {
   switch (phase) {
     case "received":
@@ -20,10 +22,9 @@ function phaseLabel(phase: string, t: (key: string) => string): string {
 }
 
 /**
- * One status line for the actors that are mid-turn: a breathing marker, then one chip per actor
- * (name, elapsed, phase). Clicking a chip unfolds that actor's steps so far below the line.
- * Replaces the earlier stack of one card per actor, which pushed the composer down and competed
- * with the runtime dock for the same band of the screen.
+ * One quiet status line for the actors that are mid-turn, plus the moderator's actor statuses
+ * (starting / handoff / failed) folded into one chip per status. Clicking a working chip unfolds
+ * that actor's steps so far. Nothing is rendered when the room is idle.
  */
 export function LiveThinking({ actors, isDark }: { actors: Actor[]; isDark: boolean }) {
   const { t } = useTranslation("chat");
@@ -38,7 +39,7 @@ export function LiveThinking({ actors, isDark }: { actors: Actor[]; isDark: bool
   const actorStatus = useMeetingStore((state) => state.actorStatus);
   const statusEntries = Object.entries(actorStatus).filter(([, entry]) => {
     const age = now - Date.parse(entry.ts);
-    if (entry.status === "starting" || entry.status === "handoff") return age < 10 * 60 * 1000;
+    if (entry.status === "starting" || entry.status === "handoff") return age < 3 * 60 * 1000;
     if (entry.status === "failed") return age < 30 * 60 * 1000;
     return age < 20 * 1000;
   });
@@ -53,41 +54,45 @@ export function LiveThinking({ actors, isDark }: { actors: Actor[]; isDark: bool
     const title = String(actor?.title || "").trim();
     return title || actorId;
   };
+  // One chip per status ("codex-1, claude-1 +2 · handing off"), names and details in the tooltip.
+  const grouped = new Map<string, { names: string[]; details: string[] }>();
+  for (const [actor, entry] of statusEntries) {
+    const group = grouped.get(entry.status) || { names: [], details: [] };
+    group.names.push(labelFor(actor));
+    if (entry.detail) group.details.push(`${labelFor(actor)}: ${entry.detail}`);
+    grouped.set(entry.status, group);
+  }
+  const shownWorking = working.slice(0, MAX_WORKING_CHIPS);
+  const hiddenWorking = working.length - shownWorking.length;
   const opened = openActor ? working.find((entry) => entry.actor === openActor) : undefined;
   return (
-    <div
-      className={classNames(
-        "rounded-2xl border px-2.5 py-1.5 text-[11px] shadow-sm backdrop-blur",
-        isDark ? "border-white/10 bg-slate-950/70 text-slate-200" : "border-black/8 bg-white/85 text-gray-700",
-      )}
-    >
-      <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide">
-        <span className="knots-breathe shrink-0 text-[13px] leading-none text-violet-500 dark:text-violet-300" aria-hidden="true">
+    <div className={classNames("rounded-xl px-2 py-1 text-[11px]", isDark ? "text-slate-300" : "text-gray-600")}>
+      <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide">
+        <span className="knots-breathe shrink-0 text-[12px] leading-none text-violet-500 dark:text-violet-300" aria-hidden="true">
           ✳
         </span>
-        {working.length > 0 ? <span className="shrink-0 opacity-60">{t("liveWorking")}</span> : null}
-        {statusEntries.map(([actor, entry]) => (
+        {Array.from(grouped.entries()).map(([status, group]) => (
           <span
-            key={`status-${actor}`}
-            title={entry.detail || ""}
+            key={`status-${status}`}
+            title={group.details.join("\n") || group.names.join(", ")}
             className={classNames(
-              "inline-flex max-w-[280px] shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5",
-              entry.status === "failed"
-                ? "border-rose-500/40 bg-rose-500/10 text-rose-600 dark:text-rose-300"
-                : entry.status === "online"
-                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                  : entry.status === "starting" || entry.status === "handoff"
-                    ? "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300"
-                    : "border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] text-[var(--color-text-tertiary)]",
+              "inline-flex max-w-[260px] shrink-0 items-center gap-1 rounded-full px-2 py-0.5",
+              status === "failed"
+                ? "bg-rose-500/10 text-rose-600 dark:text-rose-300"
+                : status === "online"
+                  ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                  : "bg-violet-500/10 text-violet-700 dark:text-violet-300",
             )}
           >
-            {entry.status === "starting" || entry.status === "handoff" ? <span className="knots-breathe" aria-hidden="true">⟳</span> : null}
-            <span className="font-semibold">{labelFor(actor)}</span>
-            <span>{t(`actorStatus_${entry.status}`)}</span>
-            {entry.detail ? <span className="truncate opacity-70">{entry.detail}</span> : null}
+            {status === "starting" || status === "handoff" ? <span className="knots-breathe" aria-hidden="true">⟳</span> : null}
+            <span className="truncate font-medium">
+              {group.names.slice(0, 2).join(", ")}
+              {group.names.length > 2 ? ` +${group.names.length - 2}` : ""}
+            </span>
+            <span className="opacity-70">{t(`actorStatus_${status}`)}</span>
           </span>
         ))}
-        {working.map((entry) => {
+        {shownWorking.map((entry) => {
           const startedAt = Date.parse(entry.started_at || entry.since || "");
           const elapsed = Number.isFinite(startedAt) ? Math.max(0, now - startedAt) : 0;
           const active = openActor === entry.actor;
@@ -98,24 +103,20 @@ export function LiveThinking({ actors, isDark }: { actors: Actor[]; isDark: bool
               aria-expanded={active}
               onClick={() => setOpenActor((current) => (current === entry.actor ? null : entry.actor))}
               className={classNames(
-                "knots-press inline-flex max-w-[260px] shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5",
-                active
-                  ? isDark
-                    ? "border-transparent bg-white/10"
-                    : "border-transparent bg-black/[0.06]"
-                  : "border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)]",
+                "knots-press inline-flex max-w-[240px] shrink-0 items-center gap-1 rounded-full px-2 py-0.5",
+                active ? (isDark ? "bg-white/10" : "bg-black/[0.06]") : "bg-[var(--glass-tab-bg)]",
               )}
             >
-              <span className="font-semibold">{labelFor(entry.actor)}</span>
-              <span className="tabular-nums opacity-70">{formatTraceDuration(elapsed)}</span>
-              <span className="truncate opacity-80">{phaseLabel(entry.phase, t)}</span>
-              {entry.steps.tool > 0 ? <span className="opacity-60">{t("traceToolCalls", { count: entry.steps.tool })}</span> : null}
+              <span className="font-medium">{labelFor(entry.actor)}</span>
+              <span className="tabular-nums opacity-60">{formatTraceDuration(elapsed)}</span>
+              <span className="truncate opacity-70">{phaseLabel(entry.phase, t)}</span>
             </button>
           );
         })}
+        {hiddenWorking > 0 ? <span className="shrink-0 opacity-60">+{hiddenWorking}</span> : null}
       </div>
       {opened ? (
-        <div className="mt-1.5 border-t border-[var(--glass-border-subtle)] pt-1.5">
+        <div className="mt-1 border-t border-[var(--glass-border-subtle)] pt-1">
           {opened.last ? <div className="truncate text-[var(--color-text-tertiary)]">{opened.last}</div> : null}
           <div className="max-h-40 overflow-y-auto">
             <TraceEventList events={opened.events} />

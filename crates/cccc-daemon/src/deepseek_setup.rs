@@ -53,6 +53,7 @@ fn ensure_with(
         .join("deepseek")
         .join(DEEPSEEK_RELEASE_VERSION);
     let model = cccc_contracts::deepseek::deepseek_model(env);
+    let reasoning = cccc_contracts::deepseek::deepseek_reasoning(env);
     env.insert(
         "CCCC_HOME".into(),
         home.root().to_string_lossy().into_owned(),
@@ -102,7 +103,8 @@ fn ensure_with(
             }
             true
         };
-        let (profile, profile_created) = ensure_profile(&dsh_home, cccc_executable, &model)?;
+        let (profile, profile_created) =
+            ensure_profile(&dsh_home, cccc_executable, &model, &reasoning)?;
         ready_preflight(&command, env).map_err(std::io::Error::other)?;
         Ok(DeepSeekSetupOutcome {
             dsh_home: dsh_home.clone(),
@@ -208,7 +210,12 @@ fn install_packages(dsh_home: &Path, env: &BTreeMap<String, String>) -> Result<(
     }
 }
 
-fn ensure_profile(dsh_home: &Path, executable: &Path, model: &str) -> std::io::Result<(PathBuf, bool)> {
+fn ensure_profile(
+    dsh_home: &Path,
+    executable: &Path,
+    model: &str,
+    reasoning: &str,
+) -> std::io::Result<(PathBuf, bool)> {
     let profile_root = dsh_home.join("profiles");
     let profile = profile_root.join("cccc-acp");
     if profile.exists() {
@@ -225,14 +232,14 @@ fn ensure_profile(dsh_home: &Path, executable: &Path, model: &str) -> std::io::R
                 "existing cccc-acp profile is not managed by CCCC",
             ));
         }
-        write_profile_files(&profile, executable, model)?;
+        write_profile_files(&profile, executable, model, reasoning)?;
         return Ok((profile, false));
     }
     fs::create_dir_all(&profile_root)?;
     let staging = profile_root.join(format!(".cccc-acp-{}", uuid::Uuid::new_v4().simple()));
     let result = (|| {
         fs::create_dir(&staging)?;
-        write_profile_files(&staging, executable, model)?;
+        write_profile_files(&staging, executable, model, reasoning)?;
         fs::rename(&staging, &profile)
     })();
     if result.is_err() {
@@ -242,7 +249,12 @@ fn ensure_profile(dsh_home: &Path, executable: &Path, model: &str) -> std::io::R
     Ok((profile, true))
 }
 
-fn write_profile_files(profile: &Path, executable: &Path, model: &str) -> std::io::Result<()> {
+fn write_profile_files(
+    profile: &Path,
+    executable: &Path,
+    model: &str,
+    reasoning: &str,
+) -> std::io::Result<()> {
     fs::create_dir_all(profile)?;
     cccc_core::fs::write_json(
         &profile.join("package.json"),
@@ -260,7 +272,7 @@ fn write_profile_files(profile: &Path, executable: &Path, model: &str) -> std::i
     // backslash is literal in this scalar style and must not be doubled.
     let cccc_path = executable.to_string_lossy().replace('\'', "''");
     let config = format!(
-        "- id: llm-deepseek\n  name: '@deepseek-ai/dsh-llm-deepseek'\n  config:\n    maxTokens: {DEEPSEEK_MAX_OUTPUT_TOKENS}\n- id: acp-demo\n  name: '@deepseek-ai/dsh-acp-demo'\n  config:\n    provider: deepseek-official\n    model: {model}\n    workspaceContext: false\n    persistenceRoot: !!js process.env.CCCC_DEEPSEEK_SESSION_ROOT\n- id: cccc-mcp\n  name: '@deepseek-ai/dsh-mcp-client'\n  config:\n    transport: stdio\n    serverName: cccc\n    command: '{cccc_path}'\n    args: [mcp]\n    env:\n      CCCC_HOME: !!js process.env.CCCC_HOME\n      CCCC_GROUP_ID: !!js process.env.CCCC_GROUP_ID\n      CCCC_ACTOR_ID: !!js process.env.CCCC_ACTOR_ID\n    failOnStartupError: true\n"
+        "- id: llm-deepseek\n  name: '@deepseek-ai/dsh-llm-deepseek'\n  config:\n    maxTokens: {DEEPSEEK_MAX_OUTPUT_TOKENS}\n    reasoningEffort: {reasoning}\n- id: acp-demo\n  name: '@deepseek-ai/dsh-acp-demo'\n  config:\n    provider: deepseek-official\n    model: {model}\n    workspaceContext: false\n    persistenceRoot: !!js process.env.CCCC_DEEPSEEK_SESSION_ROOT\n- id: cccc-mcp\n  name: '@deepseek-ai/dsh-mcp-client'\n  config:\n    transport: stdio\n    serverName: cccc\n    command: '{cccc_path}'\n    args: [mcp]\n    env:\n      CCCC_HOME: !!js process.env.CCCC_HOME\n      CCCC_GROUP_ID: !!js process.env.CCCC_GROUP_ID\n      CCCC_ACTOR_ID: !!js process.env.CCCC_ACTOR_ID\n    failOnStartupError: true\n"
     );
     cccc_core::fs::atomic_write(&profile.join("cordis.yml"), config.as_bytes())?;
     match fs::remove_file(profile.join("cordis.patch.yml")) {

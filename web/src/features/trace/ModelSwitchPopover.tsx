@@ -48,6 +48,7 @@ export function ModelSwitchPopover({
     onOpenChange?.(next);
   };
   const [presets, setPresets] = useState<Presets>({});
+  const [runtimeKey, setRuntimeKey] = useState(runtime); // trace source may know better (custom actor running qwen)
   const [currentModel, setCurrentModel] = useState("");
   const [currentEffort, setCurrentEffort] = useState("");
   const [model, setModel] = useState("");
@@ -62,12 +63,14 @@ export function ModelSwitchPopover({
     setLoadError("");
     fetch(`${traceBaseUrl()}/api/state`)
       .then((response) => response.json())
-      .then((data: { presets?: Presets; actors?: Record<string, { model?: string; effort?: string }> }) => {
+      .then((data: { presets?: Presets; actors?: Record<string, { model?: string; effort?: string; runtime?: string }> }) => {
         if (cancelled) return;
         const nextPresets = data.presets || {};
         setPresets(nextPresets);
         const actor = data.actors?.[actorId];
-        const runtimeModels = nextPresets[runtime]?.models || [];
+        const key = String(actor?.runtime || runtime);
+        setRuntimeKey(key);
+        const runtimeModels = nextPresets[key]?.models || [];
         const current = String(actor?.model || "").trim();
         setCurrentModel(current);
         setCurrentEffort(String(actor?.effort || "").trim());
@@ -82,9 +85,9 @@ export function ModelSwitchPopover({
     };
   }, [open, actorId, runtime]);
 
-  const models = useMemo(() => presets[runtime]?.models || [], [presets, runtime]);
+  const models = useMemo(() => presets[runtimeKey]?.models || [], [presets, runtimeKey]);
   const selected = models.find((item) => item.id === model);
-  const efforts = selected?.efforts?.length ? selected.efforts : presets[runtime]?.efforts || [];
+  const efforts = selected?.efforts?.length ? selected.efforts : presets[runtimeKey]?.efforts || [];
 
   const apply = async () => {
     setBusy(true);
@@ -131,7 +134,7 @@ export function ModelSwitchPopover({
           <div className="min-w-0">
             <div className="truncate text-[13px] font-semibold">{label}</div>
             <div className="truncate text-[11px] text-[var(--color-text-tertiary)]">
-              {runtime}
+              {runtimeKey}
               {currentModel ? ` · ${currentModel}` : ""}
               {currentEffort ? ` · ${currentEffort}` : ""}
             </div>

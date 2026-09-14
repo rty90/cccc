@@ -22,6 +22,23 @@ pub const DEEPSEEK_TURN_TIMEOUT_SECONDS: u64 = 300;
 /// Output budget that preserves room for prompt and MCP tool context.
 pub const DEEPSEEK_MAX_OUTPUT_TOKENS: u64 = 65536;
 
+/// Reasoning effort the managed ACP profile is generated with when nothing
+/// overrides it (the rc.6 LLM adapter's own default).
+pub const DEEPSEEK_DEFAULT_REASONING: &str = "high";
+
+/// Reasoning effort for the managed ACP profile: `CCCC_DEEPSEEK_REASONING`
+/// from the launch environment (actor env included) when it is one of the
+/// values the rc.6 adapter accepts (`off`, `high`, `max`), else the default.
+pub fn deepseek_reasoning(env: &std::collections::BTreeMap<String, String>) -> String {
+    match env
+        .get("CCCC_DEEPSEEK_REASONING")
+        .map(|value| value.trim().to_ascii_lowercase())
+    {
+        Some(effort) if effort == "off" || effort == "high" || effort == "max" => effort,
+        _ => DEEPSEEK_DEFAULT_REASONING.to_owned(),
+    }
+}
+
 /// Model the managed ACP profile is generated with when nothing overrides it.
 pub const DEEPSEEK_DEFAULT_MODEL: &str = "deepseek-v4-flash";
 

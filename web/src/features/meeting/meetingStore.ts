@@ -104,13 +104,80 @@ export type NoticeKind = "opened" | "vote_opened" | "vote_closed" | "needs_human
 /** Something the human should see now; rendered as a popup by MeetingPopups. */
 export type Notice = { id: string; kind: NoticeKind; meetingId: string; voteId?: string; helpId?: string; ts: number };
 
-export type SidebarTab = "meetings" | "harness" | "log";
+export type SidebarTab = "meetings" | "projects" | "harness" | "log";
+
+export type HarnessUpdate = {
+  runtime: string;
+  package: string;
+  current: string;
+  latest: string;
+  status: "idle" | "available" | "ignored" | "updating" | "done" | "failed" | string;
+  actors: string[];
+  log?: string;
+  checked_at?: string;
+};
 
 export type ActorStatus = { status: "starting" | "online" | "offline" | "failed" | "handoff"; detail?: string; ts: string };
+
+export type ProjectStatus = "proposing" | "revising" | "debating" | "reviewing" | "awaiting_human" | "adopted" | "rejected" | "stopped";
+export type ProjectPoints = { by: string; ts?: string; message_id?: string; points: string[] };
+export type ProjectReview = { by: string; ts?: string; message_id?: string; verdict: "accept" | "revise" | "reject"; reason?: string; check?: string };
+export type Project = {
+  id: string;
+  title: string;
+  brief?: string;
+  status: ProjectStatus;
+  phase_since?: string;
+  created_at: string;
+  closed_at?: string | null;
+  requested_by?: string;
+  roles: { proposer: string; blue: string[]; red: string[]; reviewers: string[] };
+  round: number;
+  proposal?: { by?: string; ts?: string; message_id?: string; text?: string; summary?: string; steps?: string[]; risks?: string[]; evidence?: string } | null;
+  pros: ProjectPoints[];
+  cons: ProjectPoints[];
+  reviews: ProjectReview[];
+  digest?: string;
+  suggestion?: string;
+  rulings?: { ts: string; verdict: string; note?: string; by?: string; round?: number }[];
+  tasks?: string[];
+  debate_missing?: string[];
+  review_missing?: string[];
+};
+
+export type Lesson = {
+  id: string;
+  principle: string;
+  why?: string;
+  apply?: string;
+  by: string;
+  message_id?: string;
+  created_at: string;
+  status: "candidate" | "kept" | "dropped";
+  ruled_at?: string | null;
+};
+
+function upsertLesson(list: Lesson[], item: Lesson): Lesson[] {
+  const index = list.findIndex((entry) => entry.id === item.id);
+  if (index < 0) return [...list, item];
+  const next = list.slice();
+  next[index] = item;
+  return next;
+}
+
+function upsertProject(list: Project[], item: Project): Project[] {
+  const index = list.findIndex((entry) => entry.id === item.id);
+  if (index < 0) return [...list, item];
+  const next = list.slice();
+  next[index] = item;
+  return next;
+}
 
 type MeetingState = {
   connected: boolean;
   meetings: Meeting[];
+  projects: Project[];
+  lessons: Lesson[];
   log: ModeratorLogEntry[];
   harness: Harness | null;
   help: HelpTicket[];
@@ -118,6 +185,7 @@ type MeetingState = {
   language: string;
   actorStatus: Record<string, ActorStatus>;
   authRequired: boolean;
+  updates: Record<string, HarnessUpdate>;
   ui: { sidebarOpen: boolean; tab: SidebarTab };
   connect: () => void;
   dismissNotice: (id: string) => void;
@@ -263,7 +331,7 @@ function loadSidebar(): { sidebarOpen: boolean; tab: SidebarTab } {
     const raw = window.localStorage.getItem(SIDEBAR_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as { sidebarOpen?: boolean; tab?: SidebarTab };
-      return { sidebarOpen: !!parsed.sidebarOpen, tab: parsed.tab === "harness" || parsed.tab === "log" ? parsed.tab : "meetings" };
+      return { sidebarOpen: !!parsed.sidebarOpen, tab: parsed.tab === "harness" || parsed.tab === "log" || parsed.tab === "projects" ? parsed.tab : "meetings" };
     }
   } catch {
     // storage may be unavailable
@@ -276,6 +344,8 @@ let started = false;
 export const useMeetingStore = create<MeetingState>(() => ({
   connected: false,
   meetings: [],
+  projects: [],
+  lessons: [],
   log: [],
   harness: null,
   help: [],
@@ -283,16 +353,41 @@ export const useMeetingStore = create<MeetingState>(() => ({
   language: "",
   actorStatus: {},
   authRequired: false,
+  updates: {},
   ui: typeof window === "undefined" ? { sidebarOpen: false, tab: "meetings" } : loadSidebar(),
   connect: () => {
     if (started || typeof window === "undefined" || typeof EventSource === "undefined") return;
     started = true;
     const token = moderatorToken();
-    if (!token) useMeetingStore.setState({ authRequired: true });
+    if (!token) {
+      // Same machine: the moderator hands the token to loopback browsers, so nobody has to paste it.
+      useMeetingStore.setState({ authRequired: true });
+      void fetch(`${moderatorBaseUrl()}/api/token`)
+        .then((response) => (response.ok ? response.json() : null))
+        .then((data: { token?: string } | null) => {
+          const fetched = String(data?.token || "").trim();
+          if (!fetched) return;
+          try {
+            window.localStorage.setItem(TOKEN_STORAGE_KEY, fetched);
+          } catch {
+            // ignore
+          }
+          useMeetingStore.setState({ authRequired: false, connected: false });
+          started = false; // let connect() run again, now with the token
+          useMeetingStore.getState().connect();
+        })
+        .catch(() => {
+          started = false;
+        });
+      return;
+    }
     const source = new EventSource(`${moderatorBaseUrl()}/api/events?token=${encodeURIComponent(token)}`);
     source.onopen = () => {
       useMeetingStore.setState({ connected: true, authRequired: false });
       void syncLanguage();
+      void moderatorGet<{ updates?: Record<string, HarnessUpdate> }>("/api/updates")
+        .then((data) => useMeetingStore.setState({ updates: data?.updates || {} }))
+        .catch(() => undefined);
     };
     i18n.on("languageChanged", () => {
       void syncLanguage();
@@ -316,13 +411,19 @@ export const useMeetingStore = create<MeetingState>(() => ({
         }));
         noticesFromSnapshot(meetings);
         const help = ((data.help as HelpTicket[] | undefined) || []).slice();
+        const projects = ((data.projects as Project[] | undefined) || []).slice();
+        const lessons = ((data.lessons as Lesson[] | undefined) || []).slice();
         useMeetingStore.setState({
           help,
+          projects,
+          lessons,
           language: String(data.language || ""),
           actorStatus: (data.actor_status as Record<string, ActorStatus> | undefined) || {},
         });
         void syncLanguage();
         for (const ticket of help) if (ticket.status !== "resolved") pushHelpNotice(ticket);
+      } else if (type === "updates") {
+        useMeetingStore.setState({ updates: (data.updates as Record<string, HarnessUpdate> | undefined) || {} });
       } else if (type === "language") {
         useMeetingStore.setState({ language: String(data.language || "") });
       } else if (type === "actor") {
@@ -342,6 +443,12 @@ export const useMeetingStore = create<MeetingState>(() => ({
           if (ticket.status === "resolved") dropNotices((notice) => notice.kind === "help" && notice.helpId === ticket.id);
           else pushHelpNotice(ticket);
         }
+      } else if (type === "lesson") {
+        const lesson = data.lesson as Lesson | undefined;
+        if (lesson?.id) useMeetingStore.setState((state) => ({ lessons: upsertLesson(state.lessons, lesson) }));
+      } else if (type === "project") {
+        const project = data.project as Project | undefined;
+        if (project?.id) useMeetingStore.setState((state) => ({ projects: upsertProject(state.projects, project) }));
       } else if (type === "meeting") {
         const meeting = data.meeting as Meeting | undefined;
         if (meeting?.id) {

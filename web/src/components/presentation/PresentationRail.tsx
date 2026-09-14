@@ -4,6 +4,7 @@ import type { GroupPresentation, PresentationSlot } from "../../types";
 import { BookmarkIcon, ChevronLeftIcon } from "../Icons";
 import { classNames } from "../../utils/classNames";
 import { ensurePresentation } from "../../utils/presentation";
+import { useMeetingStore } from "../../features/meeting/meetingStore";
 
 type PresentationRailProps = {
   mode: "dock" | "panel" | "split";
@@ -168,6 +169,7 @@ export function PresentationRail({
   onOpenSlot,
   onPinSlot,
 }: PresentationRailProps) {
+  const knotsSidebarOpen = useMeetingStore((state) => state.ui.sidebarOpen);
   const { t, i18n } = useTranslation("chat");
   const [hoveredSlotId, setHoveredSlotId] = useState("");
   const normalizedPresentation = useMemo(() => ensurePresentation(presentation), [presentation]);
@@ -460,7 +462,10 @@ export function PresentationRail({
 
   return (
     <div
-      className="pointer-events-none absolute right-4 top-4 z-30 flex flex-col items-end gap-2"
+      className={classNames(
+        "pointer-events-none absolute right-4 top-4 z-30 flex flex-col items-end gap-2",
+        knotsSidebarOpen ? "md:right-[396px]" : "", // keep clear of the docked Knots sidebar
+      )}
       aria-label={t("presentationTitle", { defaultValue: "Presentation" })}
     >
       <button

@@ -389,6 +389,7 @@ export function MeetingsTab({ actors, isDark }: { actors: Actor[]; isDark: boole
 
   return (
     <div className="flex flex-col gap-2">
+      <div className="text-[10px] text-[var(--color-text-tertiary)]">{t("meetingChatHint")}</div>
       {showForm ? (
         <div className="space-y-1.5">
           <input className={fieldClass(isDark)} placeholder={t("meetingTopicPlaceholder")} value={topic} onChange={(event) => setTopic(event.target.value)} />
@@ -434,11 +435,13 @@ export function MeetingsTab({ actors, isDark }: { actors: Actor[]; isDark: boole
           </div>
         </div>
       ) : (
-        <button type="button" className={buttonClass("primary")} onClick={() => setShowForm(true)}>
-          {t("meetingNew")}
-        </button>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] text-[var(--color-text-tertiary)]">{ordered.length === 0 ? t("meetingNone") : ""}</span>
+          <button type="button" className={buttonClass("ghost")} onClick={() => setShowForm(true)}>
+            + {t("meetingNew")}
+          </button>
+        </div>
       )}
-      {ordered.length === 0 ? <div className="text-[11px] text-[var(--color-text-tertiary)]">{t("meetingNone")}</div> : null}
       {ordered.map((meeting) => (
         <MeetingCard key={meeting.id} meeting={meeting} isDark={isDark} />
       ))}

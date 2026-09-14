@@ -127,7 +127,7 @@ export function MessageRows({
   }
 
   return (
-    <div ref={contentRef} className="w-full" style={{ marginTop: nonVirtualTopMargin }}>
+    <div ref={contentRef} className="w-full pb-24" style={{ marginTop: nonVirtualTopMargin }}>
       {messages.map((message, index) => {
         const grouping = getMessageRowGrouping(
           index > 0 ? messages[index - 1] : undefined,

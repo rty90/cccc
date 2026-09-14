@@ -51,6 +51,7 @@ import { MobilePresentationTrigger } from "../../components/presentation/MobileP
 import { MobilePresentationSurface } from "../../components/presentation/MobilePresentationSurface";
 import { shouldShowMobilePresentationTrigger } from "../../components/presentation/mobilePresentationModel";
 import { LiveThinking } from "../../features/trace/LiveThinking";
+import { useMeetingStore } from "../../features/meeting/meetingStore";
 import { KnotsSidebar, KnotsSidebarToggle } from "../../features/meeting/KnotsSidebar";
 import { MeetingPopups } from "../../features/meeting/MeetingPopups";
 
@@ -199,6 +200,7 @@ export function ChatTab({
   setMentionTargetGroupId,
 }: ChatTabProps) {
   // Use the refactored hook for business logic
+  const knotsSidebarOpen = useMeetingStore((state) => state.ui.sidebarOpen);
   const {
     // Chat state
     chatMessages,
@@ -863,8 +865,8 @@ export function ChatTab({
                 </div>
               )}
 
-              {!chatWindowProps ? (
-                <div className="pointer-events-none absolute right-4 top-4 z-20 hidden md:block">
+              {!chatWindowProps && !knotsSidebarOpen ? (
+                <div className="pointer-events-none absolute right-[4.5rem] top-4 z-20 hidden md:block">
                   <KnotsSidebarToggle isDark={isDark} />
                 </div>
               ) : null}

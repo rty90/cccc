@@ -54,6 +54,7 @@ import {
   buildComposerSendRoutingSnapshot,
   restoreFailedSendComposerState,
   shouldRestoreComposerAfterFailedSend,
+  resolveMentionRecipients,
 } from "./chat/chatComposerState";
 export * from "./chat/chatTabBasics";
 export * from "./chat/chatStreamingProjection";
@@ -539,7 +540,12 @@ export function useChatTab({
     const dstGroup = routingSnapshot.destGroupId;
     const isCrossGroup = routingSnapshot.isCrossGroup;
     const selectedRemoteGroupIdsSnapshot = selectedRemoteGroupIds.slice();
-    const toTextSnapshot = composerStateSnapshot.toText;
+    const mentionRoutedToText = resolveMentionRecipients({
+      text: composerStateSnapshot.composerText,
+      actors,
+      currentToText: composerStateSnapshot.toText,
+    });
+    const toTextSnapshot = mentionRoutedToText ?? composerStateSnapshot.toText;
     const localToTokensSnapshot = buildComposerSendRecipientTokens({
       toText: toTextSnapshot,
       isCrossGroup: false,

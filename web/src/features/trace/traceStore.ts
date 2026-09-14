@@ -9,6 +9,7 @@ export type TraceEvent = {
   ts: string;
   kind: string;
   summary: string;
+  full?: string; // complete text when the summary was shortened
   tool?: string;
   opaque?: boolean;
 };

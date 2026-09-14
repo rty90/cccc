@@ -152,6 +152,7 @@ const VirtualMessageListInner = function VirtualMessageListInner({
     initialOffset: Math.max(0, Number(initialScrollOffsetPx) || 0),
     overscan: VIRTUAL_OVERSCAN_ROWS,
     paddingStart: 72 + topInset,
+    paddingEnd: 96, // the runtime dock floats over the list bottom; keep the last message and its actions clear of it
   });
 
   // Let tanstack own row measurement via its built-in observer. Layering an

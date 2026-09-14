@@ -6,7 +6,9 @@ import { HumanRulingForm } from "./HumanRuling";
 import { VoteDetails } from "./VoteDetails";
 import { HelpTicketCard } from "./HelpTicketCard";
 import { HarnessTab, MeetingsTab, ModeBadge } from "./MeetingPanel";
-import { useMeetingStore, type SidebarTab } from "./meetingStore";
+import { ProjectCard, ProjectsTab } from "./ProjectsPanel";
+import { LessonCard } from "./LessonCard";
+import { moderatorPost, useMeetingStore, type SidebarTab } from "./meetingStore";
 
 /**
  * One docked column for everything the Knots moderator owns: meetings, the room protocol and
@@ -26,9 +28,13 @@ export function KnotsSidebarToggle({ isDark }: { isDark: boolean }) {
   }, [connect]);
   const active = meetings.filter((meeting) => meeting.status !== "closed").length;
   const help = useMeetingStore((state) => state.help);
+  const projects = useMeetingStore((state) => state.projects);
+  const lessons = useMeetingStore((state) => state.lessons);
   const pending =
     meetings.flatMap((meeting) => meeting.votes).filter((vote) => vote.status === "closed" && vote.awaiting_human && !vote.human).length +
-    help.filter((ticket) => ticket.status !== "resolved").length;
+    help.filter((ticket) => ticket.status !== "resolved").length +
+    projects.filter((project) => project.status === "awaiting_human").length +
+    lessons.filter((lesson) => lesson.status === "candidate").length;
   return (
     <button
       type="button"
@@ -74,10 +80,14 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
   const tab = useMeetingStore((state) => state.ui.tab);
   const setSidebar = useMeetingStore((state) => state.setSidebar);
   const meetings = useMeetingStore((state) => state.meetings);
+  const projects = useMeetingStore((state) => state.projects);
+  const lessons = useMeetingStore((state) => state.lessons);
   const log = useMeetingStore((state) => state.log);
   const harness = useMeetingStore((state) => state.harness);
   const help = useMeetingStore((state) => state.help);
   const authRequired = useMeetingStore((state) => state.authRequired);
+  const updates = useMeetingStore((state) => state.updates);
+  const pendingUpdates = Object.values(updates || {}).filter((u) => u.status === "available" || u.status === "updating" || u.status === "failed");
   const setModeratorToken = useMeetingStore((state) => state.setModeratorToken);
   const [tokenDraft, setTokenDraft] = useState("");
 
@@ -96,10 +106,14 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
     .flatMap((meeting) => meeting.votes.map((vote) => ({ meeting, vote })))
     .filter(({ vote }) => vote.status === "open" || (vote.status === "closed" && vote.awaiting_human && !vote.human));
   const openHelp = help.filter((ticket) => ticket.status !== "resolved");
+  const rulingProjects = projects.filter((project) => project.status === "awaiting_human");
+  const candidateLessons = lessons.filter((lesson) => lesson.status === "candidate");
   const actorIds = actors.map((actor) => String(actor.id || "")).filter(Boolean);
   const activeCount = meetings.filter((meeting) => meeting.status !== "closed").length;
+  const openProjects = projects.filter((project) => project.status !== "adopted" && project.status !== "rejected" && project.status !== "stopped").length;
   const tabs: Array<[SidebarTab, string]> = [
     ["meetings", `${t("sidebarTabMeetings")}${activeCount ? ` ${activeCount}` : ""}`],
+    ["projects", `${t("sidebarTabProjects")}${openProjects ? ` ${openProjects}` : ""}`],
     ["harness", `${t("sidebarTabHarness")} v${harness?.version ?? "?"}`],
     ["log", t("sidebarTabLog")],
   ];
@@ -132,31 +146,64 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
         </button>
       </div>
       {authRequired ? (
-        <div className={classNames("space-y-1.5 border-b px-2 py-2", isDark ? "border-white/8" : "border-black/8")}>
-          <div className="text-[11px] font-semibold">{t("knotsTokenLabel")}</div>
-          <div className="text-[10px] text-[var(--color-text-tertiary)]">{t("knotsTokenHint")}</div>
-          <div className="flex items-center gap-1.5">
-            <input
-              type="password"
-              className={classNames("min-w-0 flex-1 rounded-xl border px-2.5 py-1.5 text-[12px] outline-none", isDark ? "border-white/10 bg-white/5 text-slate-100" : "border-black/10 bg-white text-gray-800")}
-              value={tokenDraft}
-              onChange={(event) => setTokenDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && tokenDraft.trim()) setModeratorToken(tokenDraft);
-              }}
-              placeholder="knots-…"
-            />
-            <button type="button" className="knots-press rounded-full bg-violet-600 px-3 py-1 text-[11px] font-semibold text-white disabled:opacity-50" disabled={!tokenDraft.trim()} onClick={() => setModeratorToken(tokenDraft)}>
-              {t("knotsTokenSave")}
-            </button>
-          </div>
+        <div className={classNames("flex items-center gap-1.5 border-b px-2 py-1.5", isDark ? "border-white/8 bg-amber-500/8" : "border-black/8 bg-amber-50")} title={t("knotsTokenHint")}>
+          <span className="shrink-0 text-[11px] text-amber-600 dark:text-amber-300" aria-hidden="true">●</span>
+          <input
+            type="password"
+            className={classNames("min-w-0 flex-1 rounded-lg border px-2 py-1 text-[11px] outline-none", isDark ? "border-white/10 bg-white/5 text-slate-100" : "border-black/10 bg-white text-gray-800")}
+            value={tokenDraft}
+            onChange={(event) => setTokenDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && tokenDraft.trim()) setModeratorToken(tokenDraft);
+            }}
+            placeholder={t("knotsTokenLabel") + " · ~/.knots/moderator.token"}
+            aria-label={t("knotsTokenLabel")}
+          />
+          <button type="button" className="knots-press shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold text-violet-600 hover:bg-violet-500/10 disabled:opacity-40 dark:text-violet-300" disabled={!tokenDraft.trim()} onClick={() => setModeratorToken(tokenDraft)}>
+            {t("knotsTokenSave")}
+          </button>
         </div>
       ) : null}
-      {pending.length > 0 || openHelp.length > 0 ? (
+      {pendingUpdates.length > 0 ? (
+        <div className={classNames("space-y-1.5 border-b px-2 py-2", isDark ? "border-white/8" : "border-black/8")}>
+          {pendingUpdates.map((u) => (
+            <div key={u.runtime} className={classNames("rounded-xl border px-2.5 py-2 text-[11px]", isDark ? "border-sky-400/20 bg-sky-500/8" : "border-sky-200 bg-sky-50")}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold">{t("updateAvailable", { runtime: u.runtime, current: u.current, latest: u.latest })}</span>
+                <span className="text-[10px] text-[var(--color-text-tertiary)]">{(u.actors || []).join(", ")}</span>
+              </div>
+              {u.status === "updating" ? (
+                <div className="mt-1 text-[10px] text-[var(--color-text-tertiary)]">{t("updateWorking")} {u.log || ""}</div>
+              ) : u.status === "failed" ? (
+                <div className="mt-1 text-[10px] text-rose-500">{u.log || t("updateFailed")}</div>
+              ) : (
+                <div className="mt-1 text-[10px] text-[var(--color-text-tertiary)]">{t("updateHint")}</div>
+              )}
+              {u.status !== "updating" ? (
+                <div className="mt-1.5 flex items-center gap-1.5">
+                  <button type="button" className="knots-press rounded-full bg-violet-600 px-3 py-1 text-[11px] font-semibold text-white" onClick={() => void moderatorPost(`/api/updates/${u.runtime}/apply`, {})}>
+                    {t("updateApply")}
+                  </button>
+                  <button type="button" className="knots-press rounded-full px-3 py-1 text-[11px] font-semibold text-[var(--color-text-secondary)] hover:bg-black/5 dark:hover:bg-white/10" onClick={() => void moderatorPost(`/api/updates/${u.runtime}/ignore`, {})}>
+                    {t("updateIgnore")}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {pending.length > 0 || openHelp.length > 0 || rulingProjects.length > 0 || candidateLessons.length > 0 ? (
         <div className={classNames("max-h-[46%] shrink-0 space-y-2 overflow-y-auto border-b px-2 py-2", isDark ? "border-white/8" : "border-black/8")}>
           <div className="text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("sidebarPending")}</div>
           {openHelp.map((ticket) => (
             <HelpTicketCard key={ticket.id} ticket={ticket} actorIds={actorIds} isDark={isDark} />
+          ))}
+          {rulingProjects.map((project) => (
+            <ProjectCard key={project.id} project={project} isDark={isDark} />
+          ))}
+          {candidateLessons.map((lesson) => (
+            <LessonCard key={lesson.id} lesson={lesson} isDark={isDark} />
           ))}
           {pending.map(({ meeting, vote }) => {
             const cast = Object.keys(vote.ballots).length;
@@ -192,6 +239,7 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
       ) : null}
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {tab === "meetings" ? <MeetingsTab actors={actors} isDark={isDark} /> : null}
+        {tab === "projects" ? <ProjectsTab isDark={isDark} /> : null}
         {tab === "harness" ? <HarnessTab isDark={isDark} /> : null}
         {tab === "log" ? (
           log.length === 0 ? (

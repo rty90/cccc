@@ -138,3 +138,39 @@ export function buildComposerSendRecipientTokens({
     isCrossGroup ? crossGroupValidRecipientSet : validRecipientSet,
   );
 }
+
+/**
+ * "@Qwen 你好" routes the message to that actor without touching the recipient chip: an @token that
+ * names an actor id ("claude-1"), an id without its number ("deepseek"), or a title ("Qwen", "DeepSeek 2"
+ * without spaces) wins over the default @foreman chip. Recipients the user picked explicitly are kept.
+ */
+export function resolveMentionRecipients({
+  text,
+  actors,
+  currentToText,
+}: {
+  text: string;
+  actors: Array<{ id?: string; title?: string }>;
+  currentToText: string;
+}): string | null {
+  const current = String(currentToText || "")
+    .split(",")
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0 && t !== "@");
+  if (current.some((t) => t !== "@foreman")) return null;
+  const found: string[] = [];
+  const re = /(?:^|[\s,，、:：(（])@([\p{L}\p{N}_.-]+)/gu;
+  for (const match of String(text || "").matchAll(re)) {
+    const token = String(match[1] || "").toLowerCase();
+    if (!token) continue;
+    const hit = actors.find((a) => {
+      const id = String(a.id || "").trim().toLowerCase();
+      if (!id) return false;
+      const title = String(a.title || "").replace(/\s+/g, "").toLowerCase();
+      return id === token || id.replace(/-\d+$/, "") === token || (title.length > 0 && title === token);
+    });
+    const id = String(hit?.id || "").trim();
+    if (id && !found.includes(id)) found.push(id);
+  }
+  return found.length > 0 ? found.join(",") : null;
+}
