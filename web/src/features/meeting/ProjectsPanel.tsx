@@ -12,7 +12,7 @@ const CLOSED = new Set(["adopted", "rejected", "stopped"]);
 
 function fieldClass(isDark: boolean): string {
   return classNames(
-    "w-full rounded-lg border px-2 py-1 text-[12px] outline-none focus:ring-1 focus:ring-violet-500",
+    "w-full rounded-lg border px-2 py-1 text-[13px] outline-none focus:ring-1 focus:ring-violet-500",
     isDark ? "border-white/10 bg-white/5 text-slate-100 placeholder:text-slate-500" : "border-black/10 bg-white text-gray-800 placeholder:text-gray-400",
   );
 }
@@ -38,7 +38,7 @@ function statusClass(status: string): string {
 function Chip({ label, value }: { label: string; value: string }) {
   if (!value) return null;
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-black/[0.04] px-1.5 py-0.5 text-[10px] dark:bg-white/[0.06]">
+    <span className="inline-flex items-center gap-1 rounded-full bg-black/[0.04] px-1.5 py-0.5 text-[11px] dark:bg-white/[0.06]">
       <span className="opacity-60">{label}</span>
       <span className="font-medium">{value}</span>
     </span>
@@ -67,21 +67,25 @@ export function ProjectCard({ project, isDark }: { project: Project; isDark: boo
   const act = async (action: "adopt" | "revise" | "reject" | "stop") => {
     setBusy(true);
     setError("");
-    const result = await moderatorPost<{ ok: boolean; error?: string }>(`/api/projects/${encodeURIComponent(project.id)}/${action}`, { note });
-    setBusy(false);
+    let result: { ok: boolean; error?: string };
+    try {
+      result = await moderatorPost<{ ok: boolean; error?: string }>(`/api/projects/${encodeURIComponent(project.id)}/${action}`, { note });
+    } finally {
+      setBusy(false);
+    }
     if (!result.ok) setError(result.error || t("projectRuleFailed"));
     else setNote("");
   };
 
   return (
-    <div className={classNames("rounded-xl border p-2 text-[11px]", isDark ? "border-white/10 bg-white/[0.03]" : "border-black/8 bg-black/[0.02]")}>
+    <div className={classNames("rounded-xl border p-2 text-[12px]", isDark ? "border-white/10 bg-white/[0.03]" : "border-black/8 bg-black/[0.02]")}>
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="font-semibold">#{project.id}</span>
-        <span className={classNames("rounded-full px-1.5 py-0.5 text-[10px] font-medium", statusClass(project.status))}>{t(`projectStatus_${project.status}`)}</span>
-        {project.round > 1 ? <span className="text-[10px] text-[var(--color-text-tertiary)]">{t("projectRound", { n: project.round })}</span> : null}
-        <span className="ml-auto text-[10px] tabular-nums text-[var(--color-text-tertiary)]">{String(project.created_at || "").slice(11, 16)}</span>
+        <span className={classNames("rounded-full px-1.5 py-0.5 text-[11px] font-medium", statusClass(project.status))}>{t(`projectStatus_${project.status}`)}</span>
+        {project.round > 1 ? <span className="text-[11px] text-[var(--color-text-tertiary)]">{t("projectRound", { n: project.round })}</span> : null}
+        <span className="ml-auto text-[11px] tabular-nums text-[var(--color-text-tertiary)]">{String(project.created_at || "").slice(11, 16)}</span>
       </div>
-      <div className="mt-1 text-[12px] font-medium leading-snug">{project.title}</div>
+      <div className="mt-1 text-[13px] font-medium leading-snug">{project.title}</div>
       <div className="mt-1 flex flex-wrap gap-1">
         <Chip label={t("projectRoleProposer")} value={roles.proposer} />
         <Chip label={t("projectRoleBlue")} value={roles.blue.join(", ")} />
@@ -89,17 +93,17 @@ export function ProjectCard({ project, isDark }: { project: Project; isDark: boo
         <Chip label={t("projectRoleReviewers")} value={roles.reviewers.join(", ")} />
       </div>
 
-      {waiting.length > 0 ? <div className="mt-1.5 text-[10px] text-[var(--color-text-tertiary)]">{t("projectWaiting", { actors: waiting.join(", ") })}</div> : null}
+      {waiting.length > 0 ? <div className="mt-1.5 text-[11px] text-[var(--color-text-tertiary)]">{t("projectWaiting", { actors: waiting.join(", ") })}</div> : null}
 
       {proposal && (project.status === "awaiting_human" || closed || project.status === "reviewing") ? (
         <div className="mt-2 space-y-1.5">
           <div>
-            <div className="text-[10px] font-semibold uppercase tracking-[0.08em] opacity-50">{t("projectSummary")}</div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.08em] opacity-50">{t("projectSummary")}</div>
             <div className="leading-snug">{proposal.summary || "—"}</div>
           </div>
           {proposal.steps && proposal.steps.length > 0 ? (
             <div>
-              <div className="text-[10px] font-semibold uppercase tracking-[0.08em] opacity-50">{t("projectSteps")}</div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.08em] opacity-50">{t("projectSteps")}</div>
               <ol className="list-decimal space-y-0.5 pl-4">
                 {proposal.steps.map((step, index) => (
                   <li key={index}>{step}</li>
@@ -109,7 +113,7 @@ export function ProjectCard({ project, isDark }: { project: Project; isDark: boo
           ) : null}
           {project.pros.length > 0 ? (
             <div>
-              <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-emerald-600 opacity-80 dark:text-emerald-300">{t("projectPros")}</div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-emerald-600 opacity-80 dark:text-emerald-300">{t("projectPros")}</div>
               <ul className="space-y-0.5">
                 {project.pros.flatMap((entry) => entry.points.map((point, index) => (
                   <li key={`${entry.by}-${index}`} className="flex gap-1">
@@ -124,7 +128,7 @@ export function ProjectCard({ project, isDark }: { project: Project; isDark: boo
           ) : null}
           {project.cons.length > 0 ? (
             <div>
-              <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-rose-600 opacity-80 dark:text-rose-300">{t("projectCons")}</div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-rose-600 opacity-80 dark:text-rose-300">{t("projectCons")}</div>
               <ul className="space-y-0.5">
                 {project.cons.flatMap((entry) => entry.points.map((point, index) => (
                   <li key={`${entry.by}-${index}`} className="flex gap-1">
@@ -139,7 +143,7 @@ export function ProjectCard({ project, isDark }: { project: Project; isDark: boo
           ) : null}
           {project.reviews.length > 0 ? (
             <div>
-              <div className="text-[10px] font-semibold uppercase tracking-[0.08em] opacity-50">{t("projectReviews")}</div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.08em] opacity-50">{t("projectReviews")}</div>
               <ul className="space-y-0.5">
                 {project.reviews.map((review) => (
                   <li key={review.by}>
@@ -150,16 +154,16 @@ export function ProjectCard({ project, isDark }: { project: Project; isDark: boo
               </ul>
             </div>
           ) : null}
-          {missing.length > 0 ? <div className="text-[10px] text-amber-600 dark:text-amber-300">{t("projectMissing", { actors: missing.join(", ") })}</div> : null}
+          {missing.length > 0 ? <div className="text-[11px] text-amber-600 dark:text-amber-300">{t("projectMissing", { actors: missing.join(", ") })}</div> : null}
           {project.suggestion ? (
-            <div className="text-[10px] font-medium text-violet-700 dark:text-violet-300">{t("projectSuggestion", { verdict: t(`projectVerdict_${project.suggestion}`) })}</div>
+            <div className="text-[11px] font-medium text-violet-700 dark:text-violet-300">{t("projectSuggestion", { verdict: t(`projectVerdict_${project.suggestion}`) })}</div>
           ) : null}
           {proposal.text ? (
             <div>
-              <button type="button" className="knots-press text-[10px] text-[var(--color-text-tertiary)] underline-offset-2 hover:underline" onClick={() => setShowFull((v) => !v)}>
+              <button type="button" className="knots-press text-[11px] text-[var(--color-text-tertiary)] underline-offset-2 hover:underline" onClick={() => setShowFull((v) => !v)}>
                 {t("projectFullText")}
               </button>
-              {showFull ? <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-black/5 p-2 text-[10px] dark:bg-white/5">{proposal.text}</pre> : null}
+              {showFull ? <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-black/5 p-2 text-[11px] dark:bg-white/5">{proposal.text}</pre> : null}
             </div>
           ) : null}
         </div>
@@ -169,29 +173,29 @@ export function ProjectCard({ project, isDark }: { project: Project; isDark: boo
         <div className="mt-2 space-y-1.5">
           <textarea className={fieldClass(isDark)} rows={2} placeholder={t("projectNotePlaceholder")} value={note} onChange={(event) => setNote(event.target.value)} />
           <div className="flex flex-wrap gap-1.5">
-            <button type="button" disabled={busy} className="knots-press rounded-full bg-emerald-600 px-2.5 py-1 text-[11px] font-medium text-white disabled:opacity-50" onClick={() => void act("adopt")}>
+            <button type="button" disabled={busy} className="knots-press rounded-full bg-emerald-600 px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-50" onClick={() => void act("adopt")}>
               {t("projectAdopt")}
             </button>
-            <button type="button" disabled={busy || !note.trim()} className="knots-press rounded-full bg-amber-500 px-2.5 py-1 text-[11px] font-medium text-white disabled:opacity-50" onClick={() => void act("revise")}>
+            <button type="button" disabled={busy || !note.trim()} className="knots-press rounded-full bg-amber-500 px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-50" onClick={() => void act("revise")}>
               {t("projectRevise")}
             </button>
-            <button type="button" disabled={busy} className="knots-press rounded-full bg-rose-600 px-2.5 py-1 text-[11px] font-medium text-white disabled:opacity-50" onClick={() => void act("reject")}>
+            <button type="button" disabled={busy} className="knots-press rounded-full bg-rose-600 px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-50" onClick={() => void act("reject")}>
               {t("projectReject")}
             </button>
           </div>
         </div>
       ) : null}
       {project.status === "adopted" && project.tasks && project.tasks.length > 0 ? (
-        <div className="mt-1.5 text-[10px] text-[var(--color-text-tertiary)]">{t("projectTasks", { ids: project.tasks.join(", ") })}</div>
+        <div className="mt-1.5 text-[11px] text-[var(--color-text-tertiary)]">{t("projectTasks", { ids: project.tasks.join(", ") })}</div>
       ) : null}
       {!closed && project.status !== "awaiting_human" ? (
         <div className="mt-1.5">
-          <button type="button" disabled={busy} className="knots-press rounded-full border border-[var(--glass-border-subtle)] px-2 py-0.5 text-[10px] text-[var(--color-text-secondary)] disabled:opacity-50" onClick={() => void act("stop")}>
+          <button type="button" disabled={busy} className="knots-press rounded-full border border-[var(--glass-border-subtle)] px-2 py-0.5 text-[11px] text-[var(--color-text-secondary)] disabled:opacity-50" onClick={() => void act("stop")}>
             {t("projectStop")}
           </button>
         </div>
       ) : null}
-      {error ? <div className="mt-1 text-[10px] text-rose-500">{error}</div> : null}
+      {error ? <div className="mt-1 text-[11px] text-rose-500">{error}</div> : null}
     </div>
   );
 }
@@ -209,8 +213,12 @@ export function ProjectsTab({ isDark }: { isDark: boolean }) {
   const create = async () => {
     setBusy(true);
     setError("");
-    const result = await moderatorPost<{ ok: boolean; error?: string }>("/api/projects", { title, brief });
-    setBusy(false);
+    let result: { ok: boolean; error?: string };
+    try {
+      result = await moderatorPost<{ ok: boolean; error?: string }>("/api/projects", { title, brief });
+    } finally {
+      setBusy(false);
+    }
     if (!result.ok) {
       setError(result.error || t("projectCreateFailed"));
       return;
@@ -227,26 +235,26 @@ export function ProjectsTab({ isDark }: { isDark: boolean }) {
           <input className={fieldClass(isDark)} placeholder={t("projectTitlePlaceholder")} value={title} onChange={(event) => setTitle(event.target.value)} />
           <textarea className={fieldClass(isDark)} rows={4} placeholder={t("projectBriefPlaceholder")} value={brief} onChange={(event) => setBrief(event.target.value)} />
           <div className="flex items-center gap-1.5">
-            <button type="button" disabled={busy || !title.trim()} className="knots-press rounded-full bg-violet-600 px-3 py-1 text-[11px] font-medium text-white disabled:opacity-50" onClick={() => void create()}>
+            <button type="button" disabled={busy || !title.trim()} className="knots-press rounded-full bg-violet-600 px-3 py-1 text-[12px] font-medium text-white disabled:opacity-50" onClick={() => void create()}>
               {t("projectCreate")}
             </button>
-            <button type="button" className="knots-press rounded-full px-2 py-1 text-[11px] text-[var(--color-text-secondary)]" onClick={() => setShowForm(false)}>
+            <button type="button" className="knots-press rounded-full px-2 py-1 text-[12px] text-[var(--color-text-secondary)]" onClick={() => setShowForm(false)}>
               {t("common:cancel", { defaultValue: "Cancel" })}
             </button>
-            {error ? <span className="text-[10px] text-rose-500">{error}</span> : null}
+            {error ? <span className="text-[11px] text-rose-500">{error}</span> : null}
           </div>
         </div>
       ) : (
         <button
           type="button"
-          className={classNames("knots-press w-full rounded-xl border border-dashed px-2 py-1.5 text-[11px]", isDark ? "border-white/15 text-slate-300" : "border-black/15 text-gray-600")}
+          className={classNames("knots-press w-full rounded-xl border border-dashed px-2 py-1.5 text-[12px]", isDark ? "border-white/15 text-slate-300" : "border-black/15 text-gray-600")}
           onClick={() => setShowForm(true)}
         >
           + {t("projectNew")}
         </button>
       )}
-      <div className="text-[10px] text-[var(--color-text-tertiary)]">{t("projectChatHint")}</div>
-      {ordered.length === 0 ? <div className="text-[11px] text-[var(--color-text-tertiary)]">{t("projectNone")}</div> : null}
+      <div className="text-[11px] text-[var(--color-text-tertiary)]">{t("projectChatHint")}</div>
+      {ordered.length === 0 ? <div className="text-[12px] text-[var(--color-text-tertiary)]">{t("projectNone")}</div> : null}
       {ordered.map((project) => (
         <ProjectCard key={project.id} project={project} isDark={isDark} />
       ))}

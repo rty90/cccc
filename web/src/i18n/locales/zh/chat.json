@@ -748,5 +748,6 @@
   "lessonNotARule": "不是规则，留下后广播给全员",
   "lessonRuleFailed": "操作失败",
   "projectChatHint": "直接在聊天里说\"帮我做一个…\"也会立项；明确说\"不用项目\"就不会。",
-  "meetingChatHint": "直接在聊天里说\"开个会讨论…/大家觉得…怎么样\"也会发起会议；说\"我来定\"则由你裁决。"
+  "meetingChatHint": "直接在聊天里说\"开个会讨论…/大家觉得…怎么样\"也会发起会议；说\"我来定\"则由你裁决。",
+  "traceSpan": "记录跨度 {{duration}}"
 }

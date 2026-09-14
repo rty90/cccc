@@ -23,6 +23,7 @@ export type MessageTrace = {
   started_at: string;
   ended_at: string;
   duration_ms: number;
+  duration_kind?: "turn" | "span";
   steps: TraceSteps;
   events: TraceEvent[];
   to?: string[];

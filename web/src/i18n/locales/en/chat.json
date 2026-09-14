@@ -748,5 +748,6 @@
   "lessonNotARule": "not a rule; kept ones are announced to everyone",
   "lessonRuleFailed": "Ruling failed",
   "projectChatHint": "Saying \"build me a …\" in chat also opens a project; \"no project\" prevents it.",
-  "meetingChatHint": "Saying \"let's discuss …\" in chat also opens a meeting; add \"I'll decide\" for human mode."
+  "meetingChatHint": "Saying \"let's discuss …\" in chat also opens a meeting; add \"I'll decide\" for human mode.",
+  "traceSpan": "recorded span {{duration}}"
 }

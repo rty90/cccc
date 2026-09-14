@@ -464,7 +464,7 @@ export function PresentationRail({
     <div
       className={classNames(
         "pointer-events-none absolute right-4 top-4 z-30 flex flex-col items-end gap-2",
-        knotsSidebarOpen ? "md:right-[396px]" : "", // keep clear of the docked Knots sidebar
+        knotsSidebarOpen ? "xl:right-[376px]" : "", // keep clear of the docked Knots sidebar
       )}
       aria-label={t("presentationTitle", { defaultValue: "Presentation" })}
     >

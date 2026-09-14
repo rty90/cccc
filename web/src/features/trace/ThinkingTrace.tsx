@@ -97,7 +97,7 @@ export function ThinkingTrace({ messageId }: { messageId: string; isDark?: boole
         </span>
         <span>{t("traceThinking")}</span>
         <span className="opacity-55">·</span>
-        <span>{formatTraceDuration(trace.duration_ms)}</span>
+        <span>{trace.duration_kind === "span" ? t("traceSpan", { duration: formatTraceDuration(trace.duration_ms) }) : formatTraceDuration(trace.duration_ms)}</span>
         <span className="opacity-55">·</span>
         <span>{t("traceSteps", { count: steps })}</span>
         {trace.steps.tool > 0 ? (

@@ -291,7 +291,7 @@ function noticesFromSnapshot(meetings: Meeting[]) {
     if (isFresh(meeting.created_at)) pushNotice("opened", meeting);
     for (const vote of meeting.votes) {
       if (vote.status === "open") pushNotice("vote_opened", meeting, vote.id);
-      else if (vote.awaiting_human && !vote.human) pushNotice("needs_human", meeting, vote.id);
+      else if (voteNeedsRuling(vote, meeting)) pushNotice("needs_human", meeting, vote.id);
     }
   }
 }
@@ -307,7 +307,7 @@ function applyMeetingEvent(meeting: Meeting, event: string, voteId?: string) {
       break;
     case "vote_closed":
       dropNotices((notice) => notice.kind === "vote_opened" && notice.voteId === voteId);
-      if (vote?.awaiting_human && !vote.human) pushNotice("needs_human", meeting, voteId);
+      if (vote && voteNeedsRuling(vote, meeting)) pushNotice("needs_human", meeting, voteId);
       else if (voteId) pushNotice("vote_closed", meeting, voteId);
       break;
     case "human_decided":
@@ -518,20 +518,51 @@ export function moderatorHeaders(): Record<string, string> {
   return token ? { "Content-Type": "application/json", "X-Knots-Token": token } : { "Content-Type": "application/json" };
 }
 
+/** Never throws: a network failure or a non-JSON reply comes back as `{ ok: false, error }` so buttons recover. */
 export async function moderatorPost<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(`${moderatorBaseUrl()}${path}`, {
-    method: "POST",
-    headers: moderatorHeaders(),
-    body: JSON.stringify(body ?? {}),
-  });
-  if (response.status === 401) useMeetingStore.setState({ authRequired: true });
-  return (await response.json()) as T;
+  try {
+    const response = await fetch(`${moderatorBaseUrl()}${path}`, {
+      method: "POST",
+      headers: moderatorHeaders(),
+      body: JSON.stringify(body ?? {}),
+    });
+    if (response.status === 401) useMeetingStore.setState({ authRequired: true });
+    try {
+      return (await response.json()) as T;
+    } catch {
+      return { ok: false, error: `moderator replied ${response.status} without JSON` } as unknown as T;
+    }
+  } catch (error) {
+    useMeetingStore.setState({ connected: false });
+    return { ok: false, error: `network: ${error instanceof Error ? error.message : String(error)}` } as unknown as T;
+  }
 }
 
 export async function moderatorGet<T>(path: string): Promise<T> {
-  const response = await fetch(`${moderatorBaseUrl()}${path}`, { headers: moderatorHeaders() });
-  if (response.status === 401) useMeetingStore.setState({ authRequired: true });
-  return (await response.json()) as T;
+  try {
+    const response = await fetch(`${moderatorBaseUrl()}${path}`, { headers: moderatorHeaders() });
+    if (response.status === 401) useMeetingStore.setState({ authRequired: true });
+    try {
+      return (await response.json()) as T;
+    } catch {
+      return { ok: false, error: `moderator replied ${response.status} without JSON` } as unknown as T;
+    }
+  } catch (error) {
+    useMeetingStore.setState({ connected: false });
+    return { ok: false, error: `network: ${error instanceof Error ? error.message : String(error)}` } as unknown as T;
+  }
+}
+
+/**
+ * A vote needs the human's ruling only while its meeting is alive: a closed meeting, a superseded or stopped vote,
+ * or one already ruled is read-only. Shared by the cards, the pending strip, the badge and the notices.
+ */
+export function voteNeedsRuling(vote: Vote, meeting: Meeting): boolean {
+  if (vote.status !== "closed" || vote.human) return false;
+  if (meeting.status === "closed") return false;
+  const final = String(vote.result?.final || "");
+  if (final === "superseded" || final === "stopped") return false;
+  return Boolean(vote.awaiting_human) || (meeting.mode || "agents") === "human";
 }
 
 /** Live tally for a vote: the server result when closed, otherwise counted from the ballots seen so far. */

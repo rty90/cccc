@@ -396,7 +396,7 @@ export function RuntimeDock({
       <div className="mx-auto flex w-full max-w-[1400px] justify-center">
         <div
           className={classNames(
-            "group/runtime-dock pointer-events-auto relative flex justify-center",
+            "group/runtime-dock pointer-events-auto relative flex max-w-full justify-center overflow-x-auto scrollbar-hide",
             isSmallScreen ? "max-w-[calc(100vw-2.5rem)]" : "",
           )}
         >

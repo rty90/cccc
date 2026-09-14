@@ -8,21 +8,34 @@ export function LessonCard({ lesson, isDark }: { lesson: Lesson; isDark: boolean
   const { t } = useTranslation("chat");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [leaving, setLeaving] = useState(false);
   const act = async (action: "keep" | "drop") => {
     setBusy(true);
     setError("");
-    const result = await moderatorPost<{ ok: boolean; error?: string }>(`/api/lessons/${encodeURIComponent(lesson.id)}/${action}`, {});
-    setBusy(false);
+    let result: { ok: boolean; error?: string };
+    try {
+      result = await moderatorPost<{ ok: boolean; error?: string }>(`/api/lessons/${encodeURIComponent(lesson.id)}/${action}`, {});
+    } finally {
+      setBusy(false);
+    }
     if (!result.ok) setError(result.error || t("lessonRuleFailed"));
+    else setLeaving(true); // the store drops the card on the server's event; fade it out meanwhile
   };
   return (
-    <div className={classNames("rounded-xl border p-2 text-[11px]", isDark ? "border-violet-400/20 bg-violet-500/[0.06]" : "border-violet-500/20 bg-violet-500/[0.04]")}>
+    <div
+      className={classNames(
+        "rounded-xl border p-2 text-[12px] transition-[opacity,transform] duration-150 motion-reduce:transition-none",
+        leaving ? "-translate-y-1 opacity-0" : "",
+        isDark ? "border-violet-400/20 bg-violet-500/[0.06]" : "border-violet-500/20 bg-violet-500/[0.04]",
+      )}
+      style={{ transitionTimingFunction: "var(--knots-ease-out)" }}
+    >
       <div className="flex flex-wrap items-center gap-1.5">
-        <span className="rounded-full bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:text-violet-300">{t("lessonCandidate")}</span>
+        <span className="rounded-full bg-violet-500/15 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 dark:text-violet-300">{t("lessonCandidate")}</span>
         <span className="font-semibold">#{lesson.id}</span>
         <span className="text-[var(--color-text-tertiary)]">{lesson.by}</span>
       </div>
-      <div className="mt-1 text-[12px] font-medium leading-snug">{lesson.principle}</div>
+      <div className="mt-1 text-[13px] font-medium leading-snug">{lesson.principle}</div>
       {lesson.why ? (
         <div className="mt-1 text-[var(--color-text-secondary)]">
           <span className="opacity-60">{t("lessonWhy")} </span>
@@ -36,14 +49,14 @@ export function LessonCard({ lesson, isDark }: { lesson: Lesson; isDark: boolean
         </div>
       ) : null}
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-        <button type="button" disabled={busy} className="knots-press rounded-full bg-violet-600 px-2.5 py-1 text-[11px] font-medium text-white disabled:opacity-50" onClick={() => void act("keep")}>
+        <button type="button" disabled={busy} className="knots-press rounded-full bg-violet-600 px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-50" onClick={() => void act("keep")}>
           {t("lessonKeep")}
         </button>
-        <button type="button" disabled={busy} className="knots-press rounded-full border border-[var(--glass-border-subtle)] px-2.5 py-1 text-[11px] text-[var(--color-text-secondary)] disabled:opacity-50" onClick={() => void act("drop")}>
+        <button type="button" disabled={busy} className="knots-press rounded-full border border-[var(--glass-border-subtle)] px-2.5 py-1 text-[12px] text-[var(--color-text-secondary)] disabled:opacity-50" onClick={() => void act("drop")}>
           {t("lessonDrop")}
         </button>
-        <span className="text-[10px] text-[var(--color-text-tertiary)]">{t("lessonNotARule")}</span>
-        {error ? <span className="text-[10px] text-rose-500">{error}</span> : null}
+        <span className="text-[11px] text-[var(--color-text-tertiary)]">{t("lessonNotARule")}</span>
+        {error ? <span className="text-[11px] text-rose-500">{error}</span> : null}
       </div>
     </div>
   );

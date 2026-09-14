@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { Actor } from "../../types";
 import { classNames } from "../../utils/classNames";
 import { HumanRulingForm } from "./HumanRuling";
-import { moderatorPost, useMeetingStore, voteCounts, type Meeting, type MeetingMode, type Vote } from "./meetingStore";
+import { moderatorPost, useMeetingStore, voteCounts, type Meeting, type MeetingMode, type Vote, voteNeedsRuling } from "./meetingStore";
 
 export const ROLE_TONE: Record<string, string> = {
   proposer: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
@@ -16,14 +16,14 @@ export const ROLE_TONE: Record<string, string> = {
 
 function fieldClass(isDark: boolean): string {
   return classNames(
-    "w-full rounded-xl border px-2.5 py-1.5 text-[12px] outline-none",
+    "w-full rounded-xl border px-2.5 py-1.5 text-[13px] outline-none",
     isDark ? "border-white/10 bg-white/5 text-slate-100" : "border-black/10 bg-white text-gray-800",
   );
 }
 
 function buttonClass(tone: "primary" | "ghost" | "danger"): string {
   return classNames(
-    "knots-press rounded-full px-3 py-1 text-[11px] font-semibold disabled:opacity-50",
+    "knots-press rounded-full px-3 py-1 text-[12px] font-semibold disabled:opacity-50",
     tone === "primary"
       ? "bg-violet-600 text-white hover:opacity-90"
       : tone === "danger"
@@ -40,7 +40,7 @@ export function StatusPill({ status }: { status: Meeting["status"] | Vote["statu
       : status === "voting"
         ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
         : "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300";
-  return <span className={classNames("rounded-full px-2 py-0.5 text-[10px] font-semibold", tone)}>{t(`meetingStatus_${status}`)}</span>;
+  return <span className={classNames("rounded-full px-2 py-0.5 text-[11px] font-semibold", tone)}>{t(`meetingStatus_${status}`)}</span>;
 }
 
 export function ModeBadge({ mode }: { mode: MeetingMode }) {
@@ -48,7 +48,7 @@ export function ModeBadge({ mode }: { mode: MeetingMode }) {
   return (
     <span
       className={classNames(
-        "rounded-full px-2 py-0.5 text-[10px] font-semibold",
+        "rounded-full px-2 py-0.5 text-[11px] font-semibold",
         mode === "human" ? "bg-violet-500/15 text-violet-700 dark:text-violet-300" : "bg-sky-500/15 text-sky-700 dark:text-sky-300",
       )}
       title={t("meetingModeHint")}
@@ -65,17 +65,17 @@ function VoteCard({ vote, meeting, isDark }: { vote: Vote; meeting: Meeting; isD
   const counts = voteCounts(vote);
   const cast = Object.keys(vote.ballots).length;
   const humanMode = (meeting.mode || "agents") === "human";
-  const needsHuman = vote.status === "closed" && !vote.human && (vote.awaiting_human || humanMode);
+  const needsHuman = voteNeedsRuling(vote, meeting);
   return (
     <div className={classNames("rounded-xl border p-2", isDark ? "border-white/10 bg-white/[0.03]" : "border-black/8 bg-black/[0.02]")}>
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[11px] font-semibold">{t("voteCard")} #{vote.id}</span>
+        <span className="text-[12px] font-semibold">{t("voteCard")} #{vote.id}</span>
         <StatusPill status={vote.status} />
-        {humanMode ? <span className="text-[10px] text-violet-600 dark:text-violet-300">{t("voteAdvisory")}</span> : null}
+        {humanMode ? <span className="text-[11px] text-violet-600 dark:text-violet-300">{t("voteAdvisory")}</span> : null}
         {vote.source && vote.source !== "moderator" && vote.source !== "harness" ? (
-          <span className="text-[10px] text-[var(--color-text-tertiary)]">{t("voteRequestedBy", { by: vote.source })}</span>
+          <span className="text-[11px] text-[var(--color-text-tertiary)]">{t("voteRequestedBy", { by: vote.source })}</span>
         ) : null}
-        <span className="ml-auto text-[10px] text-[var(--color-text-tertiary)]">
+        <span className="ml-auto text-[11px] text-[var(--color-text-tertiary)]">
           {cast}/{total}
         </span>
         {vote.status === "open" ? (
@@ -84,14 +84,14 @@ function VoteCard({ vote, meeting, isDark }: { vote: Vote; meeting: Meeting; isD
           </button>
         ) : null}
       </div>
-      <div className="mt-1 whitespace-pre-wrap text-[12px] text-[var(--color-text-secondary)]">{vote.summary}</div>
+      <div className="mt-1 whitespace-pre-wrap text-[13px] text-[var(--color-text-secondary)]">{vote.summary}</div>
       <div className="mt-2 space-y-1">
         {vote.options.map((option) => {
           const value = counts[option] || 0;
           const ratio = total > 0 ? value / total : 0;
           const winner = (vote.human?.option || vote.result?.winner) === option;
           return (
-            <div key={option} className="flex items-center gap-2 text-[11px]">
+            <div key={option} className="flex items-center gap-2 text-[12px]">
               <span className={classNames("w-16 shrink-0 truncate", winner ? "font-semibold" : "")}>{option}</span>
               <span className={classNames("h-2 flex-1 overflow-hidden rounded-full", isDark ? "bg-white/8" : "bg-black/8")}>
                 <span
@@ -105,12 +105,12 @@ function VoteCard({ vote, meeting, isDark }: { vote: Vote; meeting: Meeting; isD
         })}
       </div>
       {vote.human ? (
-        <div className="mt-1.5 rounded-lg bg-violet-500/10 px-2 py-1 text-[11px]">
+        <div className="mt-1.5 rounded-lg bg-violet-500/10 px-2 py-1 text-[12px]">
           <span className="font-semibold">{t("voteHumanDecided", { option: vote.human.option })}</span>
           {vote.human.reason ? <span className="text-[var(--color-text-secondary)]"> — {vote.human.reason}</span> : null}
         </div>
       ) : vote.result ? (
-        <div className="mt-1 text-[11px] text-[var(--color-text-secondary)]">
+        <div className="mt-1 text-[12px] text-[var(--color-text-secondary)]">
           {needsHuman ? t("voteAwaitingHuman") : vote.result.tie ? t("voteTie") : vote.result.winner ? t("voteWinner", { option: vote.result.winner }) : ""}
         </div>
       ) : null}
@@ -119,7 +119,7 @@ function VoteCard({ vote, meeting, isDark }: { vote: Vote; meeting: Meeting; isD
           <HumanRulingForm vote={vote} meeting={meeting} isDark={isDark} />
         </div>
       ) : null}
-      <button type="button" className={classNames("mt-2 text-[11px] underline-offset-2 hover:underline", "text-[var(--color-text-tertiary)]")} onClick={() => setDetail((value) => !value)}>
+      <button type="button" className={classNames("mt-2 text-[12px] underline-offset-2 hover:underline", "text-[var(--color-text-tertiary)]")} onClick={() => setDetail((value) => !value)}>
         {detail ? t("voteHideBallots") : t("voteShowBallots")}
       </button>
       {detail ? (
@@ -127,10 +127,10 @@ function VoteCard({ vote, meeting, isDark }: { vote: Vote; meeting: Meeting; isD
           {meeting.participants.map((actor) => {
             const ballot = vote.ballots[actor];
             return (
-              <div key={actor} className={classNames("rounded-lg px-2 py-1 text-[11px]", isDark ? "bg-white/5" : "bg-black/[0.04]")}>
+              <div key={actor} className={classNames("rounded-lg px-2 py-1 text-[12px]", isDark ? "bg-white/5" : "bg-black/[0.04]")}>
                 <div className="flex items-center gap-2">
                   <span className="font-semibold">{actor}</span>
-                  <span className={classNames("rounded-full px-1.5 py-0.5 text-[10px]", ROLE_TONE[meeting.roles[actor]] || "")}>{meeting.roles[actor]}</span>
+                  <span className={classNames("rounded-full px-1.5 py-0.5 text-[11px]", ROLE_TONE[meeting.roles[actor]] || "")}>{meeting.roles[actor]}</span>
                   <span className="ml-auto">{ballot ? ballot.option : t("voteNoBallot")}</span>
                   {ballot?.confidence != null ? <span className="text-[var(--color-text-tertiary)]">{ballot.confidence}</span> : null}
                 </div>
@@ -185,35 +185,35 @@ export function MeetingCard({ meeting, isDark }: { meeting: Meeting; isDark: boo
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[12px] font-semibold">#{meeting.id}</span>
+            <span className="text-[13px] font-semibold">#{meeting.id}</span>
             {meeting.kind === "harness" ? (
-              <span className="rounded-full bg-fuchsia-500/15 px-2 py-0.5 text-[10px] font-semibold text-fuchsia-700 dark:text-fuchsia-300">{t("meetingKind_harness")}</span>
+              <span className="rounded-full bg-fuchsia-500/15 px-2 py-0.5 text-[11px] font-semibold text-fuchsia-700 dark:text-fuchsia-300">{t("meetingKind_harness")}</span>
             ) : null}
             <StatusPill status={meeting.status} />
             <ModeBadge mode={mode} />
-            <span className="text-[10px] text-[var(--color-text-tertiary)]">{String(meeting.created_at).slice(11, 16)}</span>
+            <span className="text-[11px] text-[var(--color-text-tertiary)]">{String(meeting.created_at).slice(11, 16)}</span>
           </div>
           <div className="mt-0.5 text-[13px] font-medium">{meeting.topic}</div>
-          {meeting.requested_by ? <div className="text-[10px] text-[var(--color-text-tertiary)]">{t("meetingRequestedBy", { by: meeting.requested_by })}</div> : null}
-          {lastEscalation ? <div className="mt-0.5 text-[10px] text-violet-600 dark:text-violet-300">{t("meetingEscalated", { reason: lastEscalation })}</div> : null}
+          {meeting.requested_by ? <div className="text-[11px] text-[var(--color-text-tertiary)]">{t("meetingRequestedBy", { by: meeting.requested_by })}</div> : null}
+          {lastEscalation ? <div className="mt-0.5 text-[11px] text-violet-600 dark:text-violet-300">{t("meetingEscalated", { reason: lastEscalation })}</div> : null}
         </div>
       </div>
       <div className="mt-2 flex flex-wrap gap-1">
         {meeting.participants.map((actor) => (
-          <span key={actor} className={classNames("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px]", ROLE_TONE[meeting.roles[actor]] || "bg-slate-500/15")}>
+          <span key={actor} className={classNames("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px]", ROLE_TONE[meeting.roles[actor]] || "bg-slate-500/15")}>
             <span className="font-semibold">{actor}</span>
             <span className="opacity-70">{meeting.roles[actor]}</span>
           </span>
         ))}
       </div>
       {meeting.kind === "harness" && meeting.brief ? (
-        <details className="mt-2 text-[11px]">
+        <details className="mt-2 text-[12px]">
           <summary className="cursor-pointer text-[var(--color-text-tertiary)]">{t("harnessProposalBodyLabel")}</summary>
-          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-black/5 p-2 text-[11px] dark:bg-white/5">{meeting.brief}</pre>
+          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-black/5 p-2 text-[12px] dark:bg-white/5">{meeting.brief}</pre>
         </details>
       ) : null}
       {meeting.messages && meeting.messages.length > 0 ? (
-        <div className="mt-1 text-[10px] text-[var(--color-text-tertiary)]">{t("meetingMessages", { count: meeting.messages.length })}</div>
+        <div className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">{t("meetingMessages", { count: meeting.messages.length })}</div>
       ) : null}
       <div className="mt-2 space-y-2">
         {meeting.votes.map((vote) => (
@@ -228,7 +228,7 @@ export function MeetingCard({ meeting, isDark }: { meeting: Meeting; isDark: boo
               <input className={fieldClass(isDark)} value={options} onChange={(event) => setOptions(event.target.value)} placeholder={t("voteOptionsPlaceholder")} />
               <div className="flex items-center gap-2">
                 <input className={classNames(fieldClass(isDark), "w-16")} value={minutes} onChange={(event) => setMinutes(event.target.value)} />
-                <span className="text-[11px] text-[var(--color-text-tertiary)]">{t("voteDeadlineMinutes")}</span>
+                <span className="text-[12px] text-[var(--color-text-tertiary)]">{t("voteDeadlineMinutes")}</span>
                 <button type="button" className={buttonClass("primary")} disabled={!summary.trim() || busy === "vote"} onClick={() => void openVote()}>
                   {t("voteOpen")}
                 </button>
@@ -258,7 +258,7 @@ export function MeetingCard({ meeting, isDark }: { meeting: Meeting; isDark: boo
           </div>
         </div>
       ) : meeting.decision ? (
-        <div className="mt-2 whitespace-pre-wrap rounded-xl bg-violet-500/10 px-2.5 py-1.5 text-[11px]">
+        <div className="mt-2 whitespace-pre-wrap rounded-xl bg-violet-500/10 px-2.5 py-1.5 text-[12px]">
           <span className="font-semibold">{t("meetingDecision")}: </span>
           {meeting.decision}
         </div>
@@ -293,9 +293,9 @@ export function HarnessTab({ isDark }: { isDark: boolean }) {
     }
   };
   return (
-    <div className="space-y-3 text-[12px]">
+    <div className="space-y-3 text-[13px]">
       <section>
-        <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessSkills")}</div>
+        <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessSkills")}</div>
         {harness?.skills?.length ? (
           <div className="space-y-1">
             {harness.skills.map((skill) => (
@@ -306,7 +306,7 @@ export function HarnessTab({ isDark }: { isDark: boolean }) {
                   {skill.path && skill.path !== "." && skill.path !== "inline" ? `/${skill.path}` : ""}
                 </span>
                 {skill.runtimes ? (
-                  <div className="text-[10px] text-[var(--color-text-tertiary)]">
+                  <div className="text-[11px] text-[var(--color-text-tertiary)]">
                     {t("harnessRuntimes")}: {Object.keys(skill.runtimes).filter((runtime) => !String(skill.runtimes?.[runtime] || "").startsWith("error")).join(", ")}
                   </div>
                 ) : null}
@@ -318,26 +318,26 @@ export function HarnessTab({ isDark }: { isDark: boolean }) {
         )}
       </section>
       <section>
-        <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessPropose")}</div>
+        <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessPropose")}</div>
         <input className={fieldClass(isDark)} placeholder={t("harnessProposalTitle")} value={title} onChange={(event) => setTitle(event.target.value)} />
-        <textarea className={classNames(fieldClass(isDark), "mt-1.5 font-mono text-[11px]")} rows={5} placeholder={t("harnessProposalBody")} value={body} onChange={(event) => setBody(event.target.value)} />
-        <div className="mt-1 text-[10px] text-[var(--color-text-tertiary)]">{t("harnessProposalHint")}</div>
+        <textarea className={classNames(fieldClass(isDark), "mt-1.5 font-mono text-[12px]")} rows={5} placeholder={t("harnessProposalBody")} value={body} onChange={(event) => setBody(event.target.value)} />
+        <div className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">{t("harnessProposalHint")}</div>
         <div className="mt-1.5 flex items-center gap-2">
           <button type="button" className={buttonClass("primary")} disabled={busy || !title.trim()} onClick={() => void submit()}>
             {t("harnessSubmit")}
           </button>
-          <span className="text-[11px] text-[var(--color-text-tertiary)]">{status}</span>
+          <span className="text-[12px] text-[var(--color-text-tertiary)]">{status}</span>
         </div>
       </section>
       {harness?.history?.length ? (
         <section>
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessHistory")}</div>
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessHistory")}</div>
           <div className="space-y-1">
             {harness.history
               .slice()
               .reverse()
               .map((entry, index) => (
-                <div key={`${entry.ts}-${index}`} className="text-[11px]">
+                <div key={`${entry.ts}-${index}`} className="text-[12px]">
                   <span className="text-[var(--color-text-tertiary)]">{String(entry.ts).slice(5, 16)} </span>
                   <span className="font-medium">{entry.outcome}</span> · {entry.title}
                   {entry.detail ? <span className="text-[var(--color-text-tertiary)]"> — {entry.detail}</span> : null}
@@ -347,8 +347,8 @@ export function HarnessTab({ isDark }: { isDark: boolean }) {
         </section>
       ) : null}
       <section>
-        <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessProtocol")}</div>
-        <pre className={classNames("max-h-[48vh] overflow-auto whitespace-pre-wrap rounded-xl p-2 text-[11px] leading-5", isDark ? "bg-white/5" : "bg-black/[0.04]")}>
+        <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("harnessProtocol")}</div>
+        <pre className={classNames("max-h-[48vh] overflow-auto whitespace-pre-wrap rounded-xl p-2 text-[12px] leading-5", isDark ? "bg-white/5" : "bg-black/[0.04]")}>
           {harness?.protocol || "…"}
         </pre>
       </section>
@@ -376,8 +376,12 @@ export function MeetingsTab({ actors, isDark }: { actors: Actor[]; isDark: boole
   const start = async () => {
     setBusy(true);
     setError("");
-    const result = await moderatorPost<{ ok: boolean; error?: string }>("/api/meetings", { topic, brief, participants: selected, mode });
-    setBusy(false);
+    let result: { ok: boolean; error?: string };
+    try {
+      result = await moderatorPost<{ ok: boolean; error?: string }>("/api/meetings", { topic, brief, participants: selected, mode });
+    } finally {
+      setBusy(false);
+    }
     if (!result.ok) {
       setError(result.error || t("meetingStartFailed"));
       return;
@@ -389,7 +393,7 @@ export function MeetingsTab({ actors, isDark }: { actors: Actor[]; isDark: boole
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="text-[10px] text-[var(--color-text-tertiary)]">{t("meetingChatHint")}</div>
+      <div className="text-[11px] text-[var(--color-text-tertiary)]">{t("meetingChatHint")}</div>
       {showForm ? (
         <div className="space-y-1.5">
           <input className={fieldClass(isDark)} placeholder={t("meetingTopicPlaceholder")} value={topic} onChange={(event) => setTopic(event.target.value)} />
@@ -401,7 +405,7 @@ export function MeetingsTab({ actors, isDark }: { actors: Actor[]; isDark: boole
                 <button
                   key={id}
                   type="button"
-                  className={classNames("knots-press rounded-full border px-2 py-0.5 text-[11px]", on ? "border-transparent bg-violet-600 text-white" : "border-[var(--glass-border-subtle)]")}
+                  className={classNames("knots-press rounded-full border px-2 py-0.5 text-[12px]", on ? "border-transparent bg-violet-600 text-white" : "border-[var(--glass-border-subtle)]")}
                   onClick={() => setSelected((current) => (on ? current.filter((item) => item !== id) : [...current, id]))}
                 >
                   {id}
@@ -409,7 +413,7 @@ export function MeetingsTab({ actors, isDark }: { actors: Actor[]; isDark: boole
               );
             })}
           </div>
-          <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+          <div className="flex flex-wrap items-center gap-1.5 text-[12px]">
             <span className="text-[var(--color-text-tertiary)]">{t("meetingMode")}</span>
             {(["agents", "human"] as MeetingMode[]).map((item) => (
               <button
@@ -422,9 +426,9 @@ export function MeetingsTab({ actors, isDark }: { actors: Actor[]; isDark: boole
               </button>
             ))}
           </div>
-          <div className="text-[10px] text-[var(--color-text-tertiary)]">{t("meetingModeHint")}</div>
-          <div className="text-[10px] text-[var(--color-text-tertiary)]">{t("meetingRolesHint")}</div>
-          {error ? <div className="text-[11px] text-rose-500">{error}</div> : null}
+          <div className="text-[11px] text-[var(--color-text-tertiary)]">{t("meetingModeHint")}</div>
+          <div className="text-[11px] text-[var(--color-text-tertiary)]">{t("meetingRolesHint")}</div>
+          {error ? <div className="text-[12px] text-rose-500">{error}</div> : null}
           <div className="flex items-center gap-2">
             <button type="button" className={buttonClass("primary")} disabled={busy || !topic.trim() || selected.length < 3} onClick={() => void start()}>
               {t("meetingStart")}
@@ -436,7 +440,7 @@ export function MeetingsTab({ actors, isDark }: { actors: Actor[]; isDark: boole
         </div>
       ) : (
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] text-[var(--color-text-tertiary)]">{ordered.length === 0 ? t("meetingNone") : ""}</span>
+          <span className="text-[12px] text-[var(--color-text-tertiary)]">{ordered.length === 0 ? t("meetingNone") : ""}</span>
           <button type="button" className={buttonClass("ghost")} onClick={() => setShowForm(true)}>
             + {t("meetingNew")}
           </button>

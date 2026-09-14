@@ -8,7 +8,7 @@ import { HelpTicketCard } from "./HelpTicketCard";
 import { HarnessTab, MeetingsTab, ModeBadge } from "./MeetingPanel";
 import { ProjectCard, ProjectsTab } from "./ProjectsPanel";
 import { LessonCard } from "./LessonCard";
-import { moderatorPost, useMeetingStore, type SidebarTab } from "./meetingStore";
+import { moderatorPost, useMeetingStore, voteNeedsRuling, type SidebarTab } from "./meetingStore";
 
 /**
  * One docked column for everything the Knots moderator owns: meetings, the room protocol and
@@ -31,7 +31,7 @@ export function KnotsSidebarToggle({ isDark }: { isDark: boolean }) {
   const projects = useMeetingStore((state) => state.projects);
   const lessons = useMeetingStore((state) => state.lessons);
   const pending =
-    meetings.flatMap((meeting) => meeting.votes).filter((vote) => vote.status === "closed" && vote.awaiting_human && !vote.human).length +
+    meetings.flatMap((meeting) => meeting.votes.filter((vote) => voteNeedsRuling(vote, meeting))).length +
     help.filter((ticket) => ticket.status !== "resolved").length +
     projects.filter((project) => project.status === "awaiting_human").length +
     lessons.filter((lesson) => lesson.status === "candidate").length;
@@ -42,15 +42,15 @@ export function KnotsSidebarToggle({ isDark }: { isDark: boolean }) {
       aria-pressed={open}
       title={connected ? t("knotsToggle") : t("meetingOffline")}
       className={classNames(
-        "knots-press pointer-events-auto inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-medium shadow-xl backdrop-blur-xl ring-1",
+        "knots-press pointer-events-auto inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-medium shadow-xl backdrop-blur-xl ring-1",
         isDark ? "border-white/10 bg-slate-900/60 text-slate-200 ring-white/5" : "border-black/5 bg-white/70 text-gray-700 ring-black/5",
         open ? (isDark ? "bg-white/[0.08] text-white" : "bg-[rgb(245,245,245)] text-[rgb(35,36,37)]") : "",
       )}
     >
       <span className={classNames("h-1.5 w-1.5 shrink-0 rounded-full", connected ? "bg-emerald-500" : "bg-amber-500")} aria-hidden="true" />
       {t("knotsToggle")}
-      {active > 0 ? <span className="rounded-full bg-violet-600 px-1.5 text-[10px] text-white">{active}</span> : null}
-      {pending > 0 ? <span className="rounded-full bg-rose-600 px-1.5 text-[10px] text-white">{pending}</span> : null}
+      {active > 0 ? <span className="rounded-full bg-violet-600 px-1.5 text-[11px] text-white">{active}</span> : null}
+      {pending > 0 ? <span className="rounded-full bg-rose-600 px-1.5 text-[11px] text-white">{pending}</span> : null}
       <span className="opacity-40">·</span>
       <span className="opacity-75">{t("harnessChip", { version: harness?.version ?? "?" })}</span>
     </button>
@@ -65,7 +65,7 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
       aria-selected={active}
       onClick={onClick}
       className={classNames(
-        "knots-press rounded-full px-2.5 py-1 text-[11px] font-medium",
+        "knots-press rounded-full px-2.5 py-1 text-[12px] font-medium",
         active ? "bg-[var(--color-text-primary)] text-[var(--color-bg-primary,#fff)]" : "text-[var(--color-text-secondary)] hover:bg-black/[0.04] dark:hover:bg-white/[0.06]",
       )}
     >
@@ -104,7 +104,7 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
 
   const pending = meetings
     .flatMap((meeting) => meeting.votes.map((vote) => ({ meeting, vote })))
-    .filter(({ vote }) => vote.status === "open" || (vote.status === "closed" && vote.awaiting_human && !vote.human));
+    .filter(({ meeting, vote }) => (vote.status === "open" && meeting.status !== "closed") || voteNeedsRuling(vote, meeting));
   const openHelp = help.filter((ticket) => ticket.status !== "resolved");
   const rulingProjects = projects.filter((project) => project.status === "awaiting_human");
   const candidateLessons = lessons.filter((lesson) => lesson.status === "candidate");
@@ -123,8 +123,8 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
       aria-label={t("knotsToggle")}
       className={classNames(
         "fixed inset-y-0 right-0 z-[900] flex w-[min(92vw,380px)] flex-col border-l shadow-2xl",
-        "md:static md:inset-auto md:z-auto md:w-[380px] md:min-h-0 md:flex-shrink-0 md:shadow-none",
-        isDark ? "border-white/8 bg-slate-950/95 md:bg-slate-950/35" : "border-black/8 bg-white md:bg-white/55",
+        "xl:static xl:inset-auto xl:z-auto xl:w-[360px] xl:min-h-0 xl:flex-shrink-0 xl:shadow-none", // docked only when the chat keeps ~600px
+        isDark ? "border-white/8 bg-slate-950/95 xl:bg-slate-950/35" : "border-black/8 bg-white xl:bg-white/55",
       )}
     >
       <div className={classNames("flex items-center gap-1 border-b px-2 py-1.5", isDark ? "border-white/8" : "border-black/8")} role="tablist">
@@ -135,7 +135,7 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
         ))}
         <button
           type="button"
-          className="knots-press ml-auto rounded-full p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+          className="knots-press ml-auto flex h-8 w-8 items-center justify-center rounded-full text-[var(--color-text-tertiary)] hover:bg-black/[0.05] hover:text-[var(--color-text-primary)] dark:hover:bg-white/[0.08]"
           aria-label={t("sidebarClose")}
           title={t("sidebarClose")}
           onClick={() => setSidebar(false)}
@@ -147,10 +147,10 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
       </div>
       {authRequired ? (
         <div className={classNames("flex items-center gap-1.5 border-b px-2 py-1.5", isDark ? "border-white/8 bg-amber-500/8" : "border-black/8 bg-amber-50")} title={t("knotsTokenHint")}>
-          <span className="shrink-0 text-[11px] text-amber-600 dark:text-amber-300" aria-hidden="true">●</span>
+          <span className="shrink-0 text-[12px] text-amber-600 dark:text-amber-300" aria-hidden="true">●</span>
           <input
             type="password"
-            className={classNames("min-w-0 flex-1 rounded-lg border px-2 py-1 text-[11px] outline-none", isDark ? "border-white/10 bg-white/5 text-slate-100" : "border-black/10 bg-white text-gray-800")}
+            className={classNames("min-w-0 flex-1 rounded-lg border px-2 py-1 text-[12px] outline-none", isDark ? "border-white/10 bg-white/5 text-slate-100" : "border-black/10 bg-white text-gray-800")}
             value={tokenDraft}
             onChange={(event) => setTokenDraft(event.target.value)}
             onKeyDown={(event) => {
@@ -159,7 +159,7 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
             placeholder={t("knotsTokenLabel") + " · ~/.knots/moderator.token"}
             aria-label={t("knotsTokenLabel")}
           />
-          <button type="button" className="knots-press shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold text-violet-600 hover:bg-violet-500/10 disabled:opacity-40 dark:text-violet-300" disabled={!tokenDraft.trim()} onClick={() => setModeratorToken(tokenDraft)}>
+          <button type="button" className="knots-press shrink-0 rounded-full px-2.5 py-1 text-[12px] font-semibold text-violet-600 hover:bg-violet-500/10 disabled:opacity-40 dark:text-violet-300" disabled={!tokenDraft.trim()} onClick={() => setModeratorToken(tokenDraft)}>
             {t("knotsTokenSave")}
           </button>
         </div>
@@ -167,24 +167,24 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
       {pendingUpdates.length > 0 ? (
         <div className={classNames("space-y-1.5 border-b px-2 py-2", isDark ? "border-white/8" : "border-black/8")}>
           {pendingUpdates.map((u) => (
-            <div key={u.runtime} className={classNames("rounded-xl border px-2.5 py-2 text-[11px]", isDark ? "border-sky-400/20 bg-sky-500/8" : "border-sky-200 bg-sky-50")}>
+            <div key={u.runtime} className={classNames("rounded-xl border px-2.5 py-2 text-[12px]", isDark ? "border-sky-400/20 bg-sky-500/8" : "border-sky-200 bg-sky-50")}>
               <div className="flex items-center justify-between gap-2">
                 <span className="font-semibold">{t("updateAvailable", { runtime: u.runtime, current: u.current, latest: u.latest })}</span>
-                <span className="text-[10px] text-[var(--color-text-tertiary)]">{(u.actors || []).join(", ")}</span>
+                <span className="text-[11px] text-[var(--color-text-tertiary)]">{(u.actors || []).join(", ")}</span>
               </div>
               {u.status === "updating" ? (
-                <div className="mt-1 text-[10px] text-[var(--color-text-tertiary)]">{t("updateWorking")} {u.log || ""}</div>
+                <div className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">{t("updateWorking")} {u.log || ""}</div>
               ) : u.status === "failed" ? (
-                <div className="mt-1 text-[10px] text-rose-500">{u.log || t("updateFailed")}</div>
+                <div className="mt-1 text-[11px] text-rose-500">{u.log || t("updateFailed")}</div>
               ) : (
-                <div className="mt-1 text-[10px] text-[var(--color-text-tertiary)]">{t("updateHint")}</div>
+                <div className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">{t("updateHint")}</div>
               )}
               {u.status !== "updating" ? (
                 <div className="mt-1.5 flex items-center gap-1.5">
-                  <button type="button" className="knots-press rounded-full bg-violet-600 px-3 py-1 text-[11px] font-semibold text-white" onClick={() => void moderatorPost(`/api/updates/${u.runtime}/apply`, {})}>
+                  <button type="button" className="knots-press rounded-full bg-violet-600 px-3 py-1 text-[12px] font-semibold text-white" onClick={() => void moderatorPost(`/api/updates/${u.runtime}/apply`, {})}>
                     {t("updateApply")}
                   </button>
-                  <button type="button" className="knots-press rounded-full px-3 py-1 text-[11px] font-semibold text-[var(--color-text-secondary)] hover:bg-black/5 dark:hover:bg-white/10" onClick={() => void moderatorPost(`/api/updates/${u.runtime}/ignore`, {})}>
+                  <button type="button" className="knots-press rounded-full px-3 py-1 text-[12px] font-semibold text-[var(--color-text-secondary)] hover:bg-black/5 dark:hover:bg-white/10" onClick={() => void moderatorPost(`/api/updates/${u.runtime}/ignore`, {})}>
                     {t("updateIgnore")}
                   </button>
                 </div>
@@ -195,7 +195,7 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
       ) : null}
       {pending.length > 0 || openHelp.length > 0 || rulingProjects.length > 0 || candidateLessons.length > 0 ? (
         <div className={classNames("max-h-[46%] shrink-0 space-y-2 overflow-y-auto border-b px-2 py-2", isDark ? "border-white/8" : "border-black/8")}>
-          <div className="text-[10px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("sidebarPending")}</div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] opacity-50">{t("sidebarPending")}</div>
           {openHelp.map((ticket) => (
             <HelpTicketCard key={ticket.id} ticket={ticket} actorIds={actorIds} isDark={isDark} />
           ))}
@@ -210,7 +210,7 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
             const total = meeting.participants.length;
             return (
               <div key={vote.id} className={classNames("rounded-xl border p-2", isDark ? "border-white/10 bg-white/[0.03]" : "border-black/8 bg-black/[0.02]")}>
-                <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                <div className="flex flex-wrap items-center gap-1.5 text-[12px]">
                   <span className="font-semibold">
                     #{meeting.id} · {t("voteCard")} #{vote.id}
                   </span>
@@ -243,16 +243,16 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
         {tab === "harness" ? <HarnessTab isDark={isDark} /> : null}
         {tab === "log" ? (
           log.length === 0 ? (
-            <div className="text-[11px] text-[var(--color-text-tertiary)]">{t("sidebarNoLog")}</div>
+            <div className="text-[12px] text-[var(--color-text-tertiary)]">{t("sidebarNoLog")}</div>
           ) : (
             <div className="space-y-1">
               {log
                 .slice()
                 .reverse()
                 .map((entry, index) => (
-                  <div key={`${entry.ts}-${index}`} className="text-[11px]">
+                  <div key={`${entry.ts}-${index}`} className="text-[12px]">
                     <span className="tabular-nums text-[var(--color-text-tertiary)]">{String(entry.ts).slice(11, 19)} </span>
-                    <span className={classNames("rounded px-1 text-[10px] font-medium", entry.kind === "error" ? "bg-rose-500/15 text-rose-600" : "bg-black/5 dark:bg-white/10")}>{entry.kind}</span>{" "}
+                    <span className={classNames("rounded px-1 text-[11px] font-medium", entry.kind === "error" ? "bg-rose-500/15 text-rose-600" : "bg-black/5 dark:bg-white/10")}>{entry.kind}</span>{" "}
                     <span className="text-[var(--color-text-secondary)]">{entry.text}</span>
                   </div>
                 ))}
