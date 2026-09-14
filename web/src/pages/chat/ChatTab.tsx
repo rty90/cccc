@@ -54,6 +54,7 @@ import { LiveThinking } from "../../features/trace/LiveThinking";
 import { useMeetingStore } from "../../features/meeting/meetingStore";
 import { KnotsSidebar, KnotsSidebarToggle } from "../../features/meeting/KnotsSidebar";
 import { MeetingPopups } from "../../features/meeting/MeetingPopups";
+import { KnotsCommandPanels } from "../../features/meeting/KnotsCommandPanels";
 
 const PresentationRail = lazy(() =>
   import("../../components/presentation/PresentationRail").then((module) => ({
@@ -955,6 +956,7 @@ export function ChatTab({
               )}
 
               {!chatWindowProps ? <MeetingPopups isDark={isDark} actors={actors} /> : null}
+              <KnotsCommandPanels actors={actors} />
 
               {!chatWindowProps && runtimeActors.length > 0 ? (
                 <div className="pointer-events-none absolute inset-x-0 bottom-1 z-20 sm:bottom-2">

@@ -1,21 +1,26 @@
 import type { CapabilityStateResult } from "../types";
 import { BUILTIN_SLASH_COMMANDS } from "./builtinSlashCommands";
+import { KNOTS_SLASH_COMMANDS } from "./knotsSlashCommands";
 
 export type SlashCommandItem = {
   name: string;
   command: string;
   description?: string;
+  /** i18n key (chat namespace) rendered instead of description; the room's commands use it. */
+  descriptionKey?: string;
+  /** Argument hint shown after the command, e.g. "<actor> <model>". */
+  usageHint?: string;
   capabilityId: string;
   toolName?: string;
   realToolName?: string;
   inputSchema?: Record<string, unknown>;
-  sourceType: "dynamic_tool" | "capsule_skill" | "builtin_command";
+  sourceType: "dynamic_tool" | "capsule_skill" | "builtin_command" | "knots_command";
   active?: boolean;
 };
 
 export type ParsedSlashCommand = { item: SlashCommandItem; commandText: string; argsText: string };
 
-export type SlashCommandDisplayKind = "command" | "skill" | "tool";
+export type SlashCommandDisplayKind = "command" | "skill" | "tool" | "room";
 
 export type CapsuleSkillSlashCommandResolution =
   | { kind: "dispatch"; dispatchText: string }
@@ -60,6 +65,7 @@ export function slashCommandSupportsReplyTarget(
 export function slashCommandDisplayKind(
   item: Pick<SlashCommandItem, "sourceType" | "capabilityId">,
 ): SlashCommandDisplayKind {
+  if (item.sourceType === "knots_command") return "room";
   if (
     String(item.capabilityId || "")
       .trim()
@@ -99,16 +105,19 @@ function uniqueCommandName(candidates: unknown[], used: Set<string>): string {
   return "";
 }
 
+const SOURCE_RANK: Record<SlashCommandItem["sourceType"], number> = {
+  builtin_command: 0,
+  knots_command: 1,
+  capsule_skill: 2,
+  dynamic_tool: 3,
+};
+
 function sortSlashCommands(commands: SlashCommandItem[]): SlashCommandItem[] {
+  // The room's commands keep their declared order (usage, status, meeting, ...); the rest sort by name.
   return commands.slice().sort((a, b) => {
-    if (a.sourceType !== b.sourceType) {
-      if (a.sourceType === "builtin_command") return -1;
-      if (b.sourceType === "builtin_command") return 1;
-    }
-    if (a.sourceType !== b.sourceType) {
-      if (a.sourceType === "capsule_skill") return -1;
-      if (b.sourceType === "capsule_skill") return 1;
-    }
+    const rank = SOURCE_RANK[a.sourceType] - SOURCE_RANK[b.sourceType];
+    if (rank !== 0) return rank;
+    if (a.sourceType === "knots_command") return 0;
     return a.name.localeCompare(b.name);
   });
 }
@@ -131,6 +140,19 @@ export function buildSlashCommands(args: {
     if (!name) continue;
     used.add(name);
     commands.push({ ...command, name, command: `/${name}` });
+  }
+  for (const command of KNOTS_SLASH_COMMANDS) {
+    const name = uniqueCommandName([command.name], used);
+    if (!name) continue;
+    used.add(name);
+    commands.push({
+      name,
+      command: `/${name}`,
+      descriptionKey: `slashKnots_${command.name}`,
+      usageHint: command.usage || undefined,
+      capabilityId: `knots:${command.name}`,
+      sourceType: "knots_command",
+    });
   }
 
   const activeSkills = Array.isArray(args.state?.active_capsule_skills)

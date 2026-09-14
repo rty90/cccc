@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { classNames } from "../../utils/classNames";
 import { slashCommandDisplayKind, type SlashCommandItem } from "../../utils/slashCommands";
 
@@ -22,6 +23,7 @@ export function SlashCommandMenu(props: {
     onHover,
     onLoadMore,
   } = props;
+  const { t } = useTranslation("chat");
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
@@ -51,6 +53,7 @@ export function SlashCommandMenu(props: {
     >
       {suggestions.map((item, idx) => {
         const displayKind = slashCommandDisplayKind(item);
+        const description = item.descriptionKey ? t(item.descriptionKey) : item.description;
         const isSelected = idx === selectedIndex;
         return (
           <button
@@ -81,8 +84,11 @@ export function SlashCommandMenu(props: {
           >
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <div className="truncate font-medium">{item.command}</div>
-                {item.description ? (
+                <div className="truncate font-medium">
+                  {item.command}
+                  {item.usageHint ? <span className="ml-1.5 font-normal opacity-60">{item.usageHint}</span> : null}
+                </div>
+                {description ? (
                   <div
                     className={classNames(
                       "truncate text-[11px]",
@@ -95,7 +101,7 @@ export function SlashCommandMenu(props: {
                           : "text-gray-500",
                     )}
                   >
-                    {item.description}
+                    {description}
                   </div>
                 ) : null}
               </div>
@@ -106,6 +112,10 @@ export function SlashCommandMenu(props: {
                     ? isDark
                       ? "bg-white/12 text-slate-100"
                       : "bg-white text-slate-700 shadow-sm"
+                    : displayKind === "room"
+                      ? isDark
+                        ? "bg-violet-400/12 text-violet-200"
+                        : "bg-violet-50 text-violet-700"
                     : displayKind === "command"
                       ? isDark
                         ? "bg-sky-400/12 text-sky-200"
@@ -119,7 +129,7 @@ export function SlashCommandMenu(props: {
                           : "bg-black/5 text-gray-500",
                 )}
               >
-                {displayKind}
+                {displayKind === "room" ? t("slashKindRoom") : displayKind}
               </span>
             </div>
           </button>

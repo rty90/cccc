@@ -105,6 +105,8 @@ export type NoticeKind = "opened" | "vote_opened" | "vote_closed" | "needs_human
 export type Notice = { id: string; kind: NoticeKind; meetingId: string; voteId?: string; helpId?: string; ts: number };
 
 export type SidebarTab = "meetings" | "projects" | "harness" | "log";
+/** Read-only panels opened by the slash commands (/usage, /status). */
+export type KnotsPanel = "usage" | "status";
 
 export type HarnessUpdate = {
   runtime: string;
@@ -187,10 +189,12 @@ type MeetingState = {
   authRequired: boolean;
   updates: Record<string, HarnessUpdate>;
   ui: { sidebarOpen: boolean; tab: SidebarTab };
+  panel: KnotsPanel | null;
   connect: () => void;
   dismissNotice: (id: string) => void;
   fetchHarness: () => Promise<void>;
   setSidebar: (open: boolean, tab?: SidebarTab) => void;
+  setPanel: (panel: KnotsPanel | null) => void;
   setModeratorToken: (token: string) => void;
 };
 
@@ -355,6 +359,7 @@ export const useMeetingStore = create<MeetingState>(() => ({
   authRequired: false,
   updates: {},
   ui: typeof window === "undefined" ? { sidebarOpen: false, tab: "meetings" } : loadSidebar(),
+  panel: null,
   connect: () => {
     if (started || typeof window === "undefined" || typeof EventSource === "undefined") return;
     started = true;
@@ -486,6 +491,9 @@ export const useMeetingStore = create<MeetingState>(() => ({
       }
       return { ui };
     });
+  },
+  setPanel: (panel: KnotsPanel | null) => {
+    useMeetingStore.setState({ panel });
   },
   fetchHarness: async () => {
     try {

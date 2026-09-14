@@ -9,6 +9,7 @@ import {
   resolveSlashCommandGuard,
 } from "../utils/slashCommands";
 import { useSlashCommandState } from "./useSlashCommandState";
+import { runKnotsCommand } from "../features/meeting/knotsCommands";
 
 type TranslateFn = (key: string, options?: Record<string, unknown>) => string;
 
@@ -130,6 +131,18 @@ export function useSlashCommands(args: {
 
       slashInFlightRef.current = true;
       try {
+        if (item.sourceType === "knots_command") {
+          const result = await runKnotsCommand(item.name, slashCommand.argsText, t);
+          if (!result.ok) {
+            showError(result.error);
+            return true;
+          }
+          clearComposer();
+          if (result.notice) showNotice({ message: result.notice });
+          onExecuted?.();
+          return true;
+        }
+
         if (item.sourceType === "builtin_command") {
           const dispatchText = [item.command, slashCommand.argsText]
             .filter(Boolean)
