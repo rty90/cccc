@@ -131,6 +131,11 @@ function VoteCard({ vote, meeting, isDark }: { vote: Vote; meeting: Meeting; isD
                 <div className="flex items-center gap-2">
                   <span className="font-semibold">{actor}</span>
                   <span className={classNames("rounded-full px-1.5 py-0.5 text-[11px]", ROLE_TONE[meeting.roles[actor]] || "")}>{meeting.roles[actor]}</span>
+                  {meeting.angles?.[actor] ? (
+                    <span className="rounded-full bg-[var(--glass-tab-bg)] px-1.5 py-0.5 text-[11px] text-[var(--color-text-secondary)]">
+                      {t(`lens_${meeting.angles[actor]}`, { defaultValue: meeting.angles[actor] })}
+                    </span>
+                  ) : null}
                   <span className="ml-auto">{ballot ? ballot.option : t("voteNoBallot")}</span>
                   {ballot?.confidence != null ? <span className="text-[var(--color-text-tertiary)]">{ballot.confidence}</span> : null}
                 </div>
@@ -203,6 +208,9 @@ export function MeetingCard({ meeting, isDark }: { meeting: Meeting; isDark: boo
           <span key={actor} className={classNames("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px]", ROLE_TONE[meeting.roles[actor]] || "bg-slate-500/15")}>
             <span className="font-semibold">{actor}</span>
             <span className="opacity-70">{meeting.roles[actor]}</span>
+            {meeting.angles?.[actor] ? (
+              <span className="opacity-70">· {t(`lens_${meeting.angles[actor]}`, { defaultValue: meeting.angles[actor] })}</span>
+            ) : null}
           </span>
         ))}
       </div>
