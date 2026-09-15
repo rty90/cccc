@@ -47,6 +47,14 @@ export type Meeting = {
   brief?: string;
   participants: string[];
   roles: Record<string, string>;
+  /** Content lens per participant (implementation | systems | evidence | purpose | alternatives), by topic kind. */
+  angles?: Record<string, string>;
+  topic_kind?: string;
+  team?: string;
+  /** Content lens per participant (implementation | systems | evidence | purpose | alternatives), by topic kind. */
+  angles?: Record<string, string>;
+  topic_kind?: string;
+  team?: string;
   status: "open" | "voting" | "closed";
   mode?: MeetingMode;
   kind?: MeetingKind;
