@@ -19,6 +19,16 @@ export function useVirtualMessageMetadata(
     return values;
   }, [messages]);
 
+  const messageAuthorById = useMemo(() => {
+    const values = new Map<string, string>();
+    for (const message of messages) {
+      const id = String(message?.id || "").trim();
+      const by = String(message?.by || "").trim();
+      if (id && by) values.set(id, by);
+    }
+    return values;
+  }, [messages]);
+
   const agentStateById = useMemo(() => {
     const values = new Map<string, AgentState>();
     for (const state of agentStates || []) values.set(String(state.id || ""), state);
@@ -44,5 +54,5 @@ export function useVirtualMessageMetadata(
     return values;
   }, [actorDisplayNames, messages]);
 
-  return { messageTextById, agentStateById, actorById, displayNameMap };
+  return { messageTextById, messageAuthorById, agentStateById, actorById, displayNameMap };
 }

@@ -110,6 +110,9 @@ export type Notice = { id: string; kind: NoticeKind; meetingId: string; voteId?:
 export type SidebarTab = "meetings" | "projects" | "harness" | "log";
 /** Read-only panels opened by the slash commands (/usage, /status). */
 export type KnotsPanel = "usage" | "status";
+/** Agent messages as cards (CCCC's default) or flat rows with a hairline between them (the mockup). */
+export type MessageStyle = "cards" | "flat";
+const MESSAGE_STYLE_STORAGE_KEY = "knots.messageStyle";
 
 export type HarnessUpdate = {
   runtime: string;
@@ -193,11 +196,13 @@ type MeetingState = {
   updates: Record<string, HarnessUpdate>;
   ui: { sidebarOpen: boolean; tab: SidebarTab };
   panel: KnotsPanel | null;
+  messageStyle: MessageStyle;
   connect: () => void;
   dismissNotice: (id: string) => void;
   fetchHarness: () => Promise<void>;
   setSidebar: (open: boolean, tab?: SidebarTab) => void;
   setPanel: (panel: KnotsPanel | null) => void;
+  setMessageStyle: (style: MessageStyle) => void;
   setModeratorToken: (token: string) => void;
 };
 
@@ -333,6 +338,14 @@ function applyMeetingEvent(meeting: Meeting, event: string, voteId?: string) {
   }
 }
 
+function loadMessageStyle(): MessageStyle {
+  try {
+    return window.localStorage.getItem(MESSAGE_STYLE_STORAGE_KEY) === "flat" ? "flat" : "cards";
+  } catch {
+    return "cards";
+  }
+}
+
 function loadSidebar(): { sidebarOpen: boolean; tab: SidebarTab } {
   try {
     const raw = window.localStorage.getItem(SIDEBAR_STORAGE_KEY);
@@ -363,6 +376,7 @@ export const useMeetingStore = create<MeetingState>(() => ({
   updates: {},
   ui: typeof window === "undefined" ? { sidebarOpen: false, tab: "meetings" } : loadSidebar(),
   panel: null,
+  messageStyle: typeof window === "undefined" ? "cards" : loadMessageStyle(),
   connect: () => {
     if (started || typeof window === "undefined" || typeof EventSource === "undefined") return;
     started = true;
@@ -501,6 +515,14 @@ export const useMeetingStore = create<MeetingState>(() => ({
   },
   setPanel: (panel: KnotsPanel | null) => {
     useMeetingStore.setState({ panel });
+  },
+  setMessageStyle: (messageStyle: MessageStyle) => {
+    useMeetingStore.setState({ messageStyle });
+    try {
+      window.localStorage.setItem(MESSAGE_STYLE_STORAGE_KEY, messageStyle);
+    } catch {
+      void 0;
+    }
   },
   fetchHarness: async () => {
     try {

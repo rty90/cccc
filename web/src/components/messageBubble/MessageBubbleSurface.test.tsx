@@ -3,14 +3,14 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { MessageBubbleSurface } from "./MessageBubbleSurface";
 
-function renderSurface(isUserMessage: boolean): string {
+function renderSurface(isUserMessage: boolean, flat = false): string {
   return renderToStaticMarkup(
     <MessageBubbleSurface
       isUserMessage={isUserMessage}
       isStreaming={false}
       motionClass=""
-      replyRequested={false}
       isHighlighted={false}
+      flat={flat}
     >
       <p>Long product content remains inside the responsive message surface.</p>
     </MessageBubbleSurface>,
@@ -32,5 +32,10 @@ describe("MessageBubbleSurface", () => {
     expect(assistant).not.toMatch(
       /border-l-(?:4|sky|indigo|violet|fuchsia|cyan|teal|emerald|amber)/,
     );
+  });
+
+  it("drops the card for agent messages in the flat style, never for the user", () => {
+    expect(renderSurface(false, true)).not.toContain("--glass-panel-bg");
+    expect(renderSurface(true, true)).toContain("rounded-tr-md");
   });
 });

@@ -103,7 +103,7 @@ const VirtualMessageListInner = function VirtualMessageListInner({
   // should render that order verbatim instead of maintaining a second,
   // divergent streaming-order cache locally.
   const displayMessages = messages;
-  const { messageTextById, agentStateById, actorById, displayNameMap } = useVirtualMessageMetadata(
+  const { messageTextById, messageAuthorById, agentStateById, actorById, displayNameMap } = useVirtualMessageMetadata(
     displayMessages,
     actors,
     agentStates,
@@ -918,6 +918,7 @@ const VirtualMessageListInner = function VirtualMessageListInner({
               nonVirtualTopMargin={nonVirtualTopMargin}
               contentRef={contentRef}
               messageTextById={messageTextById}
+              messageAuthorById={messageAuthorById}
               actorById={actorById}
               actors={actors}
               agentStateById={agentStateById}

@@ -204,6 +204,20 @@ export function getReplyQuoteText(
   return replyTo ? String(messageTextById.get(replyTo) || "").trim() : "";
 }
 
+/** Display name of the author of the message this one replies to; "" when unknown or not a reply. */
+export function getReplyAuthor(
+  message: LedgerEvent | undefined,
+  messageAuthorById: ReadonlyMap<string, string>,
+  displayNameMap: ReadonlyMap<string, string>,
+): string {
+  if (!message?.data || typeof message.data !== "object") return "";
+  const data = message.data as { reply_to?: unknown };
+  const replyTo = typeof data.reply_to === "string" ? data.reply_to.trim() : "";
+  const by = replyTo ? String(messageAuthorById.get(replyTo) || "").trim() : "";
+  if (!by) return "";
+  return displayNameMap.get(by) || by;
+}
+
 export function shouldUseVirtualizedMessageList(messageCount: number): boolean {
   return Math.max(0, Number(messageCount) || 0) >= VIRTUALIZATION_THRESHOLD;
 }

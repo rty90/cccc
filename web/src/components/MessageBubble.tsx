@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { CornerUpLeft } from "lucide-react";
 import { FloatingPortal, autoUpdate, flip, offset, shift, useFloating } from "@floating-ui/react";
 import { useTranslation } from "react-i18next";
 import { useCopyFeedback } from "../hooks/useCopyFeedback";
@@ -41,6 +42,9 @@ import {
   getSenderDisplayName,
 } from "./messageBubble/model";
 import { ActorAvatar } from "./ActorAvatar";
+import { InboxIcon } from "./Icons";
+import { agentColor, agentMonogram } from "../utils/agentColors";
+import { useMeetingStore } from "../features/meeting/meetingStore";
 import {
   formatEventLine,
   getMessageBubbleMotionClass,
@@ -104,6 +108,7 @@ function MessageBubbleBody({
   relayChipClass,
   quoteText,
   replyToEventId,
+  replyAuthor,
   presentationRefs,
   voiceDocumentRefs,
   taskRefs,
@@ -136,6 +141,7 @@ function MessageBubbleBody({
   relayChipClass: string;
   quoteText?: string;
   replyToEventId?: string;
+  replyAuthor?: string;
   presentationRefs: PresentationMessageRef[];
   voiceDocumentRefs: VoiceDocumentMessageRef[];
   taskRefs: TaskMessageRef[];
@@ -161,10 +167,11 @@ function MessageBubbleBody({
 }) {
   const { t } = useTranslation("chat");
   const canJumpToReplyTarget = !!(replyToEventId && onOpenReplyTarget);
-  const quoteClassName = classNames(
-    "rounded-2xl border px-3 py-2 text-xs leading-5",
-    "border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] text-[var(--color-text-secondary)]",
+  const replyLineClassName = classNames(
+    "mb-2 flex w-full min-w-0 max-w-full items-center gap-1.5 text-left text-[12px] leading-5",
+    "text-[var(--color-text-secondary)]",
   );
+  const replyLineLabel = `${replyAuthor ? t("knotsReplyTo", { name: replyAuthor }) : t("reply")}:`;
   const metaChipClass = classNames(
     "inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium",
     "border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] text-[var(--color-text-secondary)]",
@@ -238,8 +245,8 @@ function MessageBubbleBody({
           <button
             type="button"
             className={classNames(
-              quoteClassName,
-              "mb-3 block w-full cursor-pointer appearance-none bg-transparent text-left text-inherit transition-opacity hover:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(35,36,37)]/20 dark:focus-visible:ring-white/25",
+              replyLineClassName,
+              "cursor-pointer appearance-none bg-transparent transition-colors hover:text-[var(--color-text-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(35,36,37)]/20 dark:focus-visible:ring-white/25",
             )}
             onClick={(mouseEvent) => {
               mouseEvent.stopPropagation();
@@ -248,17 +255,15 @@ function MessageBubbleBody({
             title={t("jumpToRepliedMessage")}
             aria-label={t("jumpToRepliedMessage")}
           >
-            <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-[var(--color-text-tertiary)]">
-              {t("reply")}
-            </span>
-            <span className="block">"{quoteText}"</span>
+            <CornerUpLeft size={12} className="shrink-0 opacity-60" aria-hidden="true" />
+            <span className="shrink-0 opacity-75">{replyLineLabel}</span>
+            <span className="min-w-0 truncate">{quoteText}</span>
           </button>
         ) : (
-          <div className={classNames(quoteClassName, "mb-3")}>
-            <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-[var(--color-text-tertiary)]">
-              {t("reply")}
-            </span>
-            <span className="block">"{quoteText}"</span>
+          <div className={replyLineClassName}>
+            <CornerUpLeft size={12} className="shrink-0 opacity-60" aria-hidden="true" />
+            <span className="shrink-0 opacity-75">{replyLineLabel}</span>
+            <span className="min-w-0 truncate">{quoteText}</span>
           </div>
         )
       ) : null}
@@ -319,6 +324,8 @@ export interface MessageBubbleProps {
   isHighlighted?: boolean;
   collapseHeader?: boolean;
   resolvedReplyQuoteText?: string;
+  /** Display name of the author of the replied-to message (resolved by the list from reply_to). */
+  resolvedReplyAuthor?: string;
   onReply: () => void;
   onShowRecipients: () => void;
   onCopyLink?: (eventId: string) => void;
@@ -346,6 +353,7 @@ export const MessageBubble = memo(
     isHighlighted,
     collapseHeader,
     resolvedReplyQuoteText,
+    resolvedReplyAuthor,
     onReply,
     onShowRecipients,
     onCopyLink,
@@ -398,6 +406,7 @@ export const MessageBubble = memo(
 
     const { t } = useTranslation("chat");
     const copyWithFeedback = useCopyFeedback();
+    const replyAuthorLabel = resolvedReplyAuthor === "user" ? t("filterUser") : String(resolvedReplyAuthor || "");
 
     const agentStateText = String(agentState?.hot?.focus || "").trim();
     const agentStateDisplay = agentStateText || t("noAgentStateYet");
@@ -640,6 +649,32 @@ export const MessageBubble = memo(
       );
     }, [blobGroupId, senderActor?.avatar_url, senderSnapshotAvatarPath]);
     const senderRuntime = senderSnapshotRuntime || String(senderActor?.runtime || "").trim();
+    const senderTint = !isUserMessage
+      ? agentColor(String(ev.by || ""), senderRuntime, isDark, senderActor?.command)
+      : "";
+    const senderMonogram = !isUserMessage
+      ? agentMonogram(String(ev.by || ""), senderDisplayName, senderRuntime)
+      : "";
+    const messageStyle = useMeetingStore((state) => state.messageStyle);
+    const flat = messageStyle === "flat" && !isUserMessage;
+    const headerTags = (
+      <>
+        {replyRequested ? (
+          <span className="shrink-0 rounded-full border border-violet-500/20 bg-violet-500/8 px-2 py-0.5 text-[10px] font-semibold tracking-tight text-violet-700 dark:text-violet-300">
+            {t("needReply")}
+          </span>
+        ) : null}
+        {isMail ? (
+          <span
+            className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] px-2 py-0.5 text-[10px] font-semibold tracking-tight text-[var(--color-text-secondary)]"
+            title={t("mailMessageHint")}
+          >
+            <InboxIcon size={10} aria-hidden="true" />
+            <span>{t("modeMail")}</span>
+          </span>
+        ) : null}
+      </>
+    );
     const sourceLabel = useMemo(() => {
       if (msgData?.src_instance_id)
         return connectGroupLabel(srcGroupId, msgData.src_group_title, msgData.src_instance_name);
@@ -707,13 +742,14 @@ export const MessageBubble = memo(
             ? "flex-col items-end sm:items-start sm:flex-row-reverse"
             : "flex-col items-start sm:flex-row",
           isOptimistic ? "opacity-95" : "",
+          flat ? "border-b border-[var(--glass-border-subtle)] pb-4" : "",
         )}
       >
         {/* Desktop Avatar (Hidden on mobile) */}
         <div className="relative hidden sm:block">
           <div
             className={classNames(
-              "mt-1 h-8 w-8 flex-shrink-0",
+              "mt-0.5 h-7 w-7 flex-shrink-0",
               collapseHeader ? "opacity-0 pointer-events-none" : "",
               canShowAgentState && !collapseHeader ? "cursor-help" : "",
             )}
@@ -758,6 +794,10 @@ export const MessageBubble = memo(
                     isDark={isDark}
                     accentRingClassName={senderAccent?.ring}
                     dimmed={senderActor?.enabled === false}
+                    monogram={senderMonogram || undefined}
+                    accentColor={senderTint || undefined}
+                    sizeClassName="h-7 w-7"
+                    textClassName="text-[11px]"
                   />
                 </button>
               </ModelSwitchPopover>
@@ -770,6 +810,10 @@ export const MessageBubble = memo(
                 isDark={isDark}
                 accentRingClassName={senderAccent?.ring}
                 dimmed={senderActor?.enabled === false}
+                monogram={senderMonogram || undefined}
+                accentColor={senderTint || undefined}
+                sizeClassName="h-7 w-7"
+                textClassName="text-[11px]"
               />
             )}
           </div>
@@ -808,6 +852,10 @@ export const MessageBubble = memo(
                 isUserMessage={isUserMessage}
                 isDark={isDark}
                 senderAccentTextClass={senderAccent?.text}
+                senderAccentColor={senderTint || undefined}
+                senderMonogram={senderMonogram || undefined}
+                tags={headerTags}
+                userSuffix={isUserMessage ? toLabel : undefined}
                 senderDisplayName={senderDisplayName}
                 messageTimestamp={messageTimestamp}
                 fullMessageTimestamp={fullMessageTimestamp}
@@ -842,6 +890,10 @@ export const MessageBubble = memo(
                 isUserMessage={isUserMessage}
                 isDark={isDark}
                 senderAccentTextClass={senderAccent?.text}
+                senderAccentColor={senderTint || undefined}
+                senderMonogram={senderMonogram || undefined}
+                tags={headerTags}
+                userSuffix={isUserMessage ? toLabel : undefined}
                 senderDisplayName={senderDisplayName}
                 messageTimestamp={messageTimestamp}
                 fullMessageTimestamp={fullMessageTimestamp}
@@ -856,24 +908,12 @@ export const MessageBubble = memo(
               "relative max-w-full min-w-0 md:w-auto",
               isUserMessage ? "w-auto self-end" : "w-full",
             )}
-            style={replyRequested ? { minWidth: "min(8.5rem, 85vw)" } : undefined}
           >
-            {replyRequested && (
-              <span
-                className={classNames(
-                  "absolute -top-2 z-10 text-xs font-semibold px-2 py-0.5 rounded-full border shadow-sm",
-                  isUserMessage ? "left-3" : "right-3",
-                  "bg-violet-50 text-violet-700 dark:bg-violet-950/60 dark:text-violet-200 border-violet-200 dark:border-violet-800",
-                )}
-              >
-                {t("needReply")}
-              </span>
-            )}
             <MessageBubbleSurface
+              flat={flat}
               isUserMessage={isUserMessage}
               isStreaming={isStreaming}
               motionClass={bubbleMotionClass}
-              replyRequested={replyRequested}
               isHighlighted={Boolean(isHighlighted)}
             >
               <MessageBubbleBody
@@ -881,7 +921,7 @@ export const MessageBubble = memo(
                 isUserMessage={isUserMessage}
                 isDark={isDark}
                 destinationLabel={destinationLabel}
-                toLabel={toLabel}
+                toLabel={isUserMessage ? "" : toLabel}
                 hasSource={hasSource}
                 sourceLabel={sourceLabel}
                 sourceTitle={sourceTitle}
@@ -893,6 +933,7 @@ export const MessageBubble = memo(
                 relayChipClass={relayChipClass}
                 quoteText={quoteText}
                 replyToEventId={replyToEventId}
+                replyAuthor={replyAuthorLabel}
                 presentationRefs={presentationRefs}
                 voiceDocumentRefs={voiceDocumentRefs}
                 taskRefs={taskRefs}
@@ -951,6 +992,8 @@ export const MessageBubble = memo(
       prevProps.webModelDeliveryStatus === nextProps.webModelDeliveryStatus &&
       prevProps.isHighlighted === nextProps.isHighlighted &&
       prevProps.collapseHeader === nextProps.collapseHeader &&
+      prevProps.resolvedReplyQuoteText === nextProps.resolvedReplyQuoteText &&
+      prevProps.resolvedReplyAuthor === nextProps.resolvedReplyAuthor &&
       prevProps.onRelay === nextProps.onRelay &&
       prevProps.onOpenSource === nextProps.onOpenSource &&
       prevProps.onOpenPresentationRef === nextProps.onOpenPresentationRef &&

@@ -8,14 +8,14 @@ interface MessageBubbleSurfaceProps {
   isUserMessage: boolean;
   isStreaming: boolean;
   motionClass: string;
-  replyRequested: boolean;
   isHighlighted: boolean;
+  /** Agent message without a card: flat text, the row draws the hairline. */
+  flat?: boolean;
 }
 
 function sharedClasses({
   isStreaming,
   motionClass,
-  replyRequested,
   isHighlighted,
 }: Omit<MessageBubbleSurfaceProps, "children" | "isUserMessage">): string {
   return classNames(
@@ -23,7 +23,6 @@ function sharedClasses({
     "transition-[opacity,transform,box-shadow,background-color,border-color] duration-200 ease-out",
     isStreaming ? "translate-y-0 opacity-95" : "translate-y-0 opacity-100",
     motionClass,
-    replyRequested ? "ring-1 ring-violet-400/35 dark:ring-violet-500/35" : "",
     isHighlighted ? "outline outline-2 outline-[var(--glass-accent-border)] outline-offset-2" : "",
   );
 }
@@ -33,10 +32,18 @@ export function MessageBubbleSurface({
   isUserMessage,
   isStreaming,
   motionClass,
-  replyRequested,
   isHighlighted,
+  flat = false,
 }: MessageBubbleSurfaceProps) {
-  const className = sharedClasses({ isStreaming, motionClass, replyRequested, isHighlighted });
+  const className = sharedClasses({ isStreaming, motionClass, isHighlighted });
+
+  if (flat && !isUserMessage) {
+    return (
+      <div className={classNames(className, "w-full px-0.5 py-0 text-[var(--color-text-primary)]")}>
+        {children}
+      </div>
+    );
+  }
 
   if (isUserMessage) {
     return (

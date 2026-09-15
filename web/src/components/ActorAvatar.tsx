@@ -16,6 +16,9 @@ export type ActorAvatarProps = {
   className?: string;
   /** Offline / disabled actor: greyed out. */
   dimmed?: boolean;
+  /** Two-letter mark drawn in `accentColor` on its 16% tint instead of the runtime logo (see utils/agentColors). */
+  monogram?: string | null;
+  accentColor?: string | null;
 };
 
 export const ActorAvatar = memo(function ActorAvatar({
@@ -30,6 +33,8 @@ export const ActorAvatar = memo(function ActorAvatar({
   textClassName = "text-xs",
   className,
   dimmed = false,
+  monogram,
+  accentColor,
 }: ActorAvatarProps) {
   const previewSrc = useMemo(() => {
     if (isUser) return null;
@@ -69,26 +74,38 @@ export const ActorAvatar = memo(function ActorAvatar({
   }, [isUser, runtime, usesInlineClaudeLogo]);
 
   const fallbackText = isUser ? "U" : (String(title || "").trim() || "?")[0].toUpperCase();
+  const useMonogram =
+    !isUser && !!monogram && !!accentColor && !previewSrc && (!customAvatarSrc || customAvatarFailed);
 
   return (
     <div
       className={classNames(
-        "flex flex-shrink-0 items-center justify-center overflow-hidden rounded-full font-bold shadow-sm",
+        "flex flex-shrink-0 items-center justify-center overflow-hidden font-bold",
+        useMonogram ? "rounded-[9px]" : "rounded-full shadow-sm",
         sizeClassName,
         textClassName,
-        isUser
-          ? isDark
-            ? "bg-[linear-gradient(135deg,#1f2937_0%,#111827_100%)] text-gray-200 border border-white/10"
-            : "bg-[linear-gradient(135deg,rgb(245,245,245)_0%,rgb(232,234,236)_100%)] text-[rgb(35,36,37)] border border-black/6"
-          : isDark
-            ? "bg-[linear-gradient(135deg,var(--glass-tab-bg-hover)_0%,var(--glass-tab-bg-active)_100%)] text-[var(--color-text-secondary)] border border-[var(--glass-border-subtle)]"
-            : "border border-gray-200 bg-white text-gray-700",
-        !isUser && accentRingClassName ? `ring-1 ring-inset ${accentRingClassName}` : "",
+        useMonogram
+          ? ""
+          : isUser
+            ? isDark
+              ? "bg-[linear-gradient(135deg,#1f2937_0%,#111827_100%)] text-gray-200 border border-white/10"
+              : "bg-[linear-gradient(135deg,rgb(245,245,245)_0%,rgb(232,234,236)_100%)] text-[rgb(35,36,37)] border border-black/6"
+            : isDark
+              ? "bg-[linear-gradient(135deg,var(--glass-tab-bg-hover)_0%,var(--glass-tab-bg-active)_100%)] text-[var(--color-text-secondary)] border border-[var(--glass-border-subtle)]"
+              : "border border-gray-200 bg-white text-gray-700",
+        !isUser && !useMonogram && accentRingClassName ? `ring-1 ring-inset ${accentRingClassName}` : "",
         dimmed ? "grayscale opacity-50" : "",
         className,
       )}
+      style={
+        useMonogram
+          ? { background: `color-mix(in srgb, ${accentColor} 16%, transparent)`, color: accentColor ?? undefined }
+          : undefined
+      }
     >
-      {previewSrc ? (
+      {useMonogram ? (
+        <span className="tracking-[0.01em]">{monogram}</span>
+      ) : previewSrc ? (
         <img src={previewSrc} alt="" className="h-full w-full object-contain" />
       ) : customAvatarSrc && !customAvatarFailed ? (
         <img
