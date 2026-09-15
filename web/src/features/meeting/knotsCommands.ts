@@ -1,6 +1,6 @@
 import { KNOTS_TIERS, parseKnotsArgs } from "../../utils/knotsSlashCommands";
 import { traceBaseUrl } from "../trace/traceStore";
-import { moderatorGet, moderatorHeaders, moderatorPost, useMeetingStore } from "./meetingStore";
+import { moderatorHeaders, moderatorPost, useMeetingStore } from "./meetingStore";
 
 export type KnotsCommandResult = { ok: true; notice?: string } | { ok: false; error: string };
 
@@ -87,9 +87,9 @@ export async function runKnotsCommand(name: string, args: string, t: Translate):
       if (!parsed.actor) return { ok: false, error: t("knotsCmdNeedActor") };
       const tier = String(parsed.words[1] || "").toLowerCase();
       if (!(KNOTS_TIERS as readonly string[]).includes(tier)) return { ok: false, error: t("knotsCmdTierValues") };
-      const current = await moderatorGet<{ ok?: boolean; tiers?: Record<string, string> }>("/api/usage");
-      const tiers = { ...(current?.tiers || {}), [parsed.actor]: tier };
-      const r = await moderatorPost<{ ok: boolean; error?: string }>("/api/policy", { tiers });
+      // One actor only: the moderator merges tiers, so nobody else's tier is touched (a read that failed here once
+      // sent an almost empty table and reset everyone).
+      const r = await moderatorPost<{ ok: boolean; error?: string }>("/api/policy", { tiers: { [parsed.actor]: tier } });
       if (!r.ok) return { ok: false, error: r.error || t("knotsCmdUnknownActor", { actor: parsed.actor }) };
       return { ok: true, notice: t("knotsCmdTierSet", { actor: parsed.actor, tier }) };
     }
