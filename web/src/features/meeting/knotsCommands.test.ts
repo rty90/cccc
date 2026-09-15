@@ -22,6 +22,17 @@ describe("knots slash commands", () => {
     expect(parseKnotsArgs("")).toEqual({ actor: "", words: [], text: "" });
   });
 
+  it("switches the message style through the store and rejects other values", async () => {
+    const { runKnotsCommand } = await import("./knotsCommands");
+    const { useMeetingStore } = await import("./meetingStore");
+    const t = (key: string) => key;
+    expect((await runKnotsCommand("style", "flat", t)).ok).toBe(true);
+    expect(useMeetingStore.getState().messageStyle).toBe("flat");
+    expect((await runKnotsCommand("style", "boxes", t)).ok).toBe(false);
+    expect((await runKnotsCommand("style", "cards", t)).ok).toBe(true);
+    expect(useMeetingStore.getState().messageStyle).toBe("cards");
+  });
+
   it("keeps command names unique", () => {
     const names = KNOTS_SLASH_COMMANDS.map((c) => c.name);
     expect(new Set(names).size).toBe(names.length);

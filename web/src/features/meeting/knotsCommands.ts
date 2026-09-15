@@ -111,6 +111,12 @@ export async function runKnotsCommand(name: string, args: string, t: Translate):
         return { ok: false, error: `${t("switchFailed")}: ${String(error)}` };
       }
     }
+    case "style": {
+      const style = String(parsed.words[0] || "").toLowerCase();
+      if (style !== "flat" && style !== "cards") return { ok: false, error: t("knotsCmdStyleValues") };
+      store.setMessageStyle(style);
+      return { ok: true, notice: t("knotsCmdStyleSet", { style }) };
+    }
     default:
       return { ok: false, error: t("knotsCmdUnknown", { name }) };
   }

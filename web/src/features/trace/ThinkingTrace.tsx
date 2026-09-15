@@ -50,6 +50,7 @@ export function TraceEventList({ events }: { events: TraceEvent[] }) {
             className={classNames(
               "min-w-0 flex-1 break-words [overflow-wrap:anywhere]",
               isOpen ? "whitespace-pre-wrap" : "",
+              event.kind === "tool" ? "font-mono text-[11.5px]" : "",
               event.opaque ? "italic text-[var(--color-text-tertiary)]" : "text-[var(--color-text-secondary)]",
             )}
           >
@@ -80,38 +81,36 @@ export function ThinkingTrace({ messageId }: { messageId: string; isDark?: boole
   if (!trace || !trace.events || trace.events.length === 0) return null;
   const steps = trace.steps.thinking + trace.steps.tool + trace.steps.text;
   if (steps === 0) return null;
+  const firstTool = trace.events.find((event) => event.kind === "tool");
+  const duration =
+    trace.duration_kind === "span"
+      ? t("traceSpan", { duration: formatTraceDuration(trace.duration_ms) })
+      : t("knotsTraceElapsed", { duration: formatTraceDuration(trace.duration_ms) });
+  const label =
+    trace.steps.tool === 1 && firstTool
+      ? `${firstTool.summary} · ${t("traceSteps", { count: steps })}`
+      : trace.steps.tool > 1
+        ? `${duration} · ${t("traceToolCalls", { count: trace.steps.tool })}`
+        : `${t("traceThinking")} · ${duration}`;
   return (
-    <div className="mb-3">
+    <div className="mb-2">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className={classNames(
-          "inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
-          "border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] text-[var(--color-text-secondary)] hover:opacity-100",
-        )}
+        className="inline-flex max-w-full items-center gap-1.5 text-[12px] leading-5 text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)]"
         aria-expanded={open}
         title={open ? t("traceCollapse") : t("traceExpand")}
       >
-        <span className="text-[12px] leading-none text-violet-500 dark:text-violet-300" aria-hidden="true">
-          ✳
+        <span
+          className={classNames("w-3 shrink-0 text-center text-[14px] leading-none transition-transform", open ? "rotate-90" : "")}
+          aria-hidden="true"
+        >
+          ›
         </span>
-        <span>{t("traceThinking")}</span>
-        <span className="opacity-55">·</span>
-        <span>{trace.duration_kind === "span" ? t("traceSpan", { duration: formatTraceDuration(trace.duration_ms) }) : formatTraceDuration(trace.duration_ms)}</span>
-        <span className="opacity-55">·</span>
-        <span>{t("traceSteps", { count: steps })}</span>
-        {trace.steps.tool > 0 ? (
-          <>
-            <span className="opacity-55">·</span>
-            <span>{t("traceToolCalls", { count: trace.steps.tool })}</span>
-          </>
-        ) : null}
-        <span className={classNames("ml-0.5 text-[10px] transition-transform", open ? "rotate-90" : "")} aria-hidden="true">
-          ▸
-        </span>
+        <span className="min-w-0 truncate font-mono text-[11.5px]">{label}</span>
       </button>
       {open ? (
-        <div className="mt-2 rounded-2xl border border-[var(--glass-border-subtle)] bg-[var(--glass-tab-bg)] px-3 py-2">
+        <div className="mt-1 border-l-2 border-[var(--glass-border-subtle)] pl-3">
           <TraceEventList events={trace.events} />
         </div>
       ) : null}

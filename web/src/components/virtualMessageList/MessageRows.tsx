@@ -1,7 +1,7 @@
 import type { MutableRefObject } from "react";
 import type { Actor, AgentState, LedgerEvent } from "../../types";
 import { MessageBubble } from "../MessageBubble";
-import { getReplyQuoteText, getStableMessageKey } from "../virtualMessageListHelpers";
+import { getReplyAuthor, getReplyQuoteText, getStableMessageKey } from "../virtualMessageListHelpers";
 import { VirtualMessageRow } from "./VirtualMessageRow";
 import { getMessageRowGrouping } from "./grouping";
 import type { VirtualMessageListProps } from "./types";
@@ -31,6 +31,7 @@ type MessageRowsProps = Pick<
   nonVirtualTopMargin: number;
   contentRef: MutableRefObject<HTMLDivElement | null>;
   messageTextById: ReadonlyMap<string, string>;
+  messageAuthorById: ReadonlyMap<string, string>;
   actorById: Map<string, Actor>;
   agentStateById: Map<string, AgentState>;
   displayNameMap: Map<string, string>;
@@ -47,6 +48,7 @@ export function MessageRows({
   nonVirtualTopMargin,
   contentRef,
   messageTextById,
+  messageAuthorById,
   actorById,
   actors,
   agentStateById,
@@ -111,6 +113,7 @@ export function MessageRows({
               virtualRow={virtualRow}
               message={message}
               resolvedReplyQuoteText={getReplyQuoteText(message, messageTextById)}
+              resolvedReplyAuthor={getReplyAuthor(message, messageAuthorById, displayNameMap)}
               collapseHeader={grouping.collapseHeader}
               compactSpacing={grouping.compactSpacing}
               agentState={agentStateById.get(String(message.by || "")) || null}
@@ -145,6 +148,7 @@ export function MessageRows({
               {...common}
               event={message}
               resolvedReplyQuoteText={getReplyQuoteText(message, messageTextById)}
+              resolvedReplyAuthor={getReplyAuthor(message, messageAuthorById, displayNameMap)}
               agentState={agentStateById.get(String(message.by || "")) || null}
               webModelDeliveryStatus={deliveryStatus(message)}
               isHighlighted={

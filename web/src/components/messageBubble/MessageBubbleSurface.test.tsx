@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { MessageBubbleSurface } from "./MessageBubbleSurface";
-import { MessageFooter } from "./MessageBubbleChrome";
+import { MessageFooter, MessageMetadataHeader } from "./MessageBubbleChrome";
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 
@@ -12,7 +12,6 @@ function renderSurface(isUserMessage: boolean): string {
       isUserMessage={isUserMessage}
       isStreaming={false}
       motionClass=""
-      replyRequested={false}
       isHighlighted={false}
     >
       <p>Long product content remains inside the responsive message surface.</p>
@@ -41,8 +40,47 @@ describe("MessageBubbleSurface", () => {
   });
 });
 
+describe("MessageMetadataHeader", () => {
+  it("shows the tags next to the time and the agent's own colour on the name", () => {
+    const markup = renderToStaticMarkup(
+      <MessageMetadataHeader
+        isUserMessage={false}
+        isDark={false}
+        senderAccentColor="oklch(0.56 0.15 40)"
+        senderMonogram="Cl"
+        senderDisplayName="Claude"
+        messageTimestamp="15:02"
+        fullMessageTimestamp="2026-09-15 15:02"
+        tags={<span title="mailMessageHint">modeMail</span>}
+      />,
+    );
+
+    expect(markup).toContain("mailMessageHint");
+    expect(markup).toContain("modeMail");
+    expect(markup).toContain("color:oklch(0.56 0.15 40)");
+    expect(markup).toContain("Claude");
+  });
+
+  it("labels your own messages with the time and the recipients instead of a name", () => {
+    const markup = renderToStaticMarkup(
+      <MessageMetadataHeader
+        isUserMessage={true}
+        isDark={false}
+        senderDisplayName="You"
+        messageTimestamp="14:55"
+        fullMessageTimestamp="2026-09-15 14:55"
+        userSuffix="Gemini"
+      />,
+    );
+
+    expect(markup).toContain("14:55");
+    expect(markup).toContain("Gemini");
+    expect(markup).not.toContain("You");
+  });
+});
+
 describe("MessageFooter", () => {
-  it("keeps Mail visibly identified on each message row", () => {
+  it("no longer duplicates the mail tag that the header carries", () => {
     const markup = renderToStaticMarkup(
       <MessageFooter
         readOnly={false}
@@ -64,7 +102,6 @@ describe("MessageFooter", () => {
       />,
     );
 
-    expect(markup).toContain("mailMessageHint");
-    expect(markup).toContain("modeMail");
+    expect(markup).not.toContain("modeMail");
   });
 });

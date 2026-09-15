@@ -17,7 +17,8 @@ export type KnotsCommandName =
   | "meetings"
   | "projects"
   | "rules"
-  | "log";
+  | "log"
+  | "style";
 
 export const KNOTS_SLASH_COMMANDS: Array<{ name: KnotsCommandName; usage: string }> = [
   { name: "usage", usage: "" },
@@ -35,6 +36,7 @@ export const KNOTS_SLASH_COMMANDS: Array<{ name: KnotsCommandName; usage: string
   { name: "projects", usage: "" },
   { name: "rules", usage: "" },
   { name: "log", usage: "" },
+  { name: "style", usage: "flat|cards" },
 ];
 
 export const KNOTS_TIERS = ["debate", "review", "both", "reserve"] as const;
