@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Gavel } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { Actor } from "../../types";
 import { classNames } from "../../utils/classNames";
@@ -36,26 +37,48 @@ export function KnotsSidebarToggle({ isDark, inline = false }: { isDark: boolean
     help.filter((ticket) => ticket.status !== "resolved").length +
     projects.filter((project) => project.status === "awaiting_human").length +
     lessons.filter((lesson) => lesson.status === "candidate").length;
+  if (inline) {
+    // Same footprint as upstream's Files and Presentation triggers: the header reserves 7.5rem for this row.
+    const label = `${t("knotsToggle")} · ${t("harnessChip", { version: harness?.version ?? "?" })}`;
+    return (
+      <button
+        type="button"
+        onClick={() => setSidebar(!open)}
+        aria-pressed={open}
+        aria-label={label}
+        title={connected ? label : t("meetingOffline")}
+        data-knots-sidebar-trigger
+        className={classNames(
+          "knots-press relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-[var(--glass-tab-bg-hover)] pointer-coarse:h-10 pointer-coarse:w-10",
+          open
+            ? "bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] ring-1 ring-inset ring-[var(--glass-tab-border-active)]"
+            : "text-[var(--color-text-secondary)]",
+        )}
+      >
+        <Gavel size={18} className="shrink-0" aria-hidden="true" />
+        {pending > 0 ? (
+          <span className="absolute -right-0.5 -top-0.5 min-w-[16px] rounded-full bg-rose-600 px-1 text-center text-[10px] font-semibold leading-4 text-white">
+            {pending}
+          </span>
+        ) : active > 0 ? (
+          <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-violet-500" aria-hidden="true" />
+        ) : !connected ? (
+          <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-amber-500" aria-hidden="true" />
+        ) : null}
+      </button>
+    );
+  }
   return (
     <button
       type="button"
       onClick={() => setSidebar(!open)}
       aria-pressed={open}
       title={connected ? t("knotsToggle") : t("meetingOffline")}
-      className={
-        inline
-          ? classNames(
-              "knots-press inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium hover:bg-[var(--glass-tab-bg-hover)] pointer-coarse:h-10",
-              open
-                ? "bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] ring-1 ring-inset ring-[var(--glass-tab-border-active)]"
-                : "text-[var(--color-text-secondary)]",
-            )
-          : classNames(
-              "knots-press pointer-events-auto inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-medium shadow-xl backdrop-blur-xl ring-1",
-              isDark ? "border-white/10 bg-slate-900/60 text-slate-200 ring-white/5" : "border-black/5 bg-white/70 text-gray-700 ring-black/5",
-              open ? (isDark ? "bg-white/[0.08] text-white" : "bg-[rgb(245,245,245)] text-[rgb(35,36,37)]") : "",
-            )
-      }
+      className={classNames(
+        "knots-press pointer-events-auto inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-medium shadow-xl backdrop-blur-xl ring-1",
+        isDark ? "border-white/10 bg-slate-900/60 text-slate-200 ring-white/5" : "border-black/5 bg-white/70 text-gray-700 ring-black/5",
+        open ? (isDark ? "bg-white/[0.08] text-white" : "bg-[rgb(245,245,245)] text-[rgb(35,36,37)]") : "",
+      )}
     >
       <span className={classNames("h-1.5 w-1.5 shrink-0 rounded-full", connected ? "bg-emerald-500" : "bg-amber-500")} aria-hidden="true" />
       {t("knotsToggle")}
