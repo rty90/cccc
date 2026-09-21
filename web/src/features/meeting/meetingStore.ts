@@ -406,18 +406,23 @@ export const useMeetingStore = create<MeetingState>(() => ({
     const source = new EventSource(`${moderatorBaseUrl()}/api/events?token=${encodeURIComponent(token)}`);
     source.onopen = () => {
       useMeetingStore.setState({ connected: true, authRequired: false });
-      void syncLanguage();
       void moderatorGet<{ updates?: Record<string, HarnessUpdate> }>("/api/updates")
         .then((data) => useMeetingStore.setState({ updates: data?.updates || {} }))
         .catch(() => undefined);
     };
     // The i18n singleton is loaded on demand: importing it at module load would initialise i18next in every test
     // that renders a component touching this store.
-    void import("../../i18n").then(({ default: i18n }) =>
-      i18n.on("languageChanged", () => {
+    // A page load never changes the room's language (a preview page with an English UI once switched the whole
+    // room to English on connect). Only an actual switch of the UI language at this page is pushed.
+    void import("../../i18n").then(({ default: i18n }) => {
+      let uiLanguage = normalizeLanguageCode(i18n.language);
+      i18n.on("languageChanged", (next: string) => {
+        const wanted = normalizeLanguageCode(next);
+        if (wanted === uiLanguage) return;
+        uiLanguage = wanted;
         void syncLanguage();
-      }),
-    );
+      });
+    });
     source.onerror = () => useMeetingStore.setState({ connected: false });
     source.onmessage = (message) => {
       let data: Record<string, unknown>;
