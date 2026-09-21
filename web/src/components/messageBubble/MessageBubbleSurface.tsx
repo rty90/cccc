@@ -17,9 +17,12 @@ function sharedClasses({
   isStreaming,
   motionClass,
   isHighlighted,
+  flat = false,
 }: Omit<MessageBubbleSurfaceProps, "children" | "isUserMessage">): string {
   return classNames(
-    "inline-flex max-w-full min-w-0 flex-col px-4 py-3 text-sm leading-relaxed",
+    "inline-flex max-w-full min-w-0 flex-col text-sm leading-relaxed",
+    // One padding only: with both sets present the card padding won and flat text stayed indented.
+    flat ? "px-0.5 py-0" : "px-4 py-3",
     "transition-[opacity,transform,box-shadow,background-color,border-color] duration-200 ease-out",
     isStreaming ? "translate-y-0 opacity-95" : "translate-y-0 opacity-100",
     motionClass,
@@ -35,11 +38,12 @@ export function MessageBubbleSurface({
   isHighlighted,
   flat = false,
 }: MessageBubbleSurfaceProps) {
-  const className = sharedClasses({ isStreaming, motionClass, isHighlighted });
+  const flatAgent = flat && !isUserMessage;
+  const className = sharedClasses({ isStreaming, motionClass, isHighlighted, flat: flatAgent });
 
-  if (flat && !isUserMessage) {
+  if (flatAgent) {
     return (
-      <div className={classNames(className, "w-full px-0.5 py-0 text-[var(--color-text-primary)]")}>
+      <div className={classNames(className, "w-full text-[var(--color-text-primary)]")}>
         {children}
       </div>
     );

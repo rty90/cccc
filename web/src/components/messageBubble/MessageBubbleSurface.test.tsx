@@ -37,5 +37,8 @@ describe("MessageBubbleSurface", () => {
   it("drops the card for agent messages in the flat style, never for the user", () => {
     expect(renderSurface(false, true)).not.toContain("--glass-panel-bg");
     expect(renderSurface(true, true)).toContain("rounded-tr-md");
+    // The card padding must go with the card: both paddings on one element left flat text indented.
+    expect(renderSurface(false, true)).not.toContain("px-4");
+    expect(renderSurface(true, true)).toContain("px-4");
   });
 });
