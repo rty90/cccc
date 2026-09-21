@@ -38,7 +38,7 @@ export function KnotsSidebarToggle({ isDark, inline = false }: { isDark: boolean
     projects.filter((project) => project.status === "awaiting_human").length +
     lessons.filter((lesson) => lesson.status === "candidate").length;
   if (inline) {
-    // Same footprint as upstream's Files and Presentation triggers: the header reserves 7.5rem for this row.
+    // Same footprint as upstream's Files and Presentation triggers; AppHeader's slot is widened by one button for it.
     const label = `${t("knotsToggle")} · ${t("harnessChip", { version: harness?.version ?? "?" })}`;
     return (
       <button

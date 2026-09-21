@@ -227,7 +227,7 @@ export function AppHeader({
         )}
       </div>
       <div
-        className="flex shrink-0 items-center justify-end gap-2 md:w-[max(7.5rem,calc(var(--group-side-panel-width,0px)-1rem+4px))]"
+        className="flex shrink-0 items-center justify-end gap-2 md:w-[max(9.75rem,calc(var(--group-side-panel-width,0px)-1rem+4px))]"
         data-group-header-resources
       >
         <div
