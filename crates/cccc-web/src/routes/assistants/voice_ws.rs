@@ -1,4 +1,4 @@
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{CloseFrame, Message, WebSocket, close_code};
 use cccc_core::{GroupStore, voice_recording_lease};
 use serde_json::{Value, json};
 
@@ -23,7 +23,7 @@ pub(super) async fn serve(
     let loaded = load(&state, &group_id);
     let assistant = match loaded
         .map(|value| assistant(&value))
-        .and_then(|item| voice_backend_access::require_local_asr(&item).map(|_| item))
+        .and_then(|item| voice_backend_access::require_service_asr(&item).map(|_| item))
     {
         Ok(value) => value,
         Err(error) => {
@@ -38,6 +38,19 @@ pub(super) async fn serve(
             return;
         }
     };
+    if assistant["config"]["recognition_backend"] == "external_provider_asr" {
+        super::voice_external::serve(
+            state,
+            group_id,
+            owner_id,
+            lease_id,
+            recording_lease,
+            assistant,
+            socket,
+        )
+        .await;
+        return;
+    }
     let mut capture = voice_ws_capture::VoiceWsCapture::new(&assistant);
     let mut stopped = false;
     let mut lease_released = false;
@@ -140,6 +153,13 @@ pub(super) async fn serve(
                         json!({"type":"closed","ok":true,"seq":command["seq"]}),
                     )
                     .await;
+                    // The application-level closed event does not close the WebSocket.
+                    let _ = socket
+                        .send(Message::Close(Some(CloseFrame {
+                            code: close_code::NORMAL,
+                            reason: "".into(),
+                        })))
+                        .await;
                     stopped = true;
                     break;
                 }
@@ -161,7 +181,7 @@ pub(super) async fn serve(
     }
 }
 
-async fn renew_lease(
+pub(super) async fn renew_lease(
     state: &AppState,
     group_id: &str,
     group_title: &str,
@@ -186,19 +206,22 @@ async fn renew_lease(
     }
 }
 
-fn release_lease(state: &AppState, group_id: &str, owner_id: &str, lease_id: &str) {
+pub(super) fn release_lease(state: &AppState, group_id: &str, owner_id: &str, lease_id: &str) {
     if let Err(error) = voice_recording_lease::release(&state.home, group_id, owner_id, lease_id) {
         tracing::warn!(%error, %group_id, %owner_id, "voice recording lease release failed");
     }
 }
 
-async fn send_events(socket: &mut WebSocket, events: Vec<Value>) -> Result<(), axum::Error> {
+pub(super) async fn send_events(
+    socket: &mut WebSocket,
+    events: Vec<Value>,
+) -> Result<(), axum::Error> {
     for event in events {
         send_json(socket, event).await?;
     }
     Ok(())
 }
 
-async fn send_json(socket: &mut WebSocket, value: Value) -> Result<(), axum::Error> {
+pub(super) async fn send_json(socket: &mut WebSocket, value: Value) -> Result<(), axum::Error> {
     socket.send(Message::Text(value.to_string().into())).await
 }

@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { Archive, ArchiveRestore, Link2 } from "lucide-react";
+import { GroupConnectionBadge } from "../../features/connect/GroupConnectionBadge";
+import type { GroupConnectionCount } from "../../features/connect/protocol";
 import { GroupMeta } from "../../types";
-import { classNames } from "../../utils/classNames";
 import { getGroupStatusFromSource } from "../../utils/groupStatus";
-import { MoreIcon } from "../Icons";
-import { IconButton } from "../ui/icon-button";
-import { GroupMenuAction } from "./GroupMenuAction";
+import { classNames } from "../../utils/classNames";
+import { GroupItemMenuTrigger } from "./GroupItemMenuTrigger";
+import { useGroupMenu, type GroupMenuActionItem } from "./useGroupMenu";
 import { GroupStatusIndicator } from "./GroupStatusIndicator";
 
 interface GroupSidebarItemProps {
@@ -15,6 +16,13 @@ interface GroupSidebarItemProps {
   menuActionLabel?: string;
   menuAriaLabel?: string;
   onMenuAction?: () => void;
+  /** Launch/pause/stop entries for this group; listed before the other actions. */
+  runActions?: GroupMenuActionItem[];
+  /** Destructive entries for this group; listed after the other actions. */
+  trailingActions?: GroupMenuActionItem[];
+  connectionsLabel?: string;
+  connection?: GroupConnectionCount;
+  onOpenConnections?: () => void;
   onSelect: () => void;
   onWarm?: () => void;
 }
@@ -27,11 +35,31 @@ export function GroupSidebarItem({
   menuActionLabel,
   menuAriaLabel,
   onMenuAction,
+  runActions,
+  trailingActions,
+  connectionsLabel,
+  connection,
+  onOpenConnections,
   onSelect,
   onWarm,
 }: GroupSidebarItemProps) {
   const gid = String(group.group_id || "");
-  const [menuOpen, setMenuOpen] = useState(false);
+  const menu = useGroupMenu(menuAriaLabel || menuActionLabel || "", [
+    ...(runActions ?? []),
+    ...(onOpenConnections && connectionsLabel
+      ? [{ label: connectionsLabel, icon: <Link2 size={15} />, onClick: onOpenConnections }]
+      : []),
+    ...(onMenuAction && menuActionLabel
+      ? [
+          {
+            label: menuActionLabel,
+            icon: isArchived ? <ArchiveRestore size={15} /> : <Archive size={15} />,
+            onClick: onMenuAction,
+          },
+        ]
+      : []),
+    ...(trailingActions ?? []),
+  ]);
   const status = getGroupStatusFromSource(group);
 
   if (isCollapsed) {
@@ -82,7 +110,9 @@ export function GroupSidebarItem({
         role="button"
         tabIndex={0}
         onClick={onSelect}
+        onContextMenu={menu.onContextMenu}
         onKeyDown={(event) => {
+          if (event.target !== event.currentTarget || menu.onKeyDown(event)) return;
           if (event.key !== "Enter" && event.key !== " ") return;
           event.preventDefault();
           onSelect();
@@ -108,42 +138,17 @@ export function GroupSidebarItem({
           </div>
         </div>
 
-        {onMenuAction && menuActionLabel && (
-          <div className="relative shrink-0">
-            <IconButton
-              type="button"
-              variant="ghost"
-              size="sm"
-              label={menuAriaLabel || menuActionLabel}
-              className={classNames(
-                "text-[var(--color-text-tertiary)] opacity-0 md:group-hover/item:opacity-100 focus-visible:opacity-100",
-                menuOpen &&
-                  "opacity-100 bg-[var(--glass-tab-bg)] border-[var(--glass-border-subtle)] text-[var(--color-text-primary)] shadow-sm",
-                !menuOpen && isActive && "opacity-100 text-[rgb(35,36,37)] dark:text-white",
-                !menuOpen &&
-                  "hover:bg-[var(--glass-tab-bg-hover)] hover:border-[var(--glass-border-subtle)] hover:text-[var(--color-text-primary)]",
-              )}
-              onClick={(event) => {
-                event.stopPropagation();
-                setMenuOpen((prev) => !prev);
-              }}
-            >
-              <MoreIcon size={16} />
-            </IconButton>
-            {menuOpen && (
-              <div className="absolute right-0 top-full z-20 mt-2 min-w-[160px] rounded-xl p-1.5 shadow-2xl glass-panel">
-                <GroupMenuAction
-                  label={menuActionLabel}
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onMenuAction();
-                  }}
-                />
-              </div>
-            )}
-          </div>
+        <GroupConnectionBadge connection={connection} onClick={onOpenConnections} />
+        {menu.available && (
+          <GroupItemMenuTrigger
+            isActive={isActive}
+            label={menuAriaLabel || menuActionLabel || connectionsLabel || ""}
+            open={menu.open}
+            onToggle={menu.toggle}
+          />
         )}
       </div>
+      {menu.menu}
     </div>
   );
 }

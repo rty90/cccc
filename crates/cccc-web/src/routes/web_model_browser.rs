@@ -99,6 +99,16 @@ pub(super) async fn ensure_open_for_actor(
         .await
         .map_err(|error| ApiError::bad(format!("{error:#}")))?;
     let session_key = key(group_id, actor_id);
+    // An existing surface may be midway through sign-in or navigation. Opening
+    // its viewer must not send it away from that page to the saved conversation.
+    let ready = state
+        .browser_surfaces
+        .prompt_readiness(&session_key)
+        .await
+        .is_ok_and(|readiness| readiness["ready"] == true);
+    if !ready {
+        return Ok(state.browser_surfaces.info(&session_key).await);
+    }
     match target["kind"].as_str() {
         Some("existing_chat") if is_chatgpt_url(&open_url) => {
             if normalized_chatgpt_conversation_url(&open_url).is_some()
@@ -311,6 +321,9 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
         .unwrap_or_else(|| json!({}));
     let ready = readiness["ready"].as_bool().unwrap_or(false);
     let login_required = readiness["login_required"].as_bool().unwrap_or(false);
+    let verification_required = readiness["verification_required"]
+        .as_bool()
+        .unwrap_or(false);
     let url = readiness["tab_url"]
         .as_str()
         .or_else(|| surface["url"].as_str())
@@ -473,6 +486,12 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
             "Open ChatGPT",
             "Open ChatGPT to sign in or inspect the page.",
         )
+    } else if verification_required {
+        (
+            "verify_browser",
+            "Complete security verification",
+            "Complete the website's security verification in this browser. Delivery is waiting.",
+        )
     } else if login_required {
         (
             "login_chatgpt",
@@ -512,8 +531,8 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
         "tone":tone,
         "summary":next_label,
         "browser":{
-            "state":if ready{"ready"}else if login_required{"sign_in_required"}else if active{"open"}else{"closed"},
-            "label":if ready{"Ready"}else if login_required{"Needs sign-in"}else if active{"Open"}else{"Not open"},
+            "state":if verification_required{"verification_required"}else if ready{"ready"}else if login_required{"sign_in_required"}else if active{"open"}else{"closed"},
+            "label":if verification_required{"Needs verification"}else if ready{"Ready"}else if login_required{"Needs sign-in"}else if active{"Open"}else{"Not open"},
             "reason":readiness["message"].as_str().unwrap_or(if active {
                 "Open ChatGPT and sign in with this browser profile."
             } else {
@@ -546,13 +565,14 @@ async fn payload(state: &AppState, group_id: &str, actor_id: &str, inspect: bool
         "active":active,
         "ready":ready,
         "login_required":login_required,
+        "verification_required":verification_required,
         "pid":metadata["pid"],
         "cdp_port":metadata["cdp_port"],
         "profile_dir":metadata["profile_dir"],
         "visibility":metadata["visibility"],
         "started_at":surface["started_at"],
         "updated_at":surface["updated_at"],
-        "state":if ready{"ready"}else if login_required{"sign_in_required"}else if active{"open"}else{"idle"},
+        "state":if verification_required{"verification_required"}else if ready{"ready"}else if login_required{"sign_in_required"}else if active{"open"}else{"idle"},
         "message":readiness["message"],
         "tab_url":url,
         "last_tab_url":url,
@@ -700,13 +720,17 @@ fn required_identifier<'a>(value: &'a str, key: &str) -> Result<&'a str, ApiErro
         .ok_or_else(|| ApiError::bad(format!("{key} is required")))
 }
 
+/// Accepts any single path segment. Actor ids are Unicode alphanumerics
+/// (`cccc_core::actors::validate_actor_id`), so only traversal and separator
+/// characters are rejected here rather than everything outside ASCII.
 fn safe_segment(value: &str) -> Result<&str, ApiError> {
-    (!value.is_empty()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')))
-    .then_some(value)
-    .ok_or_else(|| ApiError::bad("invalid browser profile identifier"))
+    let traversal = value.is_empty() || value == "." || value == "..";
+    let unsafe_char = value
+        .chars()
+        .any(|ch| matches!(ch, '/' | '\\' | '\0') || ch.is_control());
+    (!traversal && !unsafe_char)
+        .then_some(value)
+        .ok_or_else(|| ApiError::bad("invalid browser profile identifier"))
 }
 
 fn dimension(body: &Value, key: &str, default: u32, min: u32, max: u32) -> u32 {
@@ -726,4 +750,19 @@ fn ensure_object(value: &mut Value) -> &mut Map<String, Value> {
 
 fn io_error(error: io::Error) -> ApiError {
     ApiError::bad(error.to_string())
+}
+
+#[cfg(test)]
+mod safe_segment_tests {
+    use super::safe_segment;
+
+    #[test]
+    fn accepts_unicode_actor_ids_and_rejects_traversal() {
+        for ok in ["自迭代研究", "peer-1", "g_405dedf31470", "a.b"] {
+            assert_eq!(safe_segment(ok).map_err(|_| ()), Ok(ok));
+        }
+        for bad in ["", ".", "..", "a/b", "a\\b", "a\0b", "a\nb"] {
+            assert!(safe_segment(bad).is_err(), "{bad:?} must be rejected");
+        }
+    }
 }

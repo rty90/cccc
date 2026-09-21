@@ -1,7 +1,8 @@
 import { useCallback } from "react";
 
 import * as api from "../services/api";
-import type { ChatFilter } from "../stores/useUIStore";
+import { useUIStore, groupMessagesVisible } from "../stores/useUIStore";
+import type { ChatFilter, MobileSurface } from "../stores/useUIStore";
 import type { LedgerEvent, ReplyTarget } from "../types";
 import { formatSendMessageError, type ChatTFunction } from "../utils/chatSend";
 import type { SlashDispatchMessageOptions } from "./useSlashCommands";
@@ -57,7 +58,7 @@ export function useSlashSkillDispatch(args: {
   clearDraft: (groupId: string) => void;
   setChatUnreadCount: (groupId: string, count: number) => void;
   setChatFilter: (groupId: string, filter: ChatFilter) => void;
-  setChatMobileSurface: (groupId: string, surface: "messages" | "presentation") => void;
+  setChatMobileSurface: (groupId: string, surface: MobileSurface) => void;
   enqueueOutbox: (groupId: string, localId: string, event: LedgerEvent) => void;
   removeOutbox: (groupId: string, localId: string) => void;
   showError: (message: string) => void;
@@ -105,7 +106,8 @@ export function useSlashSkillDispatch(args: {
       }
 
       clearDraft(selectedGroupId);
-      setChatUnreadCount(selectedGroupId, 0);
+      if (groupMessagesVisible(selectedGroupId, useUIStore.getState()))
+        setChatUnreadCount(selectedGroupId, 0);
       setChatFilter(selectedGroupId, "all");
       setChatMobileSurface(selectedGroupId, "messages");
       onMessageSent?.();

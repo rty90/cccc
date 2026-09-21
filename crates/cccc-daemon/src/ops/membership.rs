@@ -1,45 +1,59 @@
+use super::operation::{Operation, Policy::RemoteAccess};
 use cccc_contracts::DaemonRequest;
 use cccc_core::access_tokens::AccessTokenStore;
 use cccc_core::{HomeLayout, cloudflared, membership, settings};
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::{Map, Value, json};
 
-use super::membership_account::{AccountClient, AccountError, canonical_reach_hostname};
+use super::membership_account::{
+    AccountClient, AccountError, DeviceConnection, canonical_reach_hostname,
+};
 use super::membership_cloudflared::{self, RuntimeError};
 use crate::dispatch::{OpError, OpResult, bool_arg, object, string_arg};
 
 #[path = "membership/web_runtime.rs"]
 mod web_runtime;
 pub(crate) use web_runtime::validated_live_web_binding;
+#[path = "membership/restore.rs"]
+mod restore;
+pub(crate) use restore::ReachRestore;
 
 struct PublicUrls {
     hostname: Option<String>,
     web: Option<String>,
 }
 
-pub fn handle(home: &HomeLayout, request: &DaemonRequest) -> Option<OpResult> {
+pub(super) fn resolve_operation(request: &DaemonRequest) -> Option<Operation> {
     Some(match request.op.as_str() {
-        "membership_status" => status(home, request),
-        "membership_login" => login(home, request),
-        "membership_login_poll" => login_poll(home, request),
-        "membership_logout" => logout(home, request),
-        "membership_reach_install" => reach_install(home, request),
-        "membership_reach_on" => reach_on(home, request),
-        "membership_reach_off" => reach_off(home, request),
+        "membership_status" => Operation::new(RemoteAccess, status),
+        "membership_login" => Operation::new(RemoteAccess, login),
+        "membership_login_poll" => Operation::new(RemoteAccess, login_poll),
+        "membership_logout" => Operation::new(RemoteAccess, logout),
+        "membership_reach_install" => Operation::new(RemoteAccess, reach_install),
+        "membership_reach_on" => Operation::new(RemoteAccess, reach_on),
+        "membership_reach_off" => Operation::new(RemoteAccess, reach_off),
         _ => return None,
     })
 }
 
 fn status(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
     require_user(request)?;
-    let (account_online, account_reachable) = refresh_cut_from_account(home)?;
+    let (connection, account_reachable) = refresh_cut_from_account(home)?;
     let mut payload = status_payload(home)?;
-    if account_online == Some(false) {
-        payload["membership"]["online"] = Value::Bool(false);
+    let body = &mut payload["membership"];
+    if body["reach_status"] == "unknown" && body["reach_enabled"] == true {
+        let status = match connection {
+            Some(DeviceConnection::Online) => "online",
+            Some(DeviceConnection::Offline | DeviceConnection::NotStarted) => "offline",
+            Some(DeviceConnection::Unknown) | None => "unknown",
+        };
+        body["reach_status"] = json!(status);
+        body["online"] = json!(status == "online");
     }
     if let Some(account_reachable) = account_reachable {
-        payload["membership"]["account_reachable"] = Value::Bool(account_reachable);
+        body["account_reachable"] = Value::Bool(account_reachable);
     }
+    body["checked_at"] = json!(cccc_contracts::utc_now());
     object(payload)
 }
 
@@ -85,6 +99,14 @@ fn login_poll(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
     require_user(request)?;
     let state = membership::load(home).map_err(OpError::io)?;
     if state.logged_in && state.device_token.is_some() {
+        if !state.disabled
+            && state
+                .device_token
+                .as_ref()
+                .is_some_and(|token| !token.is_empty())
+        {
+            prepare_administrator_access(home)?;
+        }
         return object(status_payload(home)?);
     }
     let pending = state.pending_login.as_ref().and_then(Value::as_object);
@@ -101,8 +123,10 @@ fn login_poll(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
     let client = AccountClient::new(&origin).map_err(|error| account_fail(home, error))?;
     match client.poll_device_login(&device_code) {
         Ok(grant) => {
+            let device_token = grant.device_token.clone();
             membership::update(home, |state| {
                 state.logged_in = true;
+                state.account_label = None;
                 state.account_origin = Some(origin.clone());
                 state.device_id = Some(grant.device_id);
                 state.device_token = Some(grant.device_token);
@@ -115,6 +139,14 @@ fn login_poll(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
                 Ok(())
             })
             .map_err(OpError::io)?;
+            // Only a newly granted device receives an initial name. Repeated
+            // polling and reconnects must preserve the account's chosen name.
+            if let Some(name) = initial_instance_name()
+                && let Err(error) = client.rename_device(&device_token, &name)
+            {
+                tracing::warn!(code = %error.code, "Initial instance name was not saved; it can be edited in Account settings");
+            }
+            prepare_administrator_access(home)?;
         }
         Err(error) if error.retryable => {
             if error.retry_after_delta > 0 {
@@ -155,6 +187,36 @@ fn login_poll(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
     object(status_payload(home)?)
 }
 
+pub(super) fn initial_instance_name() -> Option<String> {
+    #[cfg(unix)]
+    let hostname = nix::unistd::gethostname()
+        .ok()?
+        .to_string_lossy()
+        .into_owned();
+    #[cfg(not(unix))]
+    let hostname = std::env::var("COMPUTERNAME").ok()?;
+    let name = hostname.trim();
+    if name.is_empty()
+        || name.encode_utf16().count() > 60
+        || name.chars().any(|c| {
+            c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        })
+    {
+        return None;
+    }
+    Some(name.to_owned())
+}
+
+// This runs only after an explicit user login grant/replay, including the CLI.
+// Status and background directory refresh never initialize Web credentials.
+fn prepare_administrator_access(home: &HomeLayout) -> Result<(), OpError> {
+    AccessTokenStore::new(home.clone())
+        .and_then(|store| store.ensure_administrator())
+        .map_err(OpError::io)?;
+    cccc_core::web_bootstrap::ensure_web_bootstrap_token(home).map_err(OpError::io)?;
+    Ok(())
+}
+
 fn logout(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
     require_user(request)?;
     let state = membership::load(home).map_err(OpError::io)?;
@@ -166,6 +228,11 @@ fn logout(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
             !remote_url.is_empty()
                 && hostname.trim_end_matches('/') == remote_url.trim_end_matches('/')
         });
+    // A failed remote retirement keeps its credentials for retry, but must not
+    // let background recovery undo the local stop the user just requested.
+    if retires_reach && boolean(&remote, "enabled", false) {
+        save_reach_disabled(home)?;
+    }
     if let (Some(origin), Some(token)) = (
         bound_account_origin(&state).ok(),
         state
@@ -230,19 +297,8 @@ fn reach_on_with(
     start_helper: impl FnOnce(&HomeLayout, &str) -> Result<(), RuntimeError>,
 ) -> OpResult {
     require_user(request)?;
-    if environment_flag("CCCC_WEB_ALLOW_UNAUTHENTICATED") {
-        return fail(
-            home,
-            "membership_gate",
-            "CCCC_WEB_ALLOW_UNAUTHENTICATED is incompatible with reach",
-        );
-    }
-    if admin_token_count(home) == 0 {
-        return fail(
-            home,
-            "membership_gate",
-            "an administrator access token is required before reach can start",
-        );
+    if let Err(error) = validate_reach_access(home) {
+        return fail(home, &error.code, &error.message);
     }
     let remote = settings::load(home).map_err(OpError::io)?.remote_access;
     let provider = text(&remote, "provider", "off");
@@ -271,7 +327,7 @@ fn reach_on_with(
             "not logged in; run `cccc login`",
         );
     }
-    let (_account_online, _account_reachable) = refresh_cut_from_account(home)?;
+    let (_connection, _account_reachable) = refresh_cut_from_account(home)?;
     let state = membership::load(home).map_err(OpError::io)?;
     if state.disabled {
         return fail(home, "membership_disabled", "this device has been disabled");
@@ -300,6 +356,35 @@ fn reach_on_with(
         }
         Err(error) => return Err(account_fail(home, error)),
     };
+    commit_reach_start(home, &credentials, start_helper)?;
+    let mut payload = status_payload(home)?;
+    // Process creation is acceptance of the start request, not evidence that
+    // Cloudflare has connected. Clients confirm via bounded status checks.
+    payload["membership"]["reach_status"] = json!("connecting");
+    object(payload)
+}
+
+fn validate_reach_access(home: &HomeLayout) -> Result<(), OpError> {
+    if environment_flag("CCCC_WEB_ALLOW_UNAUTHENTICATED") {
+        return Err(OpError::new(
+            "membership_gate",
+            "CCCC_WEB_ALLOW_UNAUTHENTICATED is incompatible with reach",
+        ));
+    }
+    if admin_token_count(home) == 0 {
+        return Err(OpError::new(
+            "membership_gate",
+            "an administrator access token is required before reach can start",
+        ));
+    }
+    Ok(())
+}
+
+fn commit_reach_start(
+    home: &HomeLayout,
+    credentials: &super::membership_account::ReachCredentials,
+    start_helper: impl FnOnce(&HomeLayout, &str) -> Result<(), RuntimeError>,
+) -> Result<(), OpError> {
     membership::update(home, |state| {
         state.hostname = Some(credentials.hostname.clone());
         state.tunnel_token = Some(credentials.tunnel_token.clone());
@@ -341,7 +426,7 @@ fn reach_on_with(
         }
         return Err(OpError::io(error));
     }
-    object(status_payload(home)?)
+    Ok(())
 }
 
 pub(super) fn reach_off(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
@@ -355,19 +440,23 @@ pub(super) fn reach_off(home: &HomeLayout, request: &DaemonRequest) -> OpResult 
     }
     membership_cloudflared::stop(home).map_err(runtime_error)?;
     if boolean(&remote, "enabled", false) {
-        settings::update(home, |global| {
-            global
-                .remote_access
-                .insert("enabled".into(), Value::Bool(false));
-            global.remote_access.insert(
-                "updated_at".into(),
-                Value::String(cccc_contracts::utc_now()),
-            );
-            Ok(())
-        })
-        .map_err(OpError::io)?;
+        save_reach_disabled(home)?;
     }
     object(status_payload(home)?)
+}
+
+fn save_reach_disabled(home: &HomeLayout) -> Result<(), OpError> {
+    settings::update(home, |global| {
+        global
+            .remote_access
+            .insert("enabled".into(), Value::Bool(false));
+        global.remote_access.insert(
+            "updated_at".into(),
+            Value::String(cccc_contracts::utc_now()),
+        );
+        Ok(())
+    })
+    .map_err(OpError::io)
 }
 
 fn status_payload(home: &HomeLayout) -> Result<Value, OpError> {
@@ -385,6 +474,14 @@ fn status_payload(home: &HomeLayout) -> Result<Value, OpError> {
     });
     let urls = public_urls(home, url_source.as_deref())?;
     let cut = state.disabled;
+    let enabled = provider == "reach" && boolean(&remote, "enabled", false);
+    let reach_status = if !state.logged_in || cut || (!enabled && !helper.running) {
+        "off"
+    } else if !helper.running {
+        "offline"
+    } else {
+        "unknown"
+    };
     let pending = state
         .pending_login
         .as_ref()
@@ -392,10 +489,13 @@ fn status_payload(home: &HomeLayout) -> Result<Value, OpError> {
         .filter(|pending| !pending_expired(pending));
     let mut body = json!({
         "logged_in":state.logged_in,
+        "account_label":state.account_label.as_ref().filter(|_| state.logged_in && !state.disabled),
         "device_id":state.device_id,
         "hostname":urls.hostname,
         "web_url":urls.web,
-        "online":provider == "reach" && boolean(&remote, "enabled", false) && helper.running && !cut,
+        "online":false,
+        "reach_enabled":enabled,
+        "reach_status":reach_status,
         "cut":cut,
         "disabled":cut,
         "in_reach":provider == "reach",
@@ -426,7 +526,9 @@ fn status_payload(home: &HomeLayout) -> Result<Value, OpError> {
     Ok(json!({"membership":body}))
 }
 
-fn refresh_cut_from_account(home: &HomeLayout) -> Result<(Option<bool>, Option<bool>), OpError> {
+fn refresh_cut_from_account(
+    home: &HomeLayout,
+) -> Result<(Option<DeviceConnection>, Option<bool>), OpError> {
     let Ok(state) = membership::load(home) else {
         return Ok((None, None));
     };
@@ -450,15 +552,26 @@ fn refresh_cut_from_account(home: &HomeLayout) -> Result<(Option<bool>, Option<b
             ) =>
         {
             mark_cut(home, None, None)?;
-            return Ok((Some(false), Some(true)));
+            return Ok((None, Some(true)));
         }
         Err(_) => return Ok((None, Some(false))),
     };
     if remote.disabled {
         mark_cut(home, remote.device_id, remote.hostname)?;
-        return Ok((Some(false), Some(true)));
+        return Ok((None, Some(true)));
     }
-    Ok((remote.online, Some(true)))
+    if state.account_label != remote.account_label {
+        membership::update(home, |current| {
+            if current.device_token == state.device_token
+                && current.account_origin == state.account_origin
+            {
+                current.account_label = remote.account_label;
+            }
+            Ok(())
+        })
+        .map_err(OpError::io)?;
+    }
+    Ok((remote.connection, Some(true)))
 }
 
 fn mark_cut(
@@ -683,6 +796,40 @@ mod tests {
     }
 
     #[test]
+    fn disabled_login_replay_does_not_initialize_administrator_access() {
+        let temp = tempfile::tempdir().expect("fixture operation");
+        let home = HomeLayout::from_path(temp.path()).expect("fixture operation");
+        home.initialize().expect("initialize fixture home");
+        membership::save(
+            &home,
+            &membership::MembershipState {
+                logged_in: true,
+                disabled: true,
+                device_id: Some("retired".into()),
+                device_token: Some("retired-token".into()),
+                ..Default::default()
+            },
+        )
+        .expect("fixture operation");
+        let request = DaemonRequest {
+            v: 1,
+            op: "membership_login_poll".into(),
+            args: json!({"by":"user"})
+                .as_object()
+                .expect("fixture operation")
+                .clone(),
+        };
+        login_poll(&home, &request).expect("fixture operation");
+        assert!(
+            AccessTokenStore::new(home)
+                .expect("fixture operation")
+                .list()
+                .expect("fixture operation")
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn login_poll_remains_bound_to_the_issuing_account_origin() {
         let (origin, requests) = account_server(vec![
             (
@@ -693,6 +840,7 @@ mod tests {
                 200,
                 r#"{"access_token":"device-token-rust","device_id":"device-rust"}"#,
             ),
+            (200, r#"{"display_name":"Named device"}"#),
         ]);
         let temp = tempfile::tempdir().expect("tempdir");
         let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
@@ -720,11 +868,74 @@ mod tests {
         let second = requests.recv().expect("device-token request");
         assert!(first.starts_with("POST /v1/device/code "));
         assert!(second.starts_with("POST /v1/device/token "));
+        if let Some(name) = initial_instance_name() {
+            let rename = requests.recv().expect("initial name request");
+            assert!(rename.starts_with("POST /v1/device/name "));
+            let body: Value =
+                serde_json::from_str(rename.split("\r\n\r\n").nth(1).expect("body")).expect("json");
+            assert_eq!(body["display_name"], name);
+        }
         let state = membership::load(&home).expect("membership");
         assert_eq!(state.account_origin.as_deref(), Some(origin.as_str()));
         assert_eq!(state.device_token.as_deref(), Some("device-token-rust"));
         let replayed = login_poll(&home, &poll_request).expect("replay committed login");
         assert_eq!(replayed["membership"]["logged_in"], true);
+        assert!(
+            requests.try_recv().is_err(),
+            "repeated polling must not rename a device"
+        );
+    }
+
+    #[test]
+    fn optional_initial_name_failure_does_not_undo_login_or_retry_a_rename() {
+        let (origin, requests) = account_server(vec![
+            (
+                200,
+                r#"{"access_token":"fixture-grant","device_id":"fixture-device"}"#,
+            ),
+            (503, r#"{"error":"temporarily_unavailable"}"#),
+        ]);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+        home.initialize().expect("home");
+        membership::update(&home, |state| {
+            state.account_origin = Some(origin.clone());
+            state.pending_login = Some(
+                json!({"device_code":"fixture-code", "account_origin":origin,
+                "expires_at": (Utc::now() + chrono::Duration::minutes(5)).to_rfc3339()}),
+            );
+            Ok(())
+        })
+        .expect("pending login");
+        let request = DaemonRequest {
+            v: 1,
+            op: "membership_login_poll".into(),
+            args: Map::new(),
+        };
+        let result = login_poll(&home, &request).expect("grant remains successful");
+        assert_eq!(result["membership"]["logged_in"], true);
+        assert!(
+            membership::load(&home)
+                .expect("state")
+                .pending_login
+                .is_none()
+        );
+        assert!(
+            requests
+                .recv()
+                .expect("grant request")
+                .starts_with("POST /v1/device/token ")
+        );
+        if initial_instance_name().is_some() {
+            assert!(
+                requests
+                    .recv()
+                    .expect("name request")
+                    .starts_with("POST /v1/device/name ")
+            );
+        }
+        login_poll(&home, &request).expect("committed login replay");
+        assert!(requests.try_recv().is_err());
     }
 
     #[test]
@@ -950,6 +1161,9 @@ mod tests {
             },
         )
         .expect("reach on");
+        assert_eq!(result["membership"]["online"], false);
+        assert_eq!(result["membership"]["reach_status"], "connecting");
+        assert_eq!(result["membership"]["reach_enabled"], true);
         assert_eq!(
             result["membership"]["hostname"],
             "https://device-rust.example.test"
@@ -1256,10 +1470,17 @@ mod tests {
 
     #[test]
     fn membership_status_requires_the_account_tunnel_to_be_online() {
-        let (origin, _requests) = account_server(vec![(
-            200,
-            r#"{"device_id":"device-rust","hostname":"https://device-rust.example.test","disabled":false,"online":false}"#,
-        )]);
+        let (origin, _requests) = account_server(vec![
+            (
+                200,
+                r#"{"device_id":"device-rust","hostname":"https://device-rust.example.test","disabled":false,"online":false}"#,
+            ),
+            (200, r#"{"online":true,"connection":"online"}"#),
+            (200, r#"{"online":false,"connection":"unknown"}"#),
+            (503, r#"{"error":"temporarily unavailable"}"#),
+            (200, r#"{"online":true,"connection":"online"}"#),
+            (200, r#"{"online":true,"connection":"online"}"#),
+        ]);
         let temp = tempfile::tempdir().expect("tempdir");
         let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
         home.initialize().expect("home");
@@ -1302,8 +1523,31 @@ mod tests {
             args: json!({"by":"user"}).as_object().cloned().expect("args"),
         };
 
-        let result = status(&home, &request).expect("status");
+        // A live helper alone must never advertise a usable connection.
+        let local = status_payload(&home).expect("local status");
+        assert_eq!(local["membership"]["online"], false);
+        assert_eq!(local["membership"]["reach_status"], "unknown");
+        for expected in ["offline", "online", "unknown", "unknown"] {
+            let result = status(&home, &request).expect("status");
+            assert_eq!(result["membership"]["reach_status"], expected);
+            assert_eq!(result["membership"]["online"], expected == "online");
+            assert_eq!(result["membership"]["reach_enabled"], true);
+            assert!(result["membership"]["checked_at"].is_string());
+        }
+        assert!(!membership::load(&home).expect("binding retained").disabled);
 
+        std::fs::remove_file(helper_dir.join("cloudflared.pid")).expect("helper exited");
+        let result = status(&home, &request).expect("status after helper exit");
+        assert_eq!(result["membership"]["online"], false);
+        assert_eq!(result["membership"]["reach_status"], "offline");
+
+        settings::update(&home, |global| {
+            global.remote_access.insert("enabled".into(), json!(false));
+            Ok(())
+        })
+        .expect("turn off");
+        let result = status(&home, &request).expect("status after stop");
+        assert_eq!(result["membership"]["reach_status"], "off");
         assert_eq!(result["membership"]["online"], false);
     }
 

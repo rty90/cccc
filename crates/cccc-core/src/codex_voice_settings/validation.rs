@@ -49,7 +49,8 @@ pub(super) fn validate_private_environment(values: &BTreeMap<String, String>) ->
         validate_environment_value(key, value)?;
         if matches!(
             key.as_str(),
-            "CODEX_HOME"
+            "CLAUDE_CONFIG_DIR"
+                | "CODEX_HOME"
                 | "GROK_HOME"
                 | "HOME"
                 | "USERPROFILE"
@@ -57,6 +58,9 @@ pub(super) fn validate_private_environment(values: &BTreeMap<String, String>) ->
                 | "XDG_CONFIG_HOME"
                 | "OPENCODE_CONFIG"
                 | "OPENCODE_CONFIG_DIR"
+                | "KILO_CONFIG"
+                | "KILO_CONFIG_DIR"
+                | "KILO_DB"
         ) {
             explicit_path(value, key)?;
         }
@@ -82,7 +86,8 @@ pub(super) fn validate_env_key(value: &str) -> io::Result<()> {
 pub(super) fn normalized_environment_value(key: &str, value: String) -> io::Result<String> {
     if matches!(
         key,
-        "CODEX_HOME"
+        "CLAUDE_CONFIG_DIR"
+            | "CODEX_HOME"
             | "GROK_HOME"
             | "HOME"
             | "USERPROFILE"
@@ -90,6 +95,9 @@ pub(super) fn normalized_environment_value(key: &str, value: String) -> io::Resu
             | "XDG_CONFIG_HOME"
             | "OPENCODE_CONFIG"
             | "OPENCODE_CONFIG_DIR"
+            | "KILO_CONFIG"
+            | "KILO_CONFIG_DIR"
+            | "KILO_DB"
     ) {
         return explicit_path(&value, key).map(|path| path.to_string_lossy().into_owned());
     }

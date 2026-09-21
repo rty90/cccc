@@ -5,7 +5,8 @@ import { RefreshIcon } from "../../Icons";
 import {
   membershipApprovalUrl,
   membershipManagementUrl,
-  membershipPanelKind,
+  membershipAccountKind,
+  membershipReachStatus,
 } from "./reachMembershipModel";
 import {
   dangerButtonClass,
@@ -18,6 +19,7 @@ import {
   settingsWorkspaceSoftPanelClass,
 } from "./types";
 import { useMembershipController } from "./useMembershipController";
+import { ConnectStatus } from "./ConnectStatus";
 
 interface AccountTabProps {
   isDark: boolean;
@@ -26,10 +28,10 @@ interface AccountTabProps {
   onOpenWebAccess: () => void;
 }
 
-type AccountViewKind = ReturnType<typeof membershipPanelKind> | "loading" | "unavailable";
+type AccountViewKind = ReturnType<typeof membershipAccountKind> | "loading" | "unavailable";
 
 function statusClass(kind: AccountViewKind): string {
-  if (kind === "online") {
+  if (kind === "linked") {
     return "border-emerald-500/30 bg-emerald-500/12 text-emerald-700 dark:text-emerald-300";
   }
   if (kind === "cut" || kind === "pending") {
@@ -57,7 +59,7 @@ export function AccountTab({
     disconnect,
   } = useMembershipController(isActive);
   const kind: AccountViewKind = membership
-    ? membershipPanelKind(membership)
+    ? membershipAccountKind(membership)
     : membershipBusy
       ? "loading"
       : membershipError
@@ -67,8 +69,7 @@ export function AccountTab({
   const approvalUrl = membershipApprovalUrl(membership, language);
   const managementUrl = membershipManagementUrl(membership, language);
   const accountOrigin = String(membership?.account_origin || "").trim();
-  const reachLinked = Boolean(membership?.in_reach);
-  const reachOnline = Boolean(membership?.online);
+  const reachStatus = membershipReachStatus(membership);
   const reachSupported = membership?.reach_supported !== false;
   const statusLabel = t(`account.status.${kind}`);
 
@@ -111,7 +112,7 @@ export function AccountTab({
               </span>
               {kind !== "logged_out" && accountOrigin ? (
                 <span className="truncate text-xs text-[var(--color-text-muted)]">
-                  {accountOrigin}
+                  {membership?.account_label || accountOrigin}
                 </span>
               ) : null}
             </div>
@@ -140,7 +141,7 @@ export function AccountTab({
               {t("account.relinkInstallation")}
             </button>
           ) : null}
-          {kind === "offline" || kind === "online" ? (
+          {kind === "linked" ? (
             <div className="flex shrink-0 flex-wrap gap-2">
               {managementUrl ? (
                 <a
@@ -220,7 +221,7 @@ export function AccountTab({
           </p>
         ) : null}
 
-        {kind === "offline" || kind === "online" ? (
+        {kind === "linked" ? (
           <div className={settingsWorkspaceSoftPanelClass(isDark)}>
             <dl className="grid gap-4 sm:grid-cols-2">
               <div>
@@ -244,10 +245,25 @@ export function AccountTab({
         ) : null}
 
         <div className={settingsWorkspacePanelClass(isDark)}>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <h4 className="text-sm font-semibold text-[var(--color-text-primary)]">CCCC Connect</h4>
+          <p className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
+            {t("account.connect.description")}
+          </p>
+          {kind === "linked" ? (
+            <ConnectStatus
+              key={`${accountOrigin}/${membership?.device_id}`}
+              active={isActive}
+              deviceId={membership?.device_id || ""}
+              refreshedAt={membership?.checked_at || ""}
+            />
+          ) : null}
+          <p className="mt-2 text-xs leading-5 text-[var(--color-text-muted)]">
+            {t("account.connect.webAccess")}
+          </p>
+          <div className="mt-4 flex flex-col gap-3 border-t border-[var(--glass-border-subtle)] pt-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h4 className="text-sm font-semibold text-[var(--color-text-primary)]">
-                {t("account.servicesTitle")}
+                {t("webAccess.reach.title")}
               </h4>
               <p className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
                 {kind === "logged_out" || kind === "pending" || kind === "cut"
@@ -258,20 +274,26 @@ export function AccountTab({
                       ? t("account.servicesUnavailable")
                       : !reachSupported
                         ? t("account.reachUnsupported")
-                        : reachOnline
-                          ? t("account.reachOnline")
-                          : reachLinked
-                            ? t("account.reachOff")
-                            : t("account.reachAvailable")}
+                        : t(`webAccess.reach.connectionHelp.${reachStatus}`)}
               </p>
             </div>
-            <button type="button" onClick={onOpenWebAccess} className={secondaryButtonClass()}>
-              {returnToWebAccess ? t("account.continueWebAccess") : t("account.openWebAccess")}
+            <button
+              type="button"
+              onClick={onOpenWebAccess}
+              className={
+                kind === "linked" && reachSupported && reachStatus === "off"
+                  ? primaryButtonClass(false)
+                  : secondaryButtonClass()
+              }
+            >
+              {returnToWebAccess || (kind === "linked" && reachSupported && reachStatus === "off")
+                ? t("account.continueWebAccess")
+                : t("account.openWebAccess")}
             </button>
           </div>
         </div>
 
-        {kind === "offline" || kind === "online" ? (
+        {kind === "linked" ? (
           <div className="border-t border-[var(--glass-border-subtle)] pt-4">
             {confirmDisconnect ? (
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

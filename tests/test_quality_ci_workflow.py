@@ -91,6 +91,40 @@ def test_web_ci_uses_managed_node_and_composite_vite_plus_check() -> None:
     assert "npm -C web run lint" not in runs
 
 
+def test_browser_gates_cover_prs_and_nightly_without_external_credentials() -> None:
+    for job, command in [
+        (_workflow()["jobs"]["web"], "npm -C web run test:browser"),
+        (_nightly_workflow()["jobs"]["web-bundle"], "npm -C web run test:browser:matrix"),
+    ]:
+        runs = _runs(job)
+        assert runs.index("playwright install --with-deps chromium") < runs.index(command)
+        assert "secrets." not in json.dumps(job)
+        evidence = [s for s in job["steps"] if "browser-failure-evidence" in s.get("with", {}).get("name", "")]
+        assert len(evidence) == 1
+        assert evidence[0]["if"] == "failure()"
+        assert "web/test-results" in evidence[0]["with"]["path"]
+
+
+def test_native_empty_session_smoke_is_enabled_without_provider_secrets() -> None:
+    steps = _workflow()["jobs"]["rust-linux"]["steps"]
+    install = next(step for step in steps if step.get("name") == "Install verified native CLI versions")
+    assert "@openai/codex@0.153.2" in install["run"]
+    assert "@anthropic-ai/claude-code@2.1.261" in install["run"]
+    assert "@kilocode/cli@7.5.14" in install["run"]
+    smoke = next(step for step in steps if step.get("name") == "Verify native sessions without external model access")
+    assert smoke["timeout-minutes"] == "5"
+    assert smoke["env"]["CCCC_CODEX_EMPTY_LIVE"] == "1"
+    assert smoke["env"]["CCCC_CLAUDE_EMPTY_LIVE"] == "1"
+    assert smoke["env"]["CCCC_KILO_MANAGED_LIVE"] == "1"
+    assert smoke["env"]["CCCC_KILO_MODEL_SYNC_LIVE"] == "1"
+    assert smoke["env"]["CCCC_LAUNCHER_PATH"].endswith("/target/debug/cccc")
+    assert "cargo build --package cccc --bin cccc --locked" in smoke["run"]
+    assert "live_codex_empty_actor_and_analyst_resume_with_native_terminal" in smoke["run"]
+    assert "live_claude_empty_session_resumes_without_a_prompt" in smoke["run"]
+    assert "live_kilo -- --test-threads=1" in smoke["run"]
+    assert "secrets." not in json.dumps(smoke)
+
+
 def test_windows_installer_job_is_a_nightly_native_fixture() -> None:
     installer = _nightly_workflow()["jobs"]["windows-installer"]
     runs = _runs(installer)
@@ -514,7 +548,22 @@ def test_docs_publish_stable_installers_from_the_canonical_scripts() -> None:
     )
     assert checkout["with"]["ref"] == "${{ github.event.repository.default_branch }}"
     docs_runs = _runs(docs_workflow["jobs"]["build"])
-    assert "node scripts/resolve_docs_installer_version.mjs" in docs_runs
+    resolver_command = "node scripts/resolve_docs_installer_version.mjs --output docs/public/releases.json"
+    assert f'version="$({resolver_command})"' in docs_runs
+    assert 'echo "version=$version" >> "$GITHUB_OUTPUT"' in docs_runs
+    resolver = next(
+        step for step in docs_workflow["jobs"]["build"]["steps"]
+        if step.get("id") == "installer-release"
+    )
+    assert resolver["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
+    verification = "cmp docs/public/releases.json docs/.vitepress/dist/releases.json"
+    assert docs_runs.index(resolver_command) < docs_runs.index("npm run build") < docs_runs.index(verification)
+    steps = docs_workflow["jobs"]["build"]["steps"]
+    upload = next(step for step in steps if step.get("uses", "").startswith("actions/upload-pages-artifact"))
+    verify = next(step for step in steps if step.get("run") == verification)
+    assert steps.index(verify) < steps.index(upload)
+    assert upload["with"]["path"] == "docs/.vitepress/dist"
+    assert docs_workflow["jobs"]["deploy"]["needs"] == "build"
     build = next(
         step
         for step in docs_workflow["jobs"]["build"]["steps"]

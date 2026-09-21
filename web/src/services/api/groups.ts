@@ -33,6 +33,7 @@ import {
   ApiResponse,
   clearActorsReadOnlyRequest,
   clearGroupsReadRequest,
+  filenameFromContentDisposition,
   groupPromptsRequestKey,
   groupPromptsRequestKey as groupPromptsKey,
   groupsRequestKey,
@@ -1495,9 +1496,10 @@ export async function exportGroupCopy(
       }
       return { ok: false, error: { code: "COPY_EXPORT_FAILED", message } };
     }
-    const header = resp.headers.get("content-disposition") || "";
-    const match = /filename="?([^";]+)"?/i.exec(header);
-    const filename = match?.[1] || `cccc-group-${groupId}.zip`;
+    const filename = filenameFromContentDisposition(
+      resp.headers.get("content-disposition") || "",
+      `cccc-group-${groupId}.zip`,
+    );
     return { ok: true, result: { blob: await resp.blob(), filename } };
   } catch (error) {
     return {
@@ -1591,19 +1593,25 @@ export async function attachScope(groupId: string, path: string) {
 export async function startGroup(groupId: string) {
   clearActorsReadOnlyRequest(groupId);
   clearGroupsReadRequest();
-  return apiJson(`/api/v1/groups/${encodeURIComponent(groupId)}/start?by=user`, { method: "POST" });
+  return apiJson<{ group: GroupDoc }>(
+    `/api/v1/groups/${encodeURIComponent(groupId)}/start?by=user`,
+    { method: "POST" },
+  );
 }
 
 export async function stopGroup(groupId: string) {
   clearActorsReadOnlyRequest(groupId);
   clearGroupsReadRequest();
-  return apiJson(`/api/v1/groups/${encodeURIComponent(groupId)}/stop?by=user`, { method: "POST" });
+  return apiJson<{ group: GroupDoc }>(
+    `/api/v1/groups/${encodeURIComponent(groupId)}/stop?by=user`,
+    { method: "POST" },
+  );
 }
 
 export async function setGroupState(groupId: string, state: "active" | "idle" | "paused") {
   clearActorsReadOnlyRequest(groupId);
   clearGroupsReadRequest();
-  return apiJson(
+  return apiJson<{ group: GroupDoc }>(
     `/api/v1/groups/${encodeURIComponent(groupId)}/state?state=${encodeURIComponent(state)}&by=user`,
     { method: "POST" },
   );

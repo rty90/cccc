@@ -15,13 +15,6 @@ export type GroupMeta = {
   group_id: string;
   title?: string;
   topic?: string;
-  group_bridge_remote?: boolean;
-  group_bridge_local_group_id?: string;
-  group_bridge_remote_endpoint?: string;
-  group_bridge_remote_peer_id?: string;
-  group_bridge_trust_id?: string;
-  group_bridge_registration_id?: string;
-  group_bridge_access_level?: string;
   updated_at?: string;
   created_at?: string;
   running?: boolean;
@@ -29,7 +22,52 @@ export type GroupMeta = {
   runtime_status?: GroupRuntimeStatus;
 };
 
+export type WorkspaceGitStatus =
+  | "modified"
+  | "added"
+  | "deleted"
+  | "renamed"
+  | "untracked"
+  | "conflicted";
+
+export type WorkspaceEntry = {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  is_symlink?: boolean;
+  unavailable?: "missing" | "outside_scope" | "unreadable" | "unsupported";
+  mime_type?: string;
+  size?: number;
+  git_status?: WorkspaceGitStatus;
+  /** A clean directory whose subtree contains changes. */
+  git_dirty_descendant?: boolean;
+  ignored?: boolean;
+};
+
+export type WorkspaceListing = {
+  scope_key: string;
+  scope_url: string;
+  root_path: string;
+  path: string;
+  parent: string | null;
+  items: WorkspaceEntry[];
+};
+
+export type WorkspaceFile = {
+  scope_key: string;
+  scope_url: string;
+  path: string;
+  content: string;
+  bytes: number;
+  mime_type: string;
+  binary: boolean;
+  truncated: boolean;
+  /** Digest of the bytes this content was read from; echoed back on save. */
+  sha256: string;
+};
+
 export type GroupDoc = {
+  generation?: string;
   group_id: string;
   title?: string;
   topic?: string;
@@ -110,21 +148,17 @@ export type TaskMessageRef = MessageRef & {
   handoff_to?: string | null;
 };
 
-export type GroupBridgeRouteMessageRef = MessageRef & {
-  kind: "group_bridge_route";
-  local_group_id?: string;
-  remote_group_id: string;
-  remote_group_title?: string;
-  remote_endpoint?: string;
-  remote_peer_id?: string;
-  trust_id?: string;
-  access_level?: string;
-  recipient_identifier?: string;
+export type LocalGroupRouteMessageRef = MessageRef & {
+  kind: "local_group_route";
+  group_id: string;
+  group_title?: string;
   token?: string;
 };
 
-export type LocalGroupRouteMessageRef = MessageRef & {
-  kind: "local_group_route";
+export type ConnectGroupMessageRef = MessageRef & {
+  kind: "connect_group_ref";
+  instance_id: string;
+  instance_name?: string;
   group_id: string;
   group_title?: string;
   token?: string;
@@ -171,7 +205,18 @@ export type HeadlessPreviewSession = {
 // Chat message payload
 export type MessageMode = "send" | "request_reply" | "mail";
 
+// The canonical Connect envelope fields needed by message status projections.
+export type ConnectMessageRouting = {
+  delivery_id: string;
+  source: { instance_id: string; device_id: string; group_id: string };
+  target: { instance_id: string; device_id: string; group_id: string };
+  sender: { id: string; generation: string };
+  recipients: Array<{ id: string; generation: string }>;
+  reply_to?: { event_id: string; delivery_id: string } | null;
+};
+
 export type ChatMessageData = {
+  connect_message?: ConnectMessageRouting;
   text?: string;
   insight?: string;
   to?: string[];
@@ -191,8 +236,15 @@ export type ChatMessageData = {
   suggested_user_message?: string;
   quote_text?: string;
   src_group_id?: string;
+  src_group_title?: string;
+  src_instance_id?: string;
+  src_instance_name?: string;
   src_event_id?: string;
   dst_group_id?: string;
+  dst_group_title?: string;
+  dst_instance_id?: string;
+  dst_instance_name?: string;
+  dst_actor_titles?: Record<string, string>;
   dst_to?: string[];
   dst_message_mode?: MessageMode;
   dst_event_id?: string;
@@ -215,6 +267,12 @@ export type MailReadData = { actor_id?: string; event_id?: string };
 // Ledger event data union
 export type LedgerEventData = ChatMessageData | MailReadData | Record<string, unknown>;
 
+export type ConnectDeliveryStatus = {
+  state: "queued" | "sent" | "failed" | "unconfirmed";
+  error?: string | null;
+  remote_event_id?: string | null;
+};
+
 export type LedgerEvent = {
   id?: string;
   ts?: string;
@@ -225,6 +283,9 @@ export type LedgerEvent = {
   _streaming?: boolean;
   _read_status?: Record<string, boolean>;
   _obligation_status?: Record<string, ObligationStatus>;
+  _retired_bridge?: boolean;
+  _connect_delivery?: ConnectDeliveryStatus;
+  _connect_cancellation?: ConnectDeliveryStatus;
   _web_model_delivery_status?: WebModelDeliveryStatusPayload;
 };
 
@@ -235,29 +296,16 @@ export type HeadlessStreamEvent = {
   actor_id?: string;
   type?: string;
   data?: Record<string, unknown>;
-};
-
-export type RuntimeActivityEvent = {
-  v: number;
-  id: string;
-  ts: string;
-  group_id: string;
-  actor_id: string;
-  runtime: string;
-  activity_id: string;
-  kind: "session" | "turn" | "tool" | "subagent" | string;
-  status: "started" | "waiting" | "completed" | "failed" | "stuck" | string;
-  event_type: string;
-  session_id: string;
-  turn_id?: string | null;
-  operation_id?: string | null;
-  tool_name?: string | null;
-  duration_ms?: number | null;
+  /** Browser receipt time for live increments only; restored history has no timestamp. */
+  _receivedAt?: number;
 };
 
 export type LedgerEventStatusPayload = {
   read_status?: Record<string, boolean>;
   obligation_status?: Record<string, ObligationStatus>;
+  retired_bridge?: boolean;
+  connect_delivery?: ConnectDeliveryStatus;
+  connect_cancellation?: ConnectDeliveryStatus;
   web_model_delivery_status?: WebModelDeliveryStatusPayload;
 };
 
@@ -271,6 +319,7 @@ export type WebModelDeliveryStatusPayload = {
 
 export type Actor = {
   id: string;
+  generation?: string;
   role?: string;
   internal_kind?: string | null;
   title?: string;
@@ -559,6 +608,7 @@ export type ReplyTarget = {
   eventId: string;
   by: string;
   text: string;
+  connectInstanceId?: string;
   remoteDstGroupId?: string;
   remoteDstTo?: string[];
   remoteReplyToEventId?: string;
@@ -738,7 +788,6 @@ export type GroupSettings = {
   silence_timeout_seconds: number;
   help_nudge_interval_seconds: number;
   help_nudge_min_messages: number;
-  min_interval_seconds: number;
   mail_notice_after_seconds: number;
   reply_notice_after_seconds: number;
 
@@ -1021,6 +1070,7 @@ export type AssistantVoicePromptDraftMutationResult = {
 };
 
 export type MembershipState = {
+  account_label?: string | null;
   logged_in: boolean;
   device_id?: string | null;
   hostname?: string | null;
@@ -1029,6 +1079,10 @@ export type MembershipState = {
   cut?: boolean;
   disabled?: boolean;
   in_reach?: boolean;
+  reach_enabled?: boolean;
+  reach_status?: "off" | "connecting" | "online" | "offline" | "unknown";
+  checked_at?: string | null;
+  cloudflared?: { running: boolean; installed?: boolean; matches_pin?: boolean };
   reach_supported?: boolean;
   account_reachable?: boolean | null;
   account_origin?: string | null;
@@ -1377,6 +1431,7 @@ export type IMPlatform =
   | "telegram"
   | "slack"
   | "discord"
+  | "mattermost"
   | "feishu"
   | "dingtalk"
   | "wecom"
@@ -1390,9 +1445,10 @@ export type IMConfig = {
   // Canonical token fields
   bot_token?: string;
   app_token?: string;
-  // Token env fields (Slack/Telegram/Discord)
+  // Token env fields (Slack/Telegram/Discord/Mattermost)
   bot_token_env?: string;
   app_token_env?: string;
+  mattermost_url?: string;
   // Feishu fields
   feishu_domain?: string;
   feishu_app_id?: string;
@@ -1483,31 +1539,28 @@ export const RUNTIME_INFO: Record<string, { label: string; desc: string }> = {
   amp: { label: "Amp", desc: "" },
   auggie: { label: "Auggie (Augment)", desc: "" },
   claude: { label: "Claude Code", desc: "" },
-  cline: { label: "Cline CLI", desc: "Uses Cline CLI MCP setup with the PTY TUI" },
+  cline: { label: "Cline CLI", desc: "Uses Cline's native terminal with CCCC MCP" },
   codex: { label: "Codex CLI", desc: "" },
   deepseek: {
     label: "DeepSeek Harness",
-    desc: "Experimental ACP headless runtime; CCCC installs its pinned composition on first start",
+    desc: "Experimental ACP runtime; CCCC installs its pinned composition on first start",
   },
-  copilot: { label: "GitHub Copilot CLI", desc: "Uses Copilot CLI MCP setup with the PTY runner" },
+  copilot: { label: "GitHub Copilot CLI", desc: "Uses Copilot's native terminal with CCCC MCP" },
   cursor: {
     label: "Cursor CLI",
-    desc: "Uses an idempotent MCP setup prompt inside the PTY runner",
+    desc: "Uses an idempotent MCP setup prompt in Cursor's native terminal",
   },
-  devin: { label: "Devin CLI", desc: "Uses Devin MCP CLI setup with the PTY runner" },
-  kiro: { label: "Kiro CLI", desc: "Uses Kiro MCP CLI setup with the PTY runner" },
-  kilo: {
-    label: "Kilo Code CLI",
-    desc: "Uses an idempotent MCP setup prompt inside the PTY runner",
-  },
+  devin: { label: "Devin CLI", desc: "Uses Devin's native terminal with CCCC MCP" },
+  kiro: { label: "Kiro CLI", desc: "Uses Kiro's native terminal with CCCC MCP" },
+  kilo: { label: "Kilo Code CLI", desc: "Managed delivery in the same native Kilo TUI" },
   antigravity: {
     label: "Antigravity CLI",
-    desc: "Uses an idempotent MCP setup prompt inside the PTY runner",
+    desc: "Configures CCCC MCP before opening Antigravity's native terminal",
   },
   droid: { label: "Droid", desc: "" },
   grok: { label: "Grok Build", desc: "Managed delivery in the same native Grok TUI" },
   hermes: { label: "Hermes Agent", desc: "Uses your Hermes profile with CCCC MCP" },
-  kimi: { label: "Kimi CLI", desc: "" },
+  kimi: { label: "Kimi Code", desc: "" },
   opencode: { label: "OpenCode", desc: "Managed delivery in the same native OpenCode TUI" },
   web_model: {
     label: "ChatGPT Web Model",

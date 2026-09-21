@@ -1,5 +1,6 @@
+import { buttonVariants } from "./ui/button-variants";
+import { GraphicViewer } from "./viewer/GraphicViewer";
 import { FloatingPortal } from "@floating-ui/react";
-import type { CSSProperties } from "react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import MarkdownIt from "markdown-it";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -20,7 +21,12 @@ const expandIconMarkup = renderToStaticMarkup(
   <ExpandIcon className="w-3.5 h-3.5" strokeWidth={2} aria-hidden="true" />,
 );
 
-type MermaidPreviewState = { svg: string; source: string; naturalWidth: number };
+type MermaidPreviewState = {
+  svg: string;
+  source: string;
+  naturalWidth: number;
+  naturalHeight: number;
+};
 
 type MermaidLabels = {
   copy: string;
@@ -48,7 +54,6 @@ function MermaidPreviewDialog({
   const [copied, setCopied] = useState(false);
   const titleId = useId();
   const { modalRef } = useModalA11y(true, onClose);
-  const renderedSvg = useMemo(() => ({ __html: preview.svg }), [preview.svg]);
 
   useEffect(() => {
     if (!copied) return;
@@ -90,7 +95,7 @@ function MermaidPreviewDialog({
             <div className="flex flex-shrink-0 items-center gap-1.5">
               <button
                 type="button"
-                className="mermaid-preview-action"
+                className={`${buttonVariants({ variant: "secondary", size: "sm" })} max-sm:min-h-11`}
                 onClick={() => setShowSource((current) => !current)}
                 aria-pressed={showSource}
               >
@@ -98,8 +103,9 @@ function MermaidPreviewDialog({
               </button>
               <button
                 type="button"
-                className="mermaid-preview-action"
+                className={`${buttonVariants({ variant: "secondary", size: "sm" })} max-sm:min-h-11`}
                 onClick={() => void copySource()}
+                aria-label={copied ? labels.copied : labels.copy}
               >
                 {copied ? (
                   <CheckIcon className="h-3.5 w-3.5 text-green-600 dark:text-emerald-400" />
@@ -110,7 +116,7 @@ function MermaidPreviewDialog({
               </button>
               <button
                 type="button"
-                className="mermaid-preview-action mermaid-preview-close"
+                className={`${buttonVariants({ variant: "ghost", size: "icon" })} max-sm:h-11 max-sm:w-11`}
                 onClick={onClose}
                 aria-label={closeLabel}
                 title={closeLabel}
@@ -125,17 +131,12 @@ function MermaidPreviewDialog({
               <code>{preview.source}</code>
             </pre>
           ) : (
-            <div className="mermaid-preview-canvas">
-              <div
-                className="mermaid-preview-diagram"
-                style={
-                  {
-                    "--mermaid-preview-natural-width": `${preview.naturalWidth}px`,
-                  } as CSSProperties
-                }
-                dangerouslySetInnerHTML={renderedSvg}
-              />
-            </div>
+            <GraphicViewer
+              svg={preview.svg}
+              width={preview.naturalWidth}
+              height={preview.naturalHeight}
+              alt={labels.diagram}
+            />
           )}
         </div>
       </div>
@@ -151,6 +152,9 @@ interface MarkdownRendererProps {
   invertText?: boolean;
   /** Render Mermaid fences. Kept opt-in because this renderer is shared by non-message surfaces. */
   enableMermaid?: boolean;
+  /** Map document-relative image and link URLs; omitted by ordinary message consumers. */
+  resolveUrl?: (url: string, kind: "image" | "link") => string;
+  onRendered?: () => void;
 }
 
 export function MarkdownRenderer({
@@ -159,6 +163,8 @@ export function MarkdownRenderer({
   className,
   invertText,
   enableMermaid = false,
+  resolveUrl,
+  onRendered,
 }: MarkdownRendererProps) {
   const { t } = useTranslation(["chat", "common"]);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -186,6 +192,37 @@ export function MarkdownRenderer({
       typographer: true,
       breaks: true,
     });
+    if (resolveUrl) {
+      instance.renderer.rules.heading_open = (tokens, index, options, env, renderer) => {
+        const title =
+          tokens[index + 1]?.children?.map((token) => token.content).join("") || "section";
+        const slug =
+          title
+            .toLowerCase()
+            .trim()
+            .replace(/[^\p{L}\p{N}_\s-]/gu, "")
+            .replace(/\s+/g, "-") || "section";
+        const counts: Map<string, number> = (env.workspaceHeadings ??= new Map());
+        const count = counts.get(slug) || 0;
+        counts.set(slug, count + 1);
+        tokens[index].attrSet("id", count ? `${slug}-${count}` : slug);
+        return renderer.renderToken(tokens, index, options);
+      };
+      for (const [rule, attribute, kind] of [
+        ["image", "src", "image"],
+        ["link_open", "href", "link"],
+      ] as const) {
+        const original = instance.renderer.rules[rule];
+        instance.renderer.rules[rule] = (tokens, index, options, env, renderer) => {
+          const token = tokens[index];
+          const resolved = resolveUrl(token.attrGet(attribute) || "", kind);
+          token.attrSet(attribute, instance.validateLink(resolved) ? resolved : "");
+          return original
+            ? original(tokens, index, options, env, renderer)
+            : renderer.renderToken(tokens, index, options);
+        };
+      }
+    }
     const escapedTableScrollRegion = instance.utils.escapeHtml(labels.tableScrollRegion);
     instance.renderer.rules.table_open = (tokens, idx, options, _env, self) =>
       `<div class="markdown-table-scroll" role="region" tabindex="0" aria-label="${escapedTableScrollRegion}">${self.renderToken(tokens, idx, options)}`;
@@ -296,6 +333,7 @@ export function MarkdownRenderer({
     return instance;
   }, [
     enableMermaid,
+    resolveUrl,
     labels.copy,
     labels.copied,
     labels.expand,
@@ -315,6 +353,10 @@ export function MarkdownRenderer({
   // renders do not make React replace the subtree and reset completed diagrams back to "pending".
   const renderedHtml = useMemo(() => ({ __html: htmlContent }), [htmlContent]);
 
+  useEffect(() => {
+    onRendered?.();
+  }, [htmlContent, onRendered]);
+
   const openMermaidPreview = useCallback((trigger: HTMLElement) => {
     const block = trigger.closest<HTMLElement>("[data-mermaid-block]");
     if (!block || block.dataset.mermaidState !== "rendered") return;
@@ -329,11 +371,17 @@ export function MarkdownRenderer({
     } catch {
       return;
     }
-    const naturalWidth = Number(svg.viewBox?.baseVal?.width || 0);
+    const naturalWidth = Number(
+      svg.viewBox?.baseVal?.width || svg.getBoundingClientRect().width || 1,
+    );
+    const naturalHeight = Number(
+      svg.viewBox?.baseVal?.height || svg.getBoundingClientRect().height || 1,
+    );
     setMermaidPreview({
       svg: target.innerHTML,
       source,
-      naturalWidth: Number.isFinite(naturalWidth) && naturalWidth > 0 ? naturalWidth : 0,
+      naturalWidth: Number.isFinite(naturalWidth) && naturalWidth > 0 ? naturalWidth : 1,
+      naturalHeight: Number.isFinite(naturalHeight) && naturalHeight > 0 ? naturalHeight : 1,
     });
   }, []);
 

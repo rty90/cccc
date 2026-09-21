@@ -11,7 +11,7 @@ import {
   settingsWorkspaceBodyClass,
   settingsWorkspaceHeaderClass,
   settingsWorkspaceShellClass,
-  settingsWorkspaceSoftPanelClass,
+  settingsWorkspaceFieldsClass,
 } from "./types";
 
 interface MessagingTabProps {
@@ -41,7 +41,7 @@ export function MessagingTab(props: MessagingTabProps) {
         </div>
 
         <div className={settingsWorkspaceBodyClass}>
-          <div className={settingsWorkspaceSoftPanelClass(isDark)}>
+          <div className={settingsWorkspaceFieldsClass}>
             <div className="mb-1 flex items-center gap-2">
               <div className="rounded-xl bg-emerald-500/15 p-1.5 text-emerald-700 dark:text-emerald-400">
                 <MessageSquareIcon className="h-4 w-4" />
@@ -72,7 +72,7 @@ export function MessagingTab(props: MessagingTabProps) {
                 ariaLabel={t("messaging.whenNoRecipients")}
                 className={inputClass(isDark)}
               />
-              <div className="text-[11px] leading-snug text-[var(--color-text-muted)]">
+              <div className="text-xs leading-snug text-[var(--color-text-muted)]">
                 {t("messaging.tip")}
               </div>
             </div>

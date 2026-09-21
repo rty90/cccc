@@ -1,3 +1,7 @@
+use super::operation::{
+    Operation,
+    Policy::{GlobalWrite, Read, ResourceOwned, Write},
+};
 use cccc_contracts::{Actor, ActorRole, DaemonRequest};
 use cccc_core::capabilities::{Capability, CapabilityStore};
 use cccc_core::{GroupDoc, HomeLayout};
@@ -192,23 +196,32 @@ fn enable_startup_capabilities<'a>(
     }
 }
 
-pub fn handle(home: &HomeLayout, request: &DaemonRequest) -> Option<OpResult> {
+pub(super) fn resolve_operation(request: &DaemonRequest) -> Option<Operation> {
     Some(match request.op.as_str() {
-        "capability_overview" => overview::run(home, request),
-        "capability_search" => search(home, request),
-        "capability_enable" => enable(home, request),
-        "capability_visibility" => visibility(home, request),
-        "capability_block" => block(home, request),
-        "capability_state" => state(home, request),
-        "capability_import" => import::run(home, request),
-        "capability_uninstall" => uninstall::run(home, request),
-        "capability_install_target" => target_install::run(home, request),
-        "capability_source_delete" => source_delete(home, request),
-        "capability_tool_call" => use_capability(home, request),
-        "capability_allowlist_get" => allowlist::get(home),
-        "capability_allowlist_validate" => allowlist::validate(home, request),
-        "capability_allowlist_update" => allowlist::update(home, request),
-        "capability_allowlist_reset" => allowlist::reset(home, request),
+        "capability_overview" => Operation::new(Read, overview::run),
+        "capability_search" => Operation::new(Read, search),
+        "capability_enable" => Operation::new(GlobalWrite, enable),
+        "capability_visibility" => Operation::new(GlobalWrite, visibility),
+        "capability_block" => Operation::new(GlobalWrite, block),
+        // MCP discovery re-enters during Actor startup. The catalog owns its
+        // store synchronization and must bypass queued lifecycle writers.
+        "capability_state" => Operation::new(
+            if request.args.get("view").and_then(Value::as_str) == Some("mcp_catalog") {
+                ResourceOwned
+            } else {
+                Read
+            },
+            state,
+        ),
+        "capability_import" => Operation::new(GlobalWrite, import::run),
+        "capability_uninstall" => Operation::new(GlobalWrite, uninstall::run),
+        "capability_install_target" => Operation::new(GlobalWrite, target_install::run),
+        "capability_source_delete" => Operation::new(GlobalWrite, source_delete),
+        "capability_tool_call" => Operation::new(Write, use_capability),
+        "capability_allowlist_get" => Operation::new(Read, |home, _request| allowlist::get(home)),
+        "capability_allowlist_validate" => Operation::new(Read, allowlist::validate),
+        "capability_allowlist_update" => Operation::new(GlobalWrite, allowlist::update),
+        "capability_allowlist_reset" => Operation::new(GlobalWrite, allowlist::reset),
         _ => return None,
     })
 }
@@ -497,13 +510,12 @@ fn state(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
     let dynamic_tools =
         external_runtime::dynamic_tools(home, &group_id, &actor_id, &enabled_capabilities)?;
     let visible_tools = visible_tools(
-        home,
-        &group_id,
+        group.as_ref(),
         &actor_id,
         &enabled_capabilities,
         &catalog,
         &dynamic_tools,
-    )?;
+    );
     let capability_usage = string_arg(request, "capability_id")
         .filter(|id| !id.trim().is_empty())
         .map(|id| capability_usage(home, group.as_ref(), &group_id, &id, &store))
@@ -745,78 +757,30 @@ fn use_capability(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
     object(json!({"capability": capability, "input": request.args.get("input"), "ready": true}))
 }
 
-const CORE_BASIC_TOOLS: &[&str] = &[
-    "cccc_help",
-    "cccc_bootstrap",
-    "cccc_capability_search",
-    "cccc_capability_use",
-    "cccc_inbox_read",
-    "cccc_message_history",
-    "cccc_message_send",
-    "cccc_message_reply",
-    "cccc_file",
-    "cccc_context_get",
-    "cccc_coordination",
-    "cccc_task",
-    "cccc_agent_state",
-];
 const CAPABILITY_ADMIN_TOOLS: &[&str] = &[
     "cccc_capability_import",
     "cccc_capability_block",
     "cccc_capability_uninstall",
 ];
-const VOICE_SECRETARY_TOOLS: &[&str] = &[
-    "cccc_help",
-    "cccc_bootstrap",
-    "cccc_project_info",
-    "cccc_inbox_read",
-    "cccc_message_history",
-    "cccc_context_get",
-    "cccc_agent_state",
-    "cccc_voice_secretary_document",
-    "cccc_voice_secretary_composer",
-    "cccc_voice_secretary_request",
-];
 fn visible_tools(
-    home: &HomeLayout,
-    group_id: &str,
+    group: Option<&cccc_core::GroupDoc>,
     actor_id: &str,
     enabled: &[String],
     catalog: &[Capability],
     dynamic: &[Value],
-) -> Result<Vec<String>, OpError> {
+) -> Vec<String> {
     use std::collections::BTreeSet;
-    let group = (!group_id.is_empty())
-        .then(|| cccc_core::GroupStore::new(home.clone()))
-        .transpose()
-        .map_err(OpError::io)?
-        .and_then(|store| store.load(group_id).ok());
     let actor = group
         .as_ref()
         .and_then(|group| group.actors.iter().find(|actor| actor.id == actor_id));
-    let voice_secretary = actor_id == "voice-secretary"
-        || actor.and_then(|actor| actor.internal_kind.as_deref()) == Some("voice_secretary");
     let web_model =
         actor.map(|actor| actor.runtime) == Some(cccc_contracts::ActorRuntime::WebModel);
     let peer = group.as_ref().is_some_and(|group| {
         cccc_core::actors::effective_role(group, actor_id) == Some(cccc_contracts::ActorRole::Peer)
     });
-    let mut names = if voice_secretary {
-        VOICE_SECRETARY_TOOLS
-            .iter()
-            .map(|value| (*value).to_owned())
-            .collect()
-    } else if web_model {
-        cccc_core::WEB_MODEL_CORE_TOOL_NAMES
-            .iter()
-            .map(|value| (*value).to_owned())
-            .collect()
-    } else {
-        CORE_BASIC_TOOLS
-            .iter()
-            .map(|value| (*value).to_owned())
-            .collect::<BTreeSet<_>>()
-    };
+    let mut names = cccc_core::actor_base_tool_names(actor_id, actor)
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
     if actor_id == "user" {
         names.extend(
             cccc_core::USER_CONTROL_TOOL_NAMES
@@ -841,5 +805,5 @@ fn visible_tools(
             names.remove(*name);
         }
     }
-    Ok(names.into_iter().collect())
+    names.into_iter().collect()
 }

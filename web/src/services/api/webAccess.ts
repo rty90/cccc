@@ -71,8 +71,8 @@ export async function fetchRemoteAccessState() {
   return apiJson<{ remote_access: RemoteAccessState }>("/api/v1/remote_access");
 }
 
-export async function fetchMembership() {
-  return apiJson<{ membership: MembershipState }>("/api/v1/membership");
+export async function fetchMembership(signal?: AbortSignal) {
+  return apiJson<{ membership: MembershipState }>("/api/v1/membership", { signal });
 }
 
 export async function startMembershipLogin() {
@@ -114,7 +114,9 @@ export async function createMembershipReachWebLogin() {
 
 export async function fetchWebAccessSession() {
   return reuseRecentReadRequest(webAccessSessionRequestKey(), RECENT_BOOTSTRAP_READ_TTL_MS, () =>
-    apiJson<{ web_access_session: WebAccessSession }>("/api/v1/web_access/session"),
+    apiJson<{ web_access_session: WebAccessSession }>("/api/v1/web_access/session", {
+      signal: AbortSignal.timeout(10000),
+    }),
   );
 }
 

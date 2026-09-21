@@ -9,8 +9,10 @@ use serde_json::{Value, json};
 use crate::AppState;
 use crate::api::{ApiError, ApiResult, success};
 use crate::codex_voice::StartOutcome;
+use crate::codex_voice::start_error::StartDiagnostic;
 
 mod attach_deadline;
+pub(super) mod notifications;
 mod settings;
 pub(super) use settings::{analyst_settings, update_analyst_settings};
 
@@ -38,13 +40,18 @@ pub(super) async fn start(State(state): State<AppState>, Json(body): Json<Value>
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| ApiError::bad("client_session_id is required"))?;
     let voice = body["voice"].as_str().unwrap_or(DEFAULT_REALTIME_VOICE);
+    let started = std::time::Instant::now();
     let outcome = state
         .codex_voice
         .start(&state.home, client_session_id, offer_sdp, voice)
         .await
         .map_err(|error| {
-            tracing::warn!(%error, "Codex Voice start failed");
-            voice_start_error(&error)
+            let diagnostic =
+                StartDiagnostic::from_error(&error, started.elapsed().as_millis() as u64);
+            // The packaged cccc entrypoint has no tracing subscriber. Emit one
+            // safe line on failure without globally enabling unrelated logs.
+            eprintln!("[cccc] Codex Voice start failed: {}", diagnostic.details());
+            diagnostic.into_api_error()
         })?;
     match outcome {
         StartOutcome::Busy(info) => Err(ApiError::conflict(
@@ -65,19 +72,6 @@ pub(super) async fn start(State(state): State<AppState>, Json(body): Json<Value>
             })))
         }
     }
-}
-
-fn voice_start_error(error: &anyhow::Error) -> ApiError {
-    if format!("{error:#}").contains("upgrade to 1.18.14 or newer") {
-        return ApiError::unavailable(
-            "opencode_upgrade_required",
-            "OpenCode 1.18.14 or newer is required. Upgrade OpenCode, then restart the Analyst.",
-        );
-    }
-    ApiError::unavailable(
-        "codex_voice_unavailable",
-        "Codex Voice could not start. Check the Analyst Runtime Profile, Realtime Voice login, and current Voice status.",
-    )
 }
 
 pub(super) async fn reset_analyst(
@@ -139,6 +133,7 @@ pub(super) async fn stop(
 
 pub(super) async fn upgrade(
     State(state): State<AppState>,
+    axum::Extension(principal): axum::Extension<crate::auth::Principal>,
     Path(generation): Path<String>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
@@ -155,11 +150,12 @@ pub(super) async fn upgrade(
                 json!({"generation":generation}),
             )
         })?;
-    Ok(ws.on_upgrade(move |socket| voice_socket::serve(socket, state, attachment)))
+    Ok(ws.on_upgrade(move |socket| voice_socket::serve(socket, state, attachment, principal)))
 }
 
 pub(super) async fn upgrade_terminal(
     State(state): State<AppState>,
+    axum::Extension(principal): axum::Extension<crate::auth::Principal>,
     Path(generation): Path<String>,
     Query(query): Query<TerminalQuery>,
     ws: WebSocketUpgrade,
@@ -177,7 +173,7 @@ pub(super) async fn upgrade_terminal(
                 json!({"generation":generation}),
             )
         })?;
-    Ok(ws.on_upgrade(move |socket| terminal::serve(socket, state, session, query)))
+    Ok(ws.on_upgrade(move |socket| terminal::serve(socket, state, session, query, principal)))
 }
 
 fn require_interactive_web(state: &AppState) -> Result<(), ApiError> {
@@ -188,20 +184,4 @@ fn require_interactive_web(state: &AppState) -> Result<(), ApiError> {
         ));
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn opencode_version_failure_is_actionable_through_the_voice_api() {
-        let error = anyhow::anyhow!(
-            "OpenCode 1.18.13 cannot host a reliable managed ACP session; upgrade to 1.18.14 or newer"
-        )
-        .context("launch persistent Voice Analyst");
-        let mapped = voice_start_error(&error);
-
-        assert!(mapped.to_string().starts_with("opencode_upgrade_required:"));
-    }
 }

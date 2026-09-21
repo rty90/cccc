@@ -13,6 +13,7 @@ import { useSelectedGroupRuntime } from "./hooks/useSelectedGroupRuntime";
 import { useSSE } from "./hooks/useSSE";
 import { useDragDrop } from "./hooks/useDragDrop";
 import { useGroupActions } from "./hooks/useGroupActions";
+import { useOrderedGroups } from "./hooks/useOrderedGroups";
 import { useSwipeNavigation } from "./hooks/useSwipeNavigation";
 import { useCrossGroupRecipients } from "./hooks/useCrossGroupRecipients";
 import { useDeepLink } from "./hooks/useDeepLink";
@@ -37,10 +38,21 @@ import { publishCapabilityChanged } from "./utils/capabilityEvents";
 import { filterVisibleRuntimeActors } from "./utils/runtimeVisibility";
 import { getEffectiveComposerDestGroupId } from "./stores/useComposerStore";
 import { buildReplyComposerState } from "./utils/chatReply";
+import { useShallow } from "zustand/react/shallow";
+import { useConnectWorkbench } from "./features/connect/useConnectWorkbench";
+import { ConnectRemotePanel } from "./features/connect/ConnectRemotePanel";
 
 // ============ Main App Component ============
 
-export default function App() {
+export default function App({
+  connectEmbedded = false,
+  onOpenParentSidebar,
+  embeddedAccountLabel,
+}: {
+  connectEmbedded?: boolean;
+  embeddedAccountLabel?: string | null;
+  onOpenParentSidebar?: () => void;
+}) {
   // Theme
   const { theme, setTheme, isDark } = useTheme();
   const { textScale, setTextScale } = useTextScale();
@@ -72,7 +84,6 @@ export default function App() {
   const reorderGroupsInSection = useGroupStore((state) => state.reorderGroupsInSection);
   const archiveGroup = useGroupStore((state) => state.archiveGroup);
   const restoreGroup = useGroupStore((state) => state.restoreGroup);
-  const getOrderedGroups = useGroupStore((state) => state.getOrderedGroups);
 
   const busy = useUIStore((s) => s.busy);
   const errorMsg = useUIStore((s) => s.errorMsg);
@@ -124,9 +135,25 @@ export default function App() {
     setDestGroupId,
     setReplyTarget,
     setReplyToText,
-  } = useComposerStore();
+  } = useComposerStore(
+    useShallow((s) => ({
+      activeGroupId: s.activeGroupId,
+      destGroupId: s.destGroupId,
+      composerFiles: s.composerFiles,
+      replyTarget: s.replyTarget,
+      setDestGroupId: s.setDestGroupId,
+      setReplyTarget: s.setReplyTarget,
+      setReplyToText: s.setReplyToText,
+    })),
+  );
 
-  const { setEditGroupTitle, setEditGroupTopic, setDirSuggestions } = useFormStore();
+  const { setEditGroupTitle, setEditGroupTopic, setDirSuggestions } = useFormStore(
+    useShallow((s) => ({
+      setEditGroupTitle: s.setEditGroupTitle,
+      setEditGroupTopic: s.setEditGroupTopic,
+      setDirSuggestions: s.setDirSuggestions,
+    })),
+  );
   const clearAllOutbox = useChatOutboxStore((state) => state.clearAll);
 
   // Actor actions hook
@@ -195,8 +222,6 @@ export default function App() {
     chatAtBottomRef,
     actorsRef,
     allTabs,
-    renderedActorIds,
-    resetMountedActorIds,
     handleTabChange,
   } = useAppTabState({
     activeTab,
@@ -237,7 +262,7 @@ export default function App() {
   const { dropOverlayOpen, handleAppendComposerFiles, resetDragDrop, WEB_MAX_FILE_MB } =
     useDragDrop({ selectedGroupId });
 
-  const { handleStartGroup, handleStopGroup, handleSetGroupState } = useGroupActions();
+  const { handleStartGroup, handleGroupControl, handleDeleteGroup } = useGroupActions();
 
   const computedSendGroupId = getEffectiveComposerDestGroupId(
     destGroupId,
@@ -284,7 +309,7 @@ export default function App() {
     ],
   );
 
-  const { parseUrlDeepLink } = useDeepLink({
+  const { parseUrlDeepLink, openMessageWindow } = useDeepLink({
     groups,
     selectedGroupId,
     setSelectedGroupId,
@@ -302,7 +327,7 @@ export default function App() {
     },
   });
 
-  const { canManageGroups, ccccHome, fetchDirSuggestions } = useAppChrome({
+  const { canManageGroups, ccccHome, fetchDirSuggestions, refreshWebAccessSession } = useAppChrome({
     parseUrlDeepLink,
     refreshGroups,
     setWebReadOnly,
@@ -313,6 +338,8 @@ export default function App() {
     addActorOpen,
     editingActor,
   });
+  const connect = useConnectWorkbench(!connectEmbedded && !webReadOnly, refreshWebAccessSession);
+  const remoteSelected = Boolean(connect.selected);
 
   const { handleTouchStart, handleTouchEnd } = useSwipeNavigation({
     tabs: allTabs,
@@ -326,7 +353,7 @@ export default function App() {
     groupDoc,
     actors,
   });
-  const orderedGroups = getOrderedGroups();
+  const orderedGroups = useOrderedGroups();
 
   const groupLabelById = useMemo(() => {
     const out: Record<string, string> = {};
@@ -343,7 +370,7 @@ export default function App() {
   const hasComposerFiles = composerFiles.length > 0;
 
   useAppGroupLifecycle({
-    selectedGroupId,
+    selectedGroupId: remoteSelected ? "" : selectedGroupId,
     destGroupId,
     sendGroupId,
     hasReplyTarget,
@@ -351,7 +378,6 @@ export default function App() {
     setDestGroupId,
     fileInputRef,
     resetDragDrop,
-    resetMountedActorIds,
     setActiveTab,
     closeChatWindow,
     loadGroup,
@@ -371,6 +397,15 @@ export default function App() {
       <AppBackground isDark={isDark} />
 
       <AppShell
+        connectEmbedded={connectEmbedded}
+        connect={connectEmbedded ? undefined : connect}
+        remoteWorkspace={
+          remoteSelected ? (
+            <ConnectRemotePanel workbench={connect} onOpenSidebar={() => setSidebarOpen(true)} />
+          ) : undefined
+        }
+        canUseVoice={canManageGroups && !connectEmbedded}
+        onOpenVoiceSource={openMessageWindow}
         orderedGroups={orderedGroups}
         archivedGroupIds={archivedGroupIds}
         selectedGroupId={selectedGroupId}
@@ -381,7 +416,6 @@ export default function App() {
         recipientActors={recipientActors}
         recipientActorsBusy={recipientActorsBusy}
         destGroupScopeLabel={destGroupScopeLabel}
-        renderedActorIds={renderedActorIds}
         activeTab={activeTab}
         busy={busy}
         isTransitioning={isTransitioning}
@@ -411,7 +445,10 @@ export default function App() {
         chatAtBottomRef={chatAtBottomRef}
         onThemeChange={setTheme}
         onTextScaleChange={setTextScale}
-        onSelectGroup={setSelectedGroupId}
+        onSelectGroup={(groupId) => {
+          connect.selectLocal();
+          setSelectedGroupId(groupId);
+        }}
         onWarmGroup={(gid) => void warmGroup(gid)}
         onCreateGroup={
           !webReadOnly && canManageGroups
@@ -427,7 +464,9 @@ export default function App() {
         onReorderGroupsInSection={reorderGroupsInSection}
         onArchiveGroup={archiveGroup}
         onRestoreGroup={restoreGroup}
-        onOpenSidebar={() => setSidebarOpen(true)}
+        onControlGroup={handleGroupControl}
+        onDeleteGroup={handleDeleteGroup}
+        onOpenSidebar={onOpenParentSidebar || (() => setSidebarOpen(true))}
         onOpenGroupEdit={
           canManageGroups
             ? () => {
@@ -445,10 +484,9 @@ export default function App() {
           openModal("context");
         }}
         onStartGroup={handleStartGroup}
-        onStopGroup={handleStopGroup}
-        onSetGroupState={handleSetGroupState}
         onOpenSettings={() => openModal("settings")}
         canAccessAccount={canManageGroups}
+        accountLabel={connectEmbedded ? embeddedAccountLabel : connect.accountLabel}
         onOpenAccount={() => openSettingsTarget({ scope: "global", tab: "account" })}
         onOpenMobileMenu={() => openModal("mobileMenu")}
         onTabChange={handleTabChange}
@@ -492,11 +530,10 @@ export default function App() {
             onStartReply={startReply}
             onThemeChange={setTheme}
             onTextScaleChange={setTextScale}
-            onStartGroup={handleStartGroup}
-            onStopGroup={handleStopGroup}
-            onSetGroupState={handleSetGroupState}
+            onDeleteGroup={handleDeleteGroup}
             fetchContext={fetchContext}
             canManageGroups={canManageGroups}
+            accountLabel={connectEmbedded ? embeddedAccountLabel : connect.accountLabel}
           />
         </Suspense>
       ) : null}

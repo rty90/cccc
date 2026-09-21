@@ -18,6 +18,8 @@ interface PresentationViewerState {
 interface PresentationPinState {
   groupId: string;
   slotId: string;
+  /** Preselects a workspace file, so pinning from the file tree skips the picker. */
+  workspacePath?: string;
 }
 
 type PresentationAttentionState = Record<string, Record<string, boolean>>;
@@ -39,6 +41,7 @@ interface ModalState {
   relayEventId: string | null;
   relaySource: RelaySource | null;
   contextTaskId: string | null;
+  groupConnectionsId: string | null;
   presentationViewer: PresentationViewerState | null;
   presentationPin: PresentationPinState | null;
   presentationAttention: PresentationAttentionState;
@@ -54,6 +57,7 @@ interface ModalState {
   setRelayModal: (eventId: string | null, groupId?: string, event?: LedgerEvent | null) => void;
   openContextTask: (taskId: string) => void;
   clearContextTask: () => void;
+  setGroupConnections: (groupId: string | null) => void;
   setPresentationViewer: (viewer: PresentationViewerState | null) => void;
   setPresentationPin: (pin: PresentationPinState | null) => void;
   markPresentationSlotAttention: (groupId: string, slotId: string) => void;
@@ -77,6 +81,7 @@ export const useModalStore = create<ModalState>((set) => ({
   relayEventId: null,
   relaySource: null,
   contextTaskId: null,
+  groupConnectionsId: null,
   presentationViewer: null,
   presentationPin: null,
   presentationAttention: {},
@@ -103,6 +108,7 @@ export const useModalStore = create<ModalState>((set) => ({
       },
     })),
   clearSettingsTarget: () => set({ settingsTarget: null }),
+  setGroupConnections: (groupId) => set({ groupConnectionsId: groupId }),
 
   setRecipientsModal: (eventId) => set({ recipientsEventId: eventId }),
   setRelayModal: (eventId, groupId, event) =>

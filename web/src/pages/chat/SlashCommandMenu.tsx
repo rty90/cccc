@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { useComposerMenuHeight } from "./useComposerMenuHeight";
 import { classNames } from "../../utils/classNames";
 import { slashCommandDisplayKind, type SlashCommandItem } from "../../utils/slashCommands";
 
@@ -26,6 +27,7 @@ export function SlashCommandMenu(props: {
   const { t } = useTranslation("chat");
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  useComposerMenuHeight(menuRef, suggestions.length > 0);
 
   useLayoutEffect(() => {
     const item = itemRefs.current[selectedIndex];
@@ -91,7 +93,7 @@ export function SlashCommandMenu(props: {
                 {description ? (
                   <div
                     className={classNames(
-                      "truncate text-[11px]",
+                      "truncate text-xs",
                       isSelected
                         ? isDark
                           ? "text-slate-200"
@@ -107,7 +109,7 @@ export function SlashCommandMenu(props: {
               </div>
               <span
                 className={classNames(
-                  "flex-shrink-0 rounded-md px-2 py-0.5 text-[10px] uppercase tracking-wide",
+                  "flex-shrink-0 rounded-md px-2 py-0.5 text-xs uppercase tracking-wide",
                   isSelected
                     ? isDark
                       ? "bg-white/12 text-slate-100"
@@ -138,7 +140,7 @@ export function SlashCommandMenu(props: {
       {hasMore ? (
         <div
           className={classNames(
-            "px-4 py-2 text-center text-[11px]",
+            "px-4 py-2 text-center text-xs",
             isDark ? "text-slate-500" : "text-gray-400",
           )}
         >

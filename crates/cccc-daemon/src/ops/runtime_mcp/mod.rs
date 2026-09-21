@@ -23,17 +23,22 @@ fn setup_lock() -> &'static Mutex<()> {
 pub(super) fn prepare(
     home: &HomeLayout,
     runtime: ActorRuntime,
+    launch_command: &[String],
     cwd: &Path,
     env: &mut BTreeMap<String, String>,
 ) -> Result<(), OpError> {
     if !cccc_core::runtime_mcp::is_auto_managed(runtime) {
         return Ok(());
     }
-    // Managed sessions receive their actor-scoped MCP entry later in the launch
-    // pipeline. Do not mutate a provider-global MCP registry for these runtimes.
+    // These adapters own MCP setup later in the launch pipeline. Grok shares
+    // its native registry with the TUI; the others inject a session entry.
     if matches!(
         runtime,
-        ActorRuntime::Codex | ActorRuntime::Grok | ActorRuntime::Opencode
+        ActorRuntime::Claude
+            | ActorRuntime::Codex
+            | ActorRuntime::Grok
+            | ActorRuntime::Opencode
+            | ActorRuntime::Kilo
     ) {
         return Ok(());
     }
@@ -48,8 +53,16 @@ pub(super) fn prepare(
         home.root().to_string_lossy().into_owned(),
     );
 
+    if runtime == ActorRuntime::Antigravity {
+        return ensure_antigravity(launch_command, cwd, env, &executable);
+    }
+
     match runtime {
-        ActorRuntime::Codex | ActorRuntime::Grok | ActorRuntime::Opencode => {
+        ActorRuntime::Claude
+        | ActorRuntime::Codex
+        | ActorRuntime::Grok
+        | ActorRuntime::Kilo
+        | ActorRuntime::Opencode => {
             unreachable!("managed runtime returned early")
         }
         ActorRuntime::Hermes => {
@@ -73,42 +86,51 @@ pub(super) fn prepare(
     }
 }
 
+fn ensure_antigravity(
+    launch_command: &[String],
+    cwd: &Path,
+    env: &BTreeMap<String, String>,
+    executable: &Path,
+) -> Result<(), OpError> {
+    let runtime = ActorRuntime::Antigravity;
+    let mut command = cccc_core::runtime_mcp::add_command(runtime, executable)
+        .expect("Antigravity native setup command");
+    if let Some(program) = launch_command.first() {
+        command[0].clone_from(program);
+    }
+    cccc_core::runtime_mcp::ensure_antigravity(cwd, env, || {
+        run_checked(
+            runtime,
+            "add CCCC MCP entry",
+            &command,
+            cwd,
+            env,
+            SETUP_TIMEOUT,
+        )
+        .map_err(|error| io::Error::other(error.message))
+    })
+    .map(|_| ())
+    .map_err(|error| OpError::new("runtime_mcp_setup_failed", error.to_string()))
+}
+
 fn ensure_persistent(
     runtime: ActorRuntime,
     cwd: &Path,
     env: &BTreeMap<String, String>,
     executable: &Path,
 ) -> Result<(), OpError> {
+    if runtime == ActorRuntime::Kimi {
+        return cccc_core::runtime_mcp::ensure_kimi(cwd, env, executable)
+            .map(|_| ())
+            .map_err(|error| OpError::new("runtime_mcp_setup_failed", error.to_string()));
+    }
     let expected = cccc_core::runtime_mcp::expected_command(executable);
     let report = inspect(runtime, cwd, env, &expected)?;
     if report.state == State::Ready {
         return Ok(());
     }
-    if runtime == ActorRuntime::Kimi {
-        // Kimi Code ships no `kimi mcp add`; declare the server in its mcp.json directly.
-        let path = state::write_kimi_entry(env, &expected).map_err(|error| {
-            OpError::new(
-                "runtime_mcp_setup_failed",
-                format!("failed to write the Kimi Code MCP entry: {error}"),
-            )
-        })?;
-        let verified = inspect(runtime, cwd, env, &expected)?;
-        if verified.state != State::Ready {
-            return Err(OpError::new(
-                "runtime_mcp_verification_failed",
-                format!(
-                    "kimi MCP entry written to {} but it did not match {} mcp",
-                    path.display(),
-                    executable.display()
-                ),
-            ));
-        }
-        return Ok(());
-    }
-    if matches!(
-        runtime,
-        ActorRuntime::Claude | ActorRuntime::Copilot | ActorRuntime::Kiro
-    ) && report.state == State::Stale
+    if matches!(runtime, ActorRuntime::Copilot | ActorRuntime::Kiro)
+        && report.state == State::Stale
         && !report.source.is_empty()
         && !report.source.contains("user")
     {
@@ -171,13 +193,6 @@ fn inspect(
     expected: &[String],
 ) -> Result<Report, OpError> {
     match runtime {
-        ActorRuntime::Claude => inspect_cli(
-            runtime,
-            &["claude", "mcp", "get", "cccc"],
-            cwd,
-            env,
-            expected,
-        ),
         ActorRuntime::Copilot => inspect_cli(
             runtime,
             &["copilot", "mcp", "get", "cccc", "--json"],
@@ -300,54 +315,111 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn stale_claude_user_entry_is_replaced_and_verified_before_launch() {
+    fn antigravity_uses_selected_cli_before_launch_and_rechecks_its_config() {
         use std::os::unix::fs::PermissionsExt;
-
         let temp = tempfile::tempdir().expect("tempdir");
-        let bin = temp.path().join("bin");
-        std::fs::create_dir(&bin).expect("bin");
-        let claude = bin.join("claude");
-        let state = temp.path().join("claude-mcp-state");
-        std::fs::write(&state, "/missing/cccc").expect("state");
+        let cwd = temp.path().join("project");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let provider_home = temp.path().join("provider");
+        let script = temp.path().join("selected-agy");
         std::fs::write(
-            &claude,
-            r#"#!/bin/sh
-state=$CCCC_TEST_MCP_STATE
-case "$1 $2 $3" in
-  "mcp get cccc")
-    command=
-    IFS= read -r command < "$state" || :
-    printf 'Transport: stdio\nCommand: %s\nArgs: mcp\nScope: User config\n' "$command"
-    ;;
-  "mcp remove cccc")
-    : > "$state"
-    ;;
-  "mcp add -s")
-    shift 6
-    printf '%s' "$1" > "$state"
-    ;;
-  *) exit 2 ;;
-esac
+            &script,
+            r#"#!/usr/bin/env python3
+import sys,os,json,pathlib
+assert sys.argv[1:]==['mcp','add','cccc','cccc','mcp']
+assert os.environ['CCCC_GROUP_ID']=='group-fixture'
+assert os.environ['CCCC_ACTOR_ID']=='actor-fixture'
+root=pathlib.Path(os.environ['HOME']);path=root/'.gemini/config/mcp_config.json'
+path.parent.mkdir(parents=True,exist_ok=True)
+path.write_text(json.dumps({'mcpServers':{'cccc':{'command':'cccc','args':['mcp']}}}))
+(root/'selected-invoked').touch()
 "#,
         )
-        .expect("script");
-        let mut permissions = std::fs::metadata(&claude).expect("metadata").permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&claude, permissions).expect("permissions");
+        .expect("CLI fixture");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            .expect("executable");
+        let default_cli = temp.path().join("agy");
+        std::fs::write(&default_cli, b"#!/bin/sh\nexit 99\n").expect("unused default CLI");
+        std::fs::set_permissions(&default_cli, std::fs::Permissions::from_mode(0o700))
+            .expect("default executable");
+        let search_path = std::env::join_paths(std::iter::once(temp.path().to_path_buf()).chain(
+            std::env::split_paths(&std::env::var_os("PATH").expect("test PATH")),
+        ))
+        .expect("fixture PATH");
         let env = BTreeMap::from([
-            ("PATH".into(), bin.to_string_lossy().into_owned()),
-            (
-                "CCCC_TEST_MCP_STATE".into(),
-                state.to_string_lossy().into_owned(),
-            ),
+            ("HOME".into(), provider_home.display().to_string()),
+            ("USERPROFILE".into(), provider_home.display().to_string()),
+            ("CCCC_GROUP_ID".into(), "group-fixture".into()),
+            ("CCCC_ACTOR_ID".into(), "actor-fixture".into()),
+            ("PATH".into(), search_path.to_string_lossy().into_owned()),
         ]);
-        ensure_persistent(
-            ActorRuntime::Claude,
-            temp.path(),
-            &env,
-            Path::new("/opt/cccc"),
-        )
-        .expect("repair");
-        assert_eq!(std::fs::read_to_string(state).expect("state"), "/opt/cccc");
+        let command = [
+            script.display().to_string(),
+            "--dangerously-skip-permissions".into(),
+        ];
+        ensure_antigravity(&command, &cwd, &env, Path::new("/fixture/cccc")).expect("native setup");
+        assert!(provider_home.join("selected-invoked").is_file());
+        std::fs::remove_file(&script).expect("remove fixture CLI");
+        ensure_antigravity(&command, &cwd, &env, Path::new("/fixture/cccc"))
+            .expect("ready entry needs no subprocess");
+    }
+
+    #[test]
+    fn kimi_actor_setup_uses_the_code_config_without_invoking_a_cli() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cwd = temp.path().join("project");
+        let config = temp.path().join("kimi-code");
+        let home = temp.path().join("cccc-home");
+        let env = BTreeMap::from([
+            ("KIMI_CODE_HOME".into(), config.display().to_string()),
+            ("CCCC_HOME".into(), home.display().to_string()),
+            ("PATH".into(), String::new()),
+        ]);
+        ensure_persistent(ActorRuntime::Kimi, &cwd, &env, Path::new("/opt/cccc"))
+            .expect("setup without kimi mcp command");
+        let config: serde_json::Value =
+            cccc_core::fs::read_json(&config.join("mcp.json")).expect("config");
+        assert_eq!(config["mcpServers"]["cccc"]["command"], "/opt/cccc");
+        assert_eq!(
+            config["mcpServers"]["cccc"]["env"]["CCCC_HOME"],
+            home.display().to_string()
+        );
+    }
+
+    #[test]
+    fn kimi_actor_setup_inherits_the_daemon_environment() {
+        const CANARY: &str = "CCCC_KIMI_SETUP_CANARY";
+        if let Some(root) = std::env::var_os(CANARY) {
+            let root = std::path::PathBuf::from(root);
+            // No HOME/KIMI_CODE_HOME override on the Actor itself.
+            let overrides =
+                BTreeMap::from([("CCCC_HOME".into(), root.join("cccc").display().to_string())]);
+            ensure_persistent(
+                ActorRuntime::Kimi,
+                &root.join("project"),
+                &overrides,
+                Path::new("/opt/cccc"),
+            )
+            .expect("inherited Kimi Code home");
+            assert!(root.join("kimi-code/mcp.json").is_file());
+            return;
+        }
+        let temp = tempfile::tempdir().expect("tempdir");
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "ops::runtime_mcp::tests::kimi_actor_setup_inherits_the_daemon_environment",
+                "--nocapture",
+            ])
+            .env(CANARY, temp.path())
+            .env("KIMI_CODE_HOME", temp.path().join("kimi-code"))
+            .output()
+            .expect("isolated test process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

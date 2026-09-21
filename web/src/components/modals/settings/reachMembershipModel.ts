@@ -2,6 +2,21 @@ import type { MembershipState } from "../../../types";
 
 export type { MembershipState };
 
+export function membershipReachStatus(membership: MembershipState | null | undefined) {
+  if (!membership?.logged_in || membership.cut || membership.disabled) return "off";
+  return membership.reach_status ?? (membership.online ? "online" : "off");
+}
+
+// Configuration ownership survives a disconnected tunnel. Keep conflicting
+// binding/provider controls out of the way until Reach has actually stopped.
+export function membershipOwnsReach(membership: MembershipState | null | undefined): boolean {
+  return Boolean(
+    membership?.reach_enabled ||
+    membership?.cloudflared?.running ||
+    (membership?.reach_enabled === undefined && membership?.in_reach),
+  );
+}
+
 export function hostnameLooksTokenless(hostname: string): boolean {
   const value = String(hostname || "").trim();
   if (!value) return true;
@@ -35,6 +50,13 @@ export function membershipAdminWebUrl(membership: MembershipState | null | undef
   }
 }
 
+export function membershipAccountKind(
+  membership: MembershipState | null | undefined,
+): "logged_out" | "pending" | "cut" | "linked" {
+  if (!membership?.logged_in) return membership?.pending ? "pending" : "logged_out";
+  return membership.cut || membership.disabled ? "cut" : "linked";
+}
+
 export function membershipPanelKind(
   membership: MembershipState | null | undefined,
 ): "logged_out" | "pending" | "cut" | "offline" | "online" {
@@ -62,7 +84,7 @@ function accountLanguage(value: unknown): "zh" | "en" | "ja" | "" {
   return language === "zh" || language === "en" || language === "ja" ? language : "";
 }
 
-function localizedAccountUrl(url: URL, language: unknown): string {
+export function localizedAccountUrl(url: URL, language: unknown): string {
   const normalized = accountLanguage(language);
   if (normalized) url.searchParams.set("lang", normalized);
   return url.toString();

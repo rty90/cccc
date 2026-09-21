@@ -1,7 +1,9 @@
 #[cfg(test)]
 use super::codex_voice_analyst::AnalystEvent;
 use super::codex_voice_analyst::{AnalystSession, LaunchConfig, TurnReceipt};
-use super::codex_voice_lifecycle::{AnalystLifecycle, AnalystLifecycleEvent};
+use super::codex_voice_lifecycle::{
+    AnalystLifecycle, AnalystLifecycleEvent, VoiceDelegationAdmission,
+};
 use cccc_core::HomeLayout;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -20,8 +22,9 @@ use lease::CallLease;
 use projection::CallState;
 pub use projection::FinalProjection;
 pub use provider::{
-    DEFAULT_REALTIME_VOICE, REALTIME_VOICES, RealtimeCallConfig, create_realtime_answer,
-    realtime_greeting_commands, realtime_notice_commands, validate_realtime_voice,
+    DEFAULT_REALTIME_VOICE, REALTIME_VOICES, RealtimeCallConfig, RealtimeCallError,
+    create_realtime_answer, realtime_greeting_commands, realtime_notice_commands,
+    validate_realtime_voice,
 };
 
 /// One globally scoped, resumable Codex analysis runtime behind the Voice surface.

@@ -44,6 +44,10 @@ async fn initialize_truthfully_disables_tool_list_change_notifications() {
         response["result"]["capabilities"]["tools"]["listChanged"],
         false
     );
+    assert_eq!(
+        response["result"]["_meta"]["cccc/build"],
+        cccc_core::build_info::current()
+    );
 }
 
 #[tokio::test]
@@ -273,7 +277,7 @@ async fn daemon_error_details_survive_nested_code_mode_calls() {
 }
 
 #[test]
-fn unscoped_fallback_remains_the_fifteen_core_tools() {
+fn unscoped_fallback_includes_the_connect_directory() {
     let names = crate::core_tools(crate::tools::catalog())
         .into_iter()
         .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
@@ -283,6 +287,7 @@ fn unscoped_fallback_remains_the_fifteen_core_tools() {
         "cccc_bootstrap",
         "cccc_capability_search",
         "cccc_capability_use",
+        "cccc_connect",
         "cccc_context_get",
         "cccc_coordination",
         "cccc_file",
@@ -339,9 +344,8 @@ async fn web_model_schema_stays_fixed_while_daemon_is_unavailable() {
         .into_iter()
         .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
         .collect::<BTreeSet<_>>();
-    let mut expected = cccc_core::WEB_MODEL_CORE_TOOL_NAMES
-        .iter()
-        .map(|name| (*name).to_owned())
+    let mut expected = cccc_core::web_model_tool_names()
+        .map(str::to_owned)
         .collect::<BTreeSet<_>>();
     if !crate::code_mode::enabled() {
         expected.remove("cccc_code_exec");

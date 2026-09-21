@@ -1,5 +1,4 @@
 import { create } from "zustand";
-import i18n from "../../i18n";
 import { normalizeLanguageCode } from "../../i18n/languages";
 
 /** Meetings, role tags, votes, decision modes and harness state managed by the Knots moderator (knots_moderator.py). */
@@ -394,9 +393,13 @@ export const useMeetingStore = create<MeetingState>(() => ({
         .then((data) => useMeetingStore.setState({ updates: data?.updates || {} }))
         .catch(() => undefined);
     };
-    i18n.on("languageChanged", () => {
-      void syncLanguage();
-    });
+    // The i18n singleton is loaded on demand: importing it at module load would initialise i18next in every test
+    // that renders a component touching this store.
+    void import("../../i18n").then(({ default: i18n }) =>
+      i18n.on("languageChanged", () => {
+        void syncLanguage();
+      }),
+    );
     source.onerror = () => useMeetingStore.setState({ connected: false });
     source.onmessage = (message) => {
       let data: Record<string, unknown>;
@@ -507,6 +510,7 @@ export const useMeetingStore = create<MeetingState>(() => ({
 
 /** Tell the moderator which language the UI shows, so the agents write their messages in it. */
 async function syncLanguage() {
+  const { default: i18n } = await import("../../i18n");
   const wanted = normalizeLanguageCode(i18n.language);
   if (useMeetingStore.getState().language === wanted) return;
   try {

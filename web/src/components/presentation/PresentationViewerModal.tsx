@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { buttonVariants } from "../ui/button-variants";
+import { PanelRightClose } from "lucide-react";
+import { PresentationSlotNavigation } from "./PresentationSlotNavigation";
+import { GraphicViewer } from "../viewer/GraphicViewer";
+import { getPresentationReferenceHref } from "./presentationAssets";
+import { usePresentationAsset } from "./usePresentationAsset";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useUIStore } from "../../stores";
 import { MarkdownDocumentSurface } from "../document/MarkdownDocumentSurface";
@@ -16,18 +22,12 @@ import {
   WindowViewIcon,
 } from "../Icons";
 import { ModalFrame } from "../modals/ModalFrame";
+import { SidePanelButton, SidePanelHeader } from "../layout/SidePanelHeader";
 import { useModalA11y } from "../../hooks/useModalA11y";
-import type {
-  GroupPresentation,
-  LedgerEvent,
-  PresentationMessageRef,
-  PresentationSlot,
-} from "../../types";
+import type { GroupPresentation, LedgerEvent, PresentationMessageRef } from "../../types";
 import {
   fetchPresentationBrowserSurfaceSession,
   getGroupBlobUrl,
-  getPresentationAssetUrl,
-  refreshAuthTokenInUrl,
   uploadPresentationReferenceSnapshot,
 } from "../../services/api";
 import { classNames } from "../../utils/classNames";
@@ -62,6 +62,9 @@ type PresentationViewerBaseProps = {
   onReplyToMessage?: (event: LedgerEvent) => void;
   onReplaceSlot?: (slotId: string) => void;
   onClearSlot?: (slotId: string) => void | Promise<void>;
+  onSelectSlot?: (slotId: string) => void;
+  onPinSlot?: (slotId: string) => void;
+  onCollapse?: () => void;
   onClose: () => void;
 };
 
@@ -82,18 +85,6 @@ type PresentationViewerModalProps = PresentationViewerBaseProps & {
 type PresentationViewerSplitPanelProps = PresentationViewerBaseProps & {
   onOpenWindow?: () => void;
 };
-
-function getReferenceHref(
-  groupId: string,
-  slot: PresentationSlot | null,
-  cacheBust?: string | number,
-): string {
-  const card = slot?.card;
-  if (!card) return "";
-  const url = String(card.content.url || "").trim();
-  if (url) return refreshAuthTokenInUrl(url);
-  return getPresentationAssetUrl(groupId, slot.slot_id, cacheBust);
-}
 
 async function dataUrlToFile(dataUrl: string, filename: string): Promise<File | null> {
   const raw = String(dataUrl || "").trim();
@@ -165,16 +156,24 @@ function PresentationViewer({
   onReplyToMessage,
   onReplaceSlot,
   onClearSlot,
+  onSelectSlot,
+  onPinSlot,
+  onCollapse,
   onClose,
 }: PresentationViewerProps) {
   const { t, i18n } = useTranslation("chat");
   const showError = useUIStore((state) => state.showError);
   const isModal = variant === "modal";
-  const { modalRef } = useModalA11y(isModal && isOpen, onClose);
+  const slotButtonRef = useRef<HTMLButtonElement>(null);
+  const hasSlotNavigation = !!onSelectSlot;
+  const { modalRef } = useModalA11y(isModal && isOpen, onClose, {
+    initialFocusRef: hasSlotNavigation ? slotButtonRef : undefined,
+  });
+  useLayoutEffect(() => {
+    if (!isModal && isOpen && hasSlotNavigation) slotButtonRef.current?.focus();
+  }, [isModal, isOpen, hasSlotNavigation, groupId, slotId]);
   const [refreshTick, setRefreshTick] = useState(0);
   const [isExpanded, setIsExpanded] = useState(false);
-  const [linkedMarkdown, setLinkedMarkdown] = useState("");
-  const [linkedMarkdownError, setLinkedMarkdownError] = useState("");
   const [copiedReference, setCopiedReference] = useState(false);
   const [quotePending, setQuotePending] = useState(false);
   const [clearingSlotId, setClearingSlotId] = useState("");
@@ -199,7 +198,7 @@ function PresentationViewer({
     ? `${card?.published_at || "linked"}:${refreshTick}`
     : undefined;
   const href = useMemo(
-    () => getReferenceHref(groupId, slot, cacheBust),
+    () => getPresentationReferenceHref(groupId, slot, cacheBust),
     [cacheBust, groupId, slot],
   );
   const publishedAt = formatTimestamp(card?.published_at, i18n.language);
@@ -207,6 +206,29 @@ function PresentationViewer({
     !!card && card.card_type === "web_preview" && !String(card.content.url || "").trim();
   const cardType = String(card?.card_type || "").trim();
   const cardMode = String(card?.content.mode || "inline").trim();
+  const resourceKey = JSON.stringify([
+    groupId,
+    slotId,
+    card?.published_at,
+    cardType,
+    cardMode,
+    card?.content.workspace_rel_path,
+    card?.content.url,
+  ]);
+  const fetchedImage = isWorkspaceLinked && cardType === "image" && !card?.content.url;
+  const linkedAsset = usePresentationAsset(
+    href,
+    resourceKey,
+    !isOpen
+      ? null
+      : fetchedImage
+        ? "image"
+        : cardType === "markdown" && cardMode !== "inline"
+          ? "markdown"
+          : null,
+  );
+  const markdownReady =
+    cardType !== "markdown" || cardMode === "inline" || linkedAsset.content !== null;
   const allowLiveBrowser =
     !!card &&
     card.card_type === "web_preview" &&
@@ -225,7 +247,6 @@ function PresentationViewer({
     ? "h-screen w-screen max-w-none sm:h-[96vh] sm:w-[96vw] sm:max-w-[96vw]"
     : "h-screen w-screen max-w-none sm:h-[88vh] sm:w-[min(1280px,96vw)]";
   const immersiveViewportClassName = "h-full min-h-0";
-  const imageViewportClassName = isExpanded ? "max-h-[calc(96vh-14rem)]" : "max-h-[70vh]";
   const fullScreenLabel = isExpanded
     ? t("presentationExitFullScreenAction", { defaultValue: "Exit full screen" })
     : t("presentationFullScreenAction", { defaultValue: "Full screen" });
@@ -257,7 +278,12 @@ function PresentationViewer({
     () => getGroupBlobUrl(groupId, String(quotedSnapshot?.path || "").trim()),
     [groupId, quotedSnapshot?.path],
   );
-  const prefersInnerViewportScroll = cardType === "web_preview" || cardType === "pdf";
+  const { modalRef: snapshotModalRef } = useModalA11y(
+    isOpen && snapshotLightboxOpen && !!currentSnapshotUrl,
+    () => setSnapshotLightboxOpen(false),
+  );
+  const prefersInnerViewportScroll =
+    cardType === "web_preview" || cardType === "pdf" || cardType === "image";
   const useOuterEvidenceScroll = !prefersInnerViewportScroll;
   const canRestoreRefInViewer = useMemo(
     () => canRestorePresentationRefInViewer(cardType),
@@ -279,24 +305,9 @@ function PresentationViewer({
         ? t("presentationCompareSnapshotAction", { defaultValue: "Compare with snapshot" })
         : t("presentationOpenQuotedSnapshotAction", { defaultValue: "Open quoted snapshot" })
       : t("presentationHideSnapshotAction", { defaultValue: "Hide snapshot" });
-  const iconButtonClassName = classNames(
-    "inline-flex h-9 w-9 items-center justify-center rounded-full border transition-colors",
-    isDark
-      ? "border-white/12 bg-white/[0.06] text-white hover:bg-white/[0.1]"
-      : "border-black/10 bg-[rgb(245,245,245)] text-[rgb(35,36,37)] hover:bg-white",
-  );
-  const destructiveIconButtonClassName = classNames(
-    "inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors disabled:cursor-wait disabled:opacity-60",
-    isDark
-      ? "bg-rose-500/15 text-rose-200 hover:bg-rose-500/25"
-      : "bg-rose-50 text-rose-700 hover:bg-rose-100",
-  );
-  const copiedIconButtonClassName = classNames(
-    "inline-flex h-9 w-9 items-center justify-center rounded-full border transition-colors",
-    isDark
-      ? "border-white/16 bg-white/[0.12] text-white"
-      : "border-black/10 bg-white text-[rgb(35,36,37)]",
-  );
+  const iconButtonClassName = `${buttonVariants({ variant: "ghost", size: "iconRail" })} max-sm:h-11 max-sm:w-11`;
+  const destructiveIconButtonClassName = `${buttonVariants({ variant: "destructive", size: "iconRail" })} max-sm:h-11 max-sm:w-11`;
+  const copiedIconButtonClassName = `${iconButtonClassName} text-[var(--color-accent-success)]`;
   const refreshActionLabel = t("presentationRefreshAction", { defaultValue: "Refresh" });
   const copyActionLabel = copiedReference
     ? t("presentationCopyReferenceCopied", { defaultValue: "Copied" })
@@ -436,47 +447,22 @@ function PresentationViewer({
 
   useEffect(() => {
     if (!isOpen || !isWorkspaceLinked) return;
+    // Documents own their reading/navigation state. Reload them only on an
+    // explicit refresh or publication, rather than replacing the iframe every tick.
+    if (cardType !== "image" && cardType !== "markdown") return;
     const timer = window.setInterval(() => {
-      setRefreshTick((value) => value + 1);
+      if (!linkedAsset.refreshing.current) setRefreshTick((value) => value + 1);
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [isOpen, isWorkspaceLinked, slotId, card?.published_at]);
-
-  useEffect(() => {
-    if (!isOpen || cardType !== "markdown") return;
-    if (cardMode === "inline") return;
-    if (!href) {
-      setLinkedMarkdown("");
-      setLinkedMarkdownError("");
-      return;
-    }
-
-    const controller = new AbortController();
-    let active = true;
-
-    const run = async () => {
-      try {
-        const resp = await fetch(href, { cache: "no-store", signal: controller.signal });
-        if (!resp.ok) {
-          throw new Error(`HTTP ${resp.status}`);
-        }
-        const text = await resp.text();
-        if (!active) return;
-        setLinkedMarkdown(text);
-        setLinkedMarkdownError("");
-      } catch (error) {
-        if (!active || controller.signal.aborted) return;
-        setLinkedMarkdown("");
-        setLinkedMarkdownError(error instanceof Error ? error.message : String(error));
-      }
-    };
-
-    void run();
-    return () => {
-      active = false;
-      controller.abort();
-    };
-  }, [cardMode, cardType, href, isOpen]);
+  }, [
+    isOpen,
+    isWorkspaceLinked,
+    groupId,
+    slotId,
+    cardType,
+    card?.published_at,
+    linkedAsset.refreshing,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -517,7 +503,8 @@ function PresentationViewer({
   }, [canCompareSnapshot, currentSnapshotUrl, snapshotViewMode]);
 
   useEffect(() => {
-    if (!isOpen || !canRestoreRefInViewer || targetViewerScrollTop == null) return;
+    if (!isOpen || !canRestoreRefInViewer || targetViewerScrollTop == null || !markdownReady)
+      return;
 
     let timeoutId: number | null = null;
     let rafIdOne: number | null = null;
@@ -550,14 +537,7 @@ function PresentationViewer({
         window.cancelAnimationFrame(rafIdTwo);
       }
     };
-  }, [
-    canRestoreRefInViewer,
-    isOpen,
-    linkedMarkdown,
-    linkedMarkdownError,
-    slotId,
-    targetViewerScrollTop,
-  ]);
+  }, [canRestoreRefInViewer, isOpen, markdownReady, slotId, targetViewerScrollTop]);
 
   const handleCopyReference = async () => {
     if (!copyReferenceValue) return;
@@ -646,7 +626,7 @@ function PresentationViewer({
     <div
       className={classNames(
         "flex h-full min-h-0 flex-col overflow-hidden rounded-3xl border",
-        isDark ? "border-white/10 bg-slate-950/60" : "border-black/10 bg-white/92",
+        "border-[var(--color-border-primary)] bg-[var(--color-bg-primary)]",
       )}
     >
       <div
@@ -665,9 +645,7 @@ function PresentationViewer({
             {t("presentationSnapshotFromQuoteLabel", { defaultValue: "Snapshot from this quote" })}
           </div>
           {snapshotTimestamp ? (
-            <div
-              className={classNames("mt-1 text-xs", isDark ? "text-slate-400" : "text-gray-500")}
-            >
+            <div className={classNames("mt-1 text-xs", "text-[var(--color-text-tertiary)]")}>
               {snapshotTimestamp}
             </div>
           ) : null}
@@ -687,12 +665,7 @@ function PresentationViewer({
         <button
           type="button"
           onClick={() => setSnapshotLightboxOpen(true)}
-          className={classNames(
-            "inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors",
-            isDark
-              ? "bg-white/5 text-slate-300 hover:bg-white/10 hover:text-slate-100"
-              : "bg-black/5 text-gray-600 hover:bg-black/10 hover:text-gray-900",
-          )}
+          className={iconButtonClassName}
           aria-label={t("presentationOpenSnapshotLightboxAction", {
             defaultValue: "Open snapshot",
           })}
@@ -724,7 +697,7 @@ function PresentationViewer({
     <div
       className={classNames(
         "flex h-full min-h-[320px] items-center justify-center rounded-3xl border border-dashed text-sm",
-        isDark ? "border-white/10 text-slate-500" : "border-black/10 text-gray-500",
+        "border-[var(--color-border-primary)] text-[var(--color-text-tertiary)]",
       )}
     >
       {t("presentationMissingCard", { defaultValue: "This presentation slot is empty." })}
@@ -732,21 +705,25 @@ function PresentationViewer({
   ) : card.card_type === "markdown" ? (
     <MarkdownDocumentSurface
       content={String(
-        card.content.mode === "inline" ? card.content.markdown || "" : linkedMarkdown || "",
+        card.content.mode === "inline" ? card.content.markdown || "" : linkedAsset.content || "",
       )}
-      error={linkedMarkdownError}
+      error={linkedAsset.stale ? "" : linkedAsset.error}
+      loading={cardMode !== "inline" && linkedAsset.content === null && !linkedAsset.error}
+      loadingLabel={t("common:loading")}
       isDark={isDark}
+      className="!rounded-none !border-0 !bg-transparent !p-3 sm:!p-4"
+      minHeightClassName={isModal ? undefined : "min-h-0"}
     />
   ) : card.card_type === "table" ? (
     <div
       className={classNames(
         "overflow-hidden rounded-3xl border",
-        isDark ? "border-white/10 bg-slate-950/60" : "border-black/10 bg-white/95",
+        "border-[var(--color-border-primary)] bg-[var(--color-bg-primary)]",
       )}
     >
       <div className="overflow-auto">
         <table className="min-w-full border-collapse text-sm">
-          <thead className={isDark ? "bg-slate-900/80 text-slate-200" : "bg-gray-50 text-gray-800"}>
+          <thead className={"bg-[var(--glass-tab-bg)] text-[var(--color-text-primary)]"}>
             <tr>
               {(card.content.table?.columns || []).map((column) => (
                 <th
@@ -758,18 +735,12 @@ function PresentationViewer({
               ))}
             </tr>
           </thead>
-          <tbody className={isDark ? "text-slate-300" : "text-gray-700"}>
+          <tbody className={"text-[var(--color-text-secondary)]"}>
             {(card.content.table?.rows || []).map((row, rowIndex) => (
               <tr
                 key={`row-${rowIndex}`}
                 className={
-                  rowIndex % 2 === 0
-                    ? isDark
-                      ? "bg-slate-950/40"
-                      : "bg-white"
-                    : isDark
-                      ? "bg-slate-900/30"
-                      : "bg-gray-50/80"
+                  rowIndex % 2 === 0 ? "bg-[var(--color-bg-primary)]" : "bg-[var(--glass-tab-bg)]"
                 }
               >
                 {row.map((cell, cellIndex) => (
@@ -787,16 +758,22 @@ function PresentationViewer({
       </div>
     </div>
   ) : card.card_type === "image" ? (
-    <div className="flex min-h-[360px] items-center justify-center">
-      <img
-        src={href}
+    fetchedImage && linkedAsset.content === null ? (
+      <p
+        role={linkedAsset.error ? "alert" : "status"}
+        className="p-4 text-sm text-[var(--color-text-secondary)]"
+      >
+        {linkedAsset.error
+          ? `${t("imagePreviewUnavailable")} (${linkedAsset.error})`
+          : t("common:loading")}
+      </p>
+    ) : (
+      <GraphicViewer
+        resourceKey={resourceKey}
+        src={fetchedImage ? linkedAsset.content! : href}
         alt={card.title}
-        className={classNames(
-          imageViewportClassName,
-          "max-w-full rounded-3xl border border-[var(--glass-border-subtle)] object-contain shadow-xl",
-        )}
       />
-    </div>
+    )
   ) : card.card_type === "pdf" ? (
     <iframe
       title={card.title}
@@ -827,18 +804,13 @@ function PresentationViewer({
     <div
       className={classNames(
         "rounded-3xl border p-6",
-        isDark ? "border-white/10 bg-slate-950/60" : "border-black/10 bg-white/90",
+        "border-[var(--color-border-primary)] bg-[var(--color-bg-primary)]",
       )}
     >
-      <div
-        className={classNames(
-          "text-base font-semibold",
-          isDark ? "text-slate-100" : "text-gray-900",
-        )}
-      >
+      <div className={classNames("text-base font-semibold", "text-[var(--color-text-primary)]")}>
         {card.title}
       </div>
-      <div className={classNames("mt-2 text-sm", isDark ? "text-slate-400" : "text-gray-600")}>
+      <div className={classNames("mt-2 text-sm", "text-[var(--color-text-tertiary)]")}>
         {card.summary ||
           card.source_label ||
           t("presentationFileReady", {
@@ -882,7 +854,17 @@ function PresentationViewer({
                 </span>
               ) : null}
               {card.source_label ? <span>{card.source_label}</span> : null}
-              {publishedAt ? <span>{publishedAt}</span> : null}
+              {linkedAsset.stale ? (
+                <span
+                  role="status"
+                  className="min-w-0 flex-1 truncate text-amber-700 dark:text-amber-300"
+                  title={`${t("presentationRefreshFailed")} (${linkedAsset.error})`}
+                >
+                  {t("presentationRefreshFailed")}
+                </span>
+              ) : publishedAt ? (
+                <span>{publishedAt}</span>
+              ) : null}
               <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
                 {showWebPreviewModeToggle ? (
                   <div
@@ -899,7 +881,7 @@ function PresentationViewer({
                       type="button"
                       onClick={() => setWebPreviewMode("embedded")}
                       className={classNames(
-                        "rounded-full px-2.5 py-1 text-[11px] font-medium whitespace-nowrap transition-colors",
+                        "rounded-full px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-colors",
                         webPreviewMode === "embedded"
                           ? isDark
                             ? "bg-slate-100 text-slate-950"
@@ -917,7 +899,7 @@ function PresentationViewer({
                       type="button"
                       onClick={() => setWebPreviewMode("interactive")}
                       className={classNames(
-                        "rounded-full px-2.5 py-1 text-[11px] font-medium whitespace-nowrap transition-colors",
+                        "rounded-full px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-colors",
                         webPreviewMode === "interactive"
                           ? isDark
                             ? "bg-white/[0.08] text-white"
@@ -1072,9 +1054,13 @@ function PresentationViewer({
               aria-label={t("presentationCloseSnapshotAction", { defaultValue: "Close snapshot" })}
             />
             <div
+              ref={snapshotModalRef}
+              role="dialog"
+              aria-modal="true"
+              aria-label={t("presentationSnapshotFromQuoteLabel")}
               className={classNames(
                 "relative z-10 flex h-full max-h-full w-full max-w-6xl min-h-0 flex-col overflow-hidden rounded-3xl border shadow-2xl",
-                isDark ? "border-white/10 bg-slate-950/96" : "border-black/10 bg-white/96",
+                "border-[var(--color-border-primary)] bg-[var(--glass-panel-bg)]",
               )}
             >
               <div
@@ -1087,7 +1073,7 @@ function PresentationViewer({
                   <div
                     className={classNames(
                       "text-sm font-semibold",
-                      isDark ? "text-slate-100" : "text-gray-900",
+                      "text-[var(--color-text-primary)]",
                     )}
                   >
                     {t("presentationSnapshotFromQuoteLabel", {
@@ -1096,10 +1082,7 @@ function PresentationViewer({
                   </div>
                   {snapshotTimestamp ? (
                     <div
-                      className={classNames(
-                        "mt-1 text-xs",
-                        isDark ? "text-slate-400" : "text-gray-500",
-                      )}
+                      className={classNames("mt-1 text-xs", "text-[var(--color-text-tertiary)]")}
                     >
                       {snapshotTimestamp}
                     </div>
@@ -1120,12 +1103,7 @@ function PresentationViewer({
                 <button
                   type="button"
                   onClick={() => setSnapshotLightboxOpen(false)}
-                  className={classNames(
-                    "inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors",
-                    isDark
-                      ? "bg-white/5 text-slate-300 hover:bg-white/10 hover:text-slate-100"
-                      : "bg-black/5 text-gray-600 hover:bg-black/10 hover:text-gray-900",
-                  )}
+                  className={iconButtonClassName}
                   aria-label={t("presentationCloseSnapshotAction", {
                     defaultValue: "Close snapshot",
                   })}
@@ -1134,11 +1112,10 @@ function PresentationViewer({
                   <CloseIcon aria-hidden="true" className="h-4 w-4" strokeWidth={1.6} />
                 </button>
               </div>
-              <div className="min-h-0 flex-1 overflow-auto bg-black/10 p-4">
-                <img
+              <div className="min-h-0 flex-1">
+                <GraphicViewer
                   src={currentSnapshotUrl}
                   alt={t("presentationQuotedSnapshotAlt", { defaultValue: "Quoted snapshot" })}
-                  className="mx-auto h-auto max-h-full max-w-full rounded-2xl object-contain"
                 />
               </div>
             </div>
@@ -1175,9 +1152,7 @@ function PresentationViewer({
               disabled={quotePending}
               className={classNames(
                 "pointer-events-auto inline-flex h-10 items-center gap-2 rounded-full border px-3.5 text-sm font-medium shadow-lg backdrop-blur-xl transition-colors",
-                isDark
-                  ? "border-white/10 bg-slate-900/82 text-white hover:bg-slate-900"
-                  : "border-black/10 bg-white/88 text-[rgb(35,36,37)] hover:bg-white",
+                "border-[var(--color-border-primary)] bg-[var(--glass-panel-bg)] text-[var(--color-text-primary)] hover:bg-[var(--glass-tab-bg-hover)]",
                 quotePending ? "opacity-70" : "",
               )}
               aria-label={t("presentationQuoteInChatAction", { defaultValue: "Quote in chat" })}
@@ -1196,44 +1171,60 @@ function PresentationViewer({
     </div>
   );
 
+  const slotNavigation = onSelectSlot ? (
+    <PresentationSlotNavigation
+      presentation={presentation}
+      activeSlotId={slotId}
+      selectedButtonRef={slotButtonRef}
+      readOnly={readOnly}
+      onSelectSlot={onSelectSlot}
+      onPinSlot={onPinSlot}
+    />
+  ) : null;
+
   if (variant === "split") {
     return (
       <section
         className={classNames(
           "flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
-          isDark ? "bg-slate-950/18" : "bg-white/62",
+          "bg-[var(--color-bg-primary)]",
         )}
         aria-label={t("presentationTitle", { defaultValue: "Presentation" })}
       >
-        <div
-          className={classNames(
-            "flex items-center justify-between gap-2 border-b px-3 py-1.5",
-            isDark ? "border-white/8" : "border-black/8",
-          )}
+        <SidePanelHeader
+          title={card?.title || t("presentationTitle")}
+          subtitle={
+            linkedAsset.stale
+              ? t("presentationRefreshFailed")
+              : card
+                ? getCardTypeLabel(card.card_type, t)
+                : undefined
+          }
+          onClose={onClose}
+          closeLabel={t("presentationCloseDockAction")}
         >
-          <div className="min-w-0 flex items-center gap-2">
-            <div
-              className={classNames(
-                "truncate text-sm font-semibold",
-                isDark ? "text-slate-100" : "text-gray-900",
-              )}
-            >
-              {card?.title || t("presentationTitle", { defaultValue: "Presentation" })}
-            </div>
-            {card ? (
-              <span
-                className={classNames(
-                  "flex-shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
-                  isDark
-                    ? "bg-white/[0.08] text-white"
-                    : "bg-[rgb(245,245,245)] text-[rgb(35,36,37)]",
-                )}
-              >
-                {getCardTypeLabel(card.card_type, t)}
-              </span>
-            ) : null}
-          </div>
-          <div className="flex flex-shrink-0 items-center gap-1">
+          {onCollapse && (
+            <SidePanelButton title={t("presentationCompactSlots")} onClick={onCollapse}>
+              <PanelRightClose />
+            </SidePanelButton>
+          )}
+          {onOpenWindow && (
+            <SidePanelButton title={t("presentationOpenWindowAction")} onClick={onOpenWindow}>
+              <WindowViewIcon />
+            </SidePanelButton>
+          )}
+        </SidePanelHeader>
+        {linkedAsset.stale && (
+          <span role="status" className="sr-only">
+            {t("presentationRefreshFailed")}
+          </span>
+        )}
+        {slotNavigation}
+        {(showWebPreviewModeToggle ||
+          canRefresh ||
+          copyReferenceValue ||
+          (!readOnly && (onReplaceSlot || onClearSlot) && slot)) && (
+          <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-[var(--glass-border-subtle)] px-2 py-1">
             {showWebPreviewModeToggle ? (
               <div
                 className={classNames(
@@ -1247,7 +1238,7 @@ function PresentationViewer({
                   type="button"
                   onClick={() => setWebPreviewMode("embedded")}
                   className={classNames(
-                    "rounded-full px-2 py-0.5 text-[10px] font-medium whitespace-nowrap transition-colors",
+                    "rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-colors",
                     webPreviewMode === "embedded"
                       ? isDark
                         ? "bg-slate-100 text-slate-950"
@@ -1265,7 +1256,7 @@ function PresentationViewer({
                   type="button"
                   onClick={() => setWebPreviewMode("interactive")}
                   className={classNames(
-                    "rounded-full px-2 py-0.5 text-[10px] font-medium whitespace-nowrap transition-colors",
+                    "rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-colors",
                     webPreviewMode === "interactive"
                       ? isDark
                         ? "bg-white/[0.08] text-white"
@@ -1281,109 +1272,43 @@ function PresentationViewer({
                 </button>
               </div>
             ) : null}
-            {canRefresh ? (
-              <button
-                type="button"
-                onClick={() => setRefreshTick((value) => value + 1)}
-                className={classNames(
-                  "inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors",
-                  isDark
-                    ? "bg-slate-800 text-slate-200 hover:bg-slate-700"
-                    : "bg-gray-100 text-gray-800 hover:bg-gray-200",
-                )}
-                aria-label={refreshActionLabel}
-                title={refreshActionLabel}
-              >
-                <RefreshIcon size={14} />
-              </button>
-            ) : null}
-            {copyReferenceValue ? (
-              <button
-                type="button"
-                onClick={() => {
-                  void handleCopyReference();
-                }}
-                className={classNames(
-                  "inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-wait disabled:opacity-60",
-                  copiedReference
-                    ? isDark
-                      ? "bg-white/[0.08] text-white"
-                      : "bg-[rgb(245,245,245)] text-[rgb(35,36,37)]"
-                    : isDark
-                      ? "bg-slate-800 text-slate-200 hover:bg-slate-700"
-                      : "bg-gray-100 text-gray-800 hover:bg-gray-200",
-                )}
-                aria-label={copyActionLabel}
-                title={copyActionLabel}
-              >
-                <CopyIcon size={14} />
-              </button>
-            ) : null}
-            {onOpenWindow ? (
-              <button
-                type="button"
-                onClick={onOpenWindow}
-                className={classNames(
-                  "inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors",
-                  isDark
-                    ? "bg-slate-800 text-white hover:bg-slate-700 hover:text-white"
-                    : "bg-gray-100 text-[rgb(35,36,37)] hover:bg-gray-200 hover:text-black",
-                )}
-                aria-label={t("presentationOpenWindowAction", { defaultValue: "Open in window" })}
-                title={t("presentationOpenWindowAction", { defaultValue: "Open in window" })}
-              >
-                <WindowViewIcon size={14} />
-              </button>
-            ) : null}
-            {!readOnly && onReplaceSlot && slot ? (
-              <button
-                type="button"
-                onClick={() => onReplaceSlot(slot.slot_id)}
-                className={classNames(
-                  "inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors",
-                  isDark
-                    ? "bg-slate-800 text-slate-200 hover:bg-slate-700"
-                    : "bg-gray-100 text-gray-800 hover:bg-gray-200",
-                )}
-                aria-label={editActionLabel}
-                title={editActionLabel}
-              >
-                <EditIcon size={14} />
-              </button>
-            ) : null}
-            {!readOnly && onClearSlot && slot ? (
-              <button
-                type="button"
-                onClick={() => void handleClearSlot()}
-                disabled={!!clearingSlotId}
-                className={classNames(
-                  "inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-wait disabled:opacity-60",
-                  isDark
-                    ? "bg-rose-500/15 text-rose-200 hover:bg-rose-500/25"
-                    : "bg-rose-50 text-rose-700 hover:bg-rose-100",
-                )}
-                aria-label={clearActionLabel}
-                title={clearActionLabel}
-              >
-                <TrashIcon size={14} />
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={onClose}
-              className={classNames(
-                "inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors",
-                isDark
-                  ? "bg-slate-800 text-slate-200 hover:bg-slate-700"
-                  : "bg-gray-100 text-gray-800 hover:bg-gray-200",
+            <div className="ml-auto flex shrink-0 items-center gap-1">
+              {canRefresh && (
+                <SidePanelButton
+                  title={refreshActionLabel}
+                  onClick={() => setRefreshTick((value) => value + 1)}
+                >
+                  <RefreshIcon />
+                </SidePanelButton>
               )}
-              aria-label={t("presentationCloseSplitAction", { defaultValue: "Close presentation" })}
-              title={t("presentationCloseSplitAction", { defaultValue: "Close presentation" })}
-            >
-              <CloseIcon size={14} />
-            </button>
+              {copyReferenceValue && (
+                <SidePanelButton title={copyActionLabel} onClick={() => void handleCopyReference()}>
+                  <CopyIcon />
+                </SidePanelButton>
+              )}
+              {!readOnly && onReplaceSlot && slot && (
+                <SidePanelButton
+                  title={editActionLabel}
+                  onClick={() => onReplaceSlot(slot.slot_id)}
+                >
+                  <EditIcon />
+                </SidePanelButton>
+              )}
+              {!readOnly && onClearSlot && slot && (
+                <SidePanelButton
+                  title={clearActionLabel}
+                  onClick={() => void handleClearSlot()}
+                  disabled={!!clearingSlotId}
+                  className={
+                    isDark ? "text-rose-200 hover:bg-rose-500/15" : "text-rose-700 hover:bg-rose-50"
+                  }
+                >
+                  <TrashIcon />
+                </SidePanelButton>
+              )}
+            </div>
           </div>
-        </div>
+        )}
         {viewerBody}
       </section>
     );
@@ -1401,6 +1326,7 @@ function PresentationViewer({
       headerActions={modalHeaderActions}
       modalRef={modalRef}
     >
+      {slotNavigation}
       {viewerBody}
     </ModalFrame>
   );

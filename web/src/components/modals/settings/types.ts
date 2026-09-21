@@ -1,4 +1,6 @@
 // Shared types/helpers for the Settings modal.
+import { buttonVariants } from "../../ui/button-variants";
+import { cn } from "../../../lib/utils";
 
 export type SettingsScope = "group" | "global";
 export type GroupTabId =
@@ -22,25 +24,31 @@ export type GlobalTabId =
   | "webModels"
   | "developer";
 
-// Shared style class helpers — glass design system
+// Settings share the same controls as the rest of the workbench.
 export const inputClass = (_isDark?: boolean) =>
-  `glass-input w-full rounded-xl border border-black/[0.08] dark:border-white/[0.08] bg-white/60 dark:bg-white/[0.03] px-4 py-3 text-[var(--color-text-primary)] text-sm leading-6 min-h-[44px] placeholder:text-[var(--color-text-muted)] transition-all duration-200 focus:outline-none focus:border-black/20 dark:focus:border-white/20 focus:ring-2 focus:ring-slate-500/10 dark:focus:ring-white/5`;
+  "glass-input w-full rounded-lg px-3 py-2.5 text-sm leading-6 min-h-[44px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] disabled:opacity-50 disabled:cursor-not-allowed";
 
 export const labelClass = (_isDark?: boolean) =>
-  `block text-xs mb-1.5 font-semibold tracking-wide text-[var(--color-text-secondary)]`;
+  "block text-sm mb-1.5 font-medium text-[var(--color-text-secondary)]";
 
+// Keep localized actions wrappable and native disabled-button help reachable.
 export const primaryButtonClass = (_busy?: boolean) =>
-  `inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm min-h-[44px] font-semibold transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed border border-[rgb(35,36,37)] bg-[rgb(35,36,37)] text-white hover:bg-black hover:border-black shadow-sm dark:border-white dark:bg-white dark:text-[rgb(35,36,37)] dark:hover:bg-white/92 dark:hover:border-white active:scale-[0.97]`;
+  cn(
+    buttonVariants({ variant: "default" }),
+    "min-w-0 whitespace-normal disabled:pointer-events-auto",
+  );
 
 export const secondaryButtonClass = (size: "sm" | "md" = "md") =>
-  `inline-flex items-center justify-center gap-2 rounded-xl border border-[var(--glass-border-subtle)] bg-[var(--glass-panel-bg)] hover:bg-[var(--glass-tab-bg-hover)] active:bg-[var(--glass-tab-bg-active)] active:scale-[0.97] ${
-    size === "sm" ? "px-2.5 py-1.5 text-xs min-h-[36px]" : "px-3.5 py-2.5 text-sm min-h-[44px]"
-  } cursor-pointer font-semibold text-[var(--color-text-primary)] shadow-sm transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed`;
+  cn(
+    buttonVariants({ variant: "secondary", size: size === "sm" ? "sm" : "default" }),
+    "min-w-0 whitespace-normal disabled:pointer-events-auto",
+  );
 
 export const dangerButtonClass = (size: "sm" | "md" = "md") =>
-  `inline-flex items-center justify-center gap-2 rounded-xl border border-rose-500/20 bg-rose-500/10 hover:bg-rose-500/18 active:bg-rose-500/24 active:scale-[0.97] ${
-    size === "sm" ? "px-2.5 py-1.5 text-xs min-h-[36px]" : "px-3.5 py-2.5 text-sm min-h-[44px]"
-  } cursor-pointer font-semibold text-rose-600 dark:text-rose-400 shadow-sm transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed`;
+  cn(
+    buttonVariants({ variant: "destructive", size: size === "sm" ? "sm" : "default" }),
+    "min-w-0 whitespace-normal disabled:pointer-events-auto",
+  );
 
 export const settingsDialogPanelClass = (size: "lg" | "xl" = "lg") =>
   `glass-modal absolute inset-0 sm:inset-auto sm:left-1/2 sm:top-1/2 ${
@@ -51,7 +59,7 @@ export const settingsDialogPanelClass = (size: "lg" | "xl" = "lg") =>
 
 export const settingsDialogHeaderClass = `flex shrink-0 items-start gap-3 border-b border-[var(--glass-border-subtle)] px-4 py-3 sm:px-5 sm:py-4`;
 
-export const settingsDialogBodyClass = `min-h-0 flex-1 overflow-y-auto scrollbar-subtle p-4 sm:p-6 lg:p-7 [scrollbar-gutter:stable]`;
+export const settingsDialogBodyClass = `min-h-0 flex-1 overflow-y-auto scrollbar-subtle p-4 sm:p-6 lg:p-7 [scrollbar-gutter:stable] [overflow-wrap:anywhere]`;
 
 export const settingsDialogFooterClass = `flex shrink-0 items-center justify-end gap-2 border-t border-[var(--glass-border-subtle)] px-4 pt-3 pb-[calc(1rem+env(safe-area-inset-bottom,0px))] sm:px-5 sm:pt-4 sm:pb-[calc(1.25rem+env(safe-area-inset-bottom,0px))]`;
 
@@ -59,31 +67,28 @@ export const cardClass = (_isDark?: boolean) =>
   `glass-panel rounded-2xl border border-[var(--glass-border-subtle)] bg-[var(--glass-panel-bg)] p-4 shadow-sm`;
 
 export const settingsWorkspaceShellClass = (_isDark?: boolean) =>
-  `overflow-hidden rounded-[22px] border backdrop-blur-xl ${
-    _isDark
-      ? "border-white/8 bg-[linear-gradient(180deg,rgba(15,16,20,0.96),rgba(7,8,11,0.99))] shadow-[0_28px_100px_rgba(0,0,0,0.42)]"
-      : "border-black/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.995),rgba(246,248,251,0.96))] shadow-[0_28px_100px_rgba(15,23,42,0.06)]"
-  }`;
+  "min-w-0 [overflow-wrap:anywhere]";
 
 export const settingsWorkspaceHeaderClass = (_isDark?: boolean) =>
-  `flex items-start justify-between gap-4 px-4 py-4 sm:px-5 sm:py-4 ${
-    _isDark
-      ? "border-b border-white/8 bg-black/[0.16]"
-      : "border-b border-black/6 bg-[rgba(18,18,20,0.018)]"
-  }`;
+  "flex flex-wrap items-start justify-between gap-3 border-b border-[var(--glass-border-subtle)] pb-3 [&>div:first-child]:min-w-0 [&>div:first-child]:flex-1 [&>div:first-child]:basis-64";
 
-export const settingsWorkspaceBodyClass = `px-4 py-4 sm:px-5 sm:py-5 space-y-4`;
+export const settingsWorkspaceBodyClass = "py-4 space-y-4";
+
+// Plain field groups do not need an additional visual container.
+export const settingsWorkspaceFieldsClass = "min-w-0 space-y-3";
+
+// Separate form sections without making every field group another card.
+export const settingsWorkspaceSectionClass =
+  "min-w-0 border-t border-[var(--glass-border-subtle)] pt-4 first:border-t-0 first:pt-0";
 
 export const settingsWorkspacePanelClass = (_isDark?: boolean) =>
-  `rounded-2xl border border-[var(--glass-border-subtle)] p-4 sm:p-5 bg-[var(--glass-panel-bg)] shadow-[0_4px_24px_rgba(0,0,0,0.02)] dark:shadow-[0_4px_24px_rgba(0,0,0,0.15)]`;
+  "rounded-xl border border-[var(--glass-panel-border)] p-4 bg-[var(--color-bg-primary)]";
 
 export const settingsWorkspaceSoftPanelClass = (_isDark?: boolean) =>
-  `rounded-2xl border border-[var(--glass-border-subtle)] px-4 py-3.5 sm:px-5 sm:py-4 bg-[var(--glass-panel-bg)]/40`;
+  `rounded-lg border border-[var(--glass-border-subtle)] px-3 py-3 bg-[var(--color-bg-secondary)]`;
 
 export const settingsWorkspaceActionBarClass = (_isDark?: boolean) =>
-  `mt-0 flex flex-wrap items-center gap-2 border-t px-4 py-3 sm:px-5 ${
-    _isDark ? "border-white/8 bg-white/[0.02]" : "border-black/6 bg-black/[0.015]"
-  }`;
+  "flex flex-wrap items-center gap-2 border-t border-[var(--glass-border-subtle)] py-3";
 
 export const preClass = (_isDark?: boolean) =>
-  `mt-2 p-2 rounded overflow-x-auto whitespace-pre text-[11px] bg-[var(--color-bg-secondary)] text-[var(--color-text-primary)] border border-[var(--glass-border-subtle)]`;
+  `mt-2 p-2 rounded overflow-x-auto whitespace-pre text-xs bg-[var(--color-bg-secondary)] text-[var(--color-text-primary)] border border-[var(--glass-border-subtle)]`;

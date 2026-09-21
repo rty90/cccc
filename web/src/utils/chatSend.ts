@@ -4,10 +4,10 @@ export type ChatTFunction = (key: string, options?: Record<string, unknown>) => 
 
 export function shouldBlockLocalCrossGroupAttachments(input: {
   attachmentCount: number;
-  targets: Array<{ isCrossGroup?: boolean; isRemote?: boolean }>;
+  targets: Array<{ isCrossGroup?: boolean }>;
 }): boolean {
   if (input.attachmentCount <= 0) return false;
-  return input.targets.some((target) => Boolean(target.isCrossGroup) && !target.isRemote);
+  return input.targets.some((target) => Boolean(target.isCrossGroup));
 }
 
 export function supportsChatStreamingPlaceholder(
@@ -29,6 +29,9 @@ export function formatSendMessageError(args: {
 }): string {
   const code = String(args.code || "").trim();
   const message = String(args.message || "").trim();
+  if (["NETWORK_ERROR", "EMPTY_RESPONSE", "PARSE_ERROR"].includes(code)) {
+    return args.t("sendResultUnknown");
+  }
   if (!code) return message || args.t("sendFailed", { defaultValue: "Failed to send message." });
   if (!message) return code;
   return `${code}: ${message}`;

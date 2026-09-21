@@ -4,7 +4,8 @@ import { buildSlashCommands, filterSlashCommands, parseSlashCommandInput, slashC
 
 describe("knots slash commands", () => {
   it("are listed with CCCC's commands, tagged as room commands, and parse back from the composer text", () => {
-    const commands = buildSlashCommands({ state: null });
+    const commands = buildSlashCommands({ state: null, includeRoomCommands: true });
+    expect(buildSlashCommands({ state: null }).some((c) => c.sourceType === "knots_command")).toBe(false);
     const names = commands.filter((c) => c.sourceType === "knots_command").map((c) => c.name);
     expect(names).toEqual(expect.arrayContaining(KNOTS_SLASH_COMMANDS.map((c) => c.name)));
     const usage = commands.find((c) => c.name === "usage");

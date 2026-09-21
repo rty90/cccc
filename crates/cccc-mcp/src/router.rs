@@ -23,6 +23,7 @@ pub(crate) async fn call_with_context(
     context: Option<RequestContext<'_>>,
     via_capability_use: bool,
 ) -> Result<Value, ToolCallError> {
+    crate::tools::apply_default_action(name, &mut arguments);
     add_runtime_context(home, &mut arguments);
     if let Some(context) = context {
         apply_request_context(&mut arguments, context);
@@ -53,16 +54,7 @@ pub(crate) async fn call_with_context(
         arguments.insert("require_peer_insight".into(), Value::Bool(true));
     }
     if name == "cccc_message_send" {
-        crate::remote_messages::apply_cross_group_default(&mut arguments)?;
-    }
-    if matches!(name, "cccc_message_send" | "cccc_message_reply")
-        && let Some(result) =
-            crate::remote_messages::try_send(home, client, arguments.clone()).await
-    {
-        return result.map(|result| {
-            let (group_id, actor_id) = message_context.as_ref().expect("message context");
-            with_post_message_context(home, result, group_id, actor_id)
-        });
+        crate::cross_group::apply_cross_group_default(&mut arguments)?;
     }
     let payload = match name {
         "cccc_help" => {
@@ -86,11 +78,6 @@ pub(crate) async fn call_with_context(
             } else {
                 result
             });
-        }
-        name if crate::remote_tools::is_remote_tool(name) => {
-            return crate::remote_tools::call(home, name, arguments)
-                .await
-                .map_err(ToolCallError::from);
         }
         _ => {
             let (op, args) = match mapping::daemon_call(name, arguments.clone()) {
@@ -182,7 +169,7 @@ fn authorize_tool(
     {
         let role = cccc_core::actors::effective_role(group, actor_id)
             .unwrap_or(cccc_contracts::ActorRole::Peer);
-        if cccc_core::WEB_MODEL_CORE_TOOL_NAMES.contains(&name)
+        if cccc_core::web_model_tool_names().any(|tool| tool == name)
             || (via_capability_use
                 && role == cccc_contracts::ActorRole::Foreman
                 && cccc_core::is_builtin_capability_pack_tool(name))
@@ -832,23 +819,8 @@ fn message_operation_outcome(payload: &Map<String, Value>) -> Option<bool> {
     {
         return Some(false);
     }
-    if let Some(reply) = payload.get("group_bridge_reply").and_then(Value::as_object) {
-        if reply.get("error").is_some_and(Value::is_object)
-            || receipt_status(reply).is_some_and(|status| !delivery_receipt_succeeded(status))
-        {
-            return Some(false);
-        }
-    }
     if let Some(status) = receipt_status(payload) {
         return Some(delivery_receipt_succeeded(status));
-    }
-    if let Some(remote) = payload.get("remote_send").and_then(Value::as_object) {
-        if remote.get("error").is_some_and(Value::is_object) {
-            return Some(false);
-        }
-        if let Some(status) = receipt_status(remote) {
-            return Some(delivery_receipt_succeeded(status));
-        }
     }
     for key in ["result", "structuredContent"] {
         if let Some(outcome) = payload
@@ -1316,9 +1288,6 @@ mod tests {
             json!({"message_sent":false}),
             json!({"receipt":{"status":"failed"}}),
             json!({"sent":true,"result":{"partial_failure":true}}),
-            json!({"event":{"id":"event-remote"},"remote_send":{"error":{"code":"failed"}}}),
-            json!({"event":{"id":"event-2"},"group_bridge_reply":{"error":{"code":"failed"}}}),
-            json!({"event":{"id":"event-3"},"group_bridge_reply":{"receipt":{"status":"unknown"}}}),
         ] {
             assert!(!message_operation_succeeded(
                 payload.as_object().expect("payload")

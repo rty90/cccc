@@ -1,33 +1,17 @@
-import { useEffect, useState } from "react";
+import { useUIStore } from "../../stores/useUIStore";
+import type { Ref } from "react";
 import { useTranslation } from "react-i18next";
-import { Actor, GroupDoc, GroupRuntimeStatus, TextScale, Theme } from "../../types";
 import { getGroupStatusFromSource } from "../../utils/groupStatus";
-import {
-  getGroupControlVisual,
-  getLaunchControlMode,
-  resolveGroupControls,
-} from "../../utils/groupControls";
-import { classNames } from "../../utils/classNames";
-import { TextScaleSwitcher } from "../TextScaleSwitcher";
-import { ThemeToggleCompact } from "../ThemeToggle";
-import { LanguageSwitcher } from "../LanguageSwitcher";
-import {
-  ClipboardIcon,
-  SearchIcon,
-  PlayIcon,
-  PauseIcon,
-  StopIcon,
-  SettingsIcon,
-  AccountIcon,
-  EditIcon,
-  MoreIcon,
-  MenuIcon,
-} from "../Icons";
+import { GroupDoc, GroupRuntimeStatus, TextScale, Theme } from "../../types";
+import { ClipboardIcon, EditIcon, SearchIcon, MoreIcon, MenuIcon } from "../Icons";
 import { IconButton } from "../ui/icon-button";
 import { GroupStatusIndicator } from "./GroupStatusIndicator";
+import { groupRunMenuActions } from "./groupRunMenuActions";
+import { useGroupMenu } from "./useGroupMenu";
+import type { GroupControl } from "../../utils/groupControls";
+import { AppSettingsMenu } from "./AppSettingsMenu";
 
 export interface AppHeaderProps {
-  isDark: boolean;
   theme: Theme;
   textScale: TextScale;
   onThemeChange: (theme: Theme) => void;
@@ -37,24 +21,23 @@ export interface AppHeaderProps {
   groupDoc: GroupDoc | null;
   selectedGroupRunning: boolean;
   selectedGroupRuntimeStatus: GroupRuntimeStatus | null;
-  actors: Actor[];
   sseStatus: "connected" | "connecting" | "disconnected";
-  busy: string;
   onOpenSidebar: () => void;
   onOpenGroupEdit?: () => void;
   onOpenSearch: () => void;
   onOpenContext: () => void;
-  onStartGroup: () => void;
-  onStopGroup: () => void;
-  onSetGroupState: (state: "active" | "paused" | "idle") => void | Promise<void>;
+  /** Opens the Group run menu from the status badge; absent when the viewer cannot control Groups. */
+  onControlGroup?: (groupId: string, control: GroupControl) => void;
   onOpenSettings: () => void;
   canAccessAccount: boolean;
+  accountLabel?: string | null;
   onOpenAccount: () => void;
   onOpenMobileMenu: () => void;
+  workControlsRef?: Ref<HTMLDivElement>;
+  sidePanelControlsRef?: Ref<HTMLDivElement>;
 }
 
 export function AppHeader({
-  isDark,
   theme,
   textScale,
   onThemeChange,
@@ -64,29 +47,24 @@ export function AppHeader({
   groupDoc,
   selectedGroupRunning,
   selectedGroupRuntimeStatus,
-  actors,
-  busy,
   onOpenSidebar,
   onOpenGroupEdit,
   onOpenSearch,
   onOpenContext,
-  onStartGroup,
-  onStopGroup,
-  onSetGroupState,
+  onControlGroup,
   onOpenSettings,
   canAccessAccount,
+  accountLabel,
   onOpenAccount,
   onOpenMobileMenu,
   sseStatus,
+  workControlsRef,
+  sidePanelControlsRef,
 }: AppHeaderProps) {
   const { t } = useTranslation("layout");
-  const [pendingToggleAction, setPendingToggleAction] = useState<"launch" | "pause" | null>(null);
-  const [hasObservedGroupBusy, setHasObservedGroupBusy] = useState(false);
-  const headerRailClass = "flex items-center gap-1 p-[3px]";
-  const headerUtilityRailClass = "flex items-center gap-0.5 p-[3px]";
-  const headerUtilityButtonClass =
-    "flex items-center justify-center h-8 w-8 rounded-xl transition-all duration-150 active:scale-[0.95] shrink-0 border border-transparent bg-transparent text-[var(--color-text-tertiary)] hover:bg-[var(--glass-tab-bg-hover)] hover:text-[var(--color-text-primary)]";
-  const headerRailDividerClass = "mx-1 h-5 w-px bg-[var(--glass-border-subtle)]";
+  const controlsBusy = useUIStore((state) => state.busy.startsWith("group-"));
+  const groupTitle = groupDoc?.title || (selectedGroupId ? selectedGroupId : t("selectGroup"));
+  const canEditGroup = !!selectedGroupId && !webReadOnly && !!onOpenGroupEdit;
   const selectedStatus = selectedGroupId
     ? getGroupStatusFromSource({
         running: selectedGroupRunning,
@@ -96,267 +74,187 @@ export function AppHeader({
         runtime_status: selectedGroupRuntimeStatus || undefined,
       })
     : null;
-  const selectedStatusKey = selectedStatus?.key ?? null;
-  const launchMode = getLaunchControlMode(selectedStatusKey);
-  const launchControl = getGroupControlVisual(selectedStatusKey, "launch", busy);
-  const pauseControl = getGroupControlVisual(selectedStatusKey, "pause", busy);
-  const stopControl = getGroupControlVisual(selectedStatusKey, "stop", busy);
-  const {
-    launchHardUnavailable,
-    pauseHardUnavailable,
-    stopHardUnavailable,
-    launchDisabled,
-    pauseDisabled,
-    stopDisabled,
-  } = resolveGroupControls({
-    selectedGroupId,
-    actorCount: actors.length,
-    statusKey: selectedStatusKey,
-    busy,
-  });
-  const isPauseAction = selectedStatusKey === "run";
-  const toggleControl = isPauseAction ? pauseControl : launchControl;
-  const toggleDisabled =
-    (isPauseAction ? pauseDisabled : launchDisabled) || pendingToggleAction !== null;
-  const toggleHardUnavailable = isPauseAction ? pauseHardUnavailable : launchHardUnavailable;
-  const toggleTitle = isPauseAction
-    ? t("pauseDelivery")
-    : launchMode === "activate"
-      ? t("resumeDelivery")
-      : t("launchAllAgents");
-  const isGroupBusy = busy.startsWith("group-");
-
-  useEffect(() => {
-    if (!pendingToggleAction) return;
-    let timerId: number | null = null;
-    const resetPendingState = () => {
-      timerId = window.setTimeout(() => {
-        setPendingToggleAction(null);
-        setHasObservedGroupBusy(false);
-      }, 0);
-    };
-
-    if (selectedGroupId.trim() === "") {
-      resetPendingState();
-      return () => {
-        if (timerId !== null) window.clearTimeout(timerId);
-      };
-    }
-    if (isGroupBusy) {
-      if (!hasObservedGroupBusy) {
-        timerId = window.setTimeout(() => {
-          setHasObservedGroupBusy(true);
-        }, 0);
-      }
-      return () => {
-        if (timerId !== null) window.clearTimeout(timerId);
-      };
-    }
-    const launchSettled =
-      pendingToggleAction === "launch" &&
-      (selectedStatusKey === "run" || selectedStatusKey === "idle");
-    const pauseSettled = pendingToggleAction === "pause" && selectedStatusKey === "paused";
-    if (launchSettled || pauseSettled || hasObservedGroupBusy) {
-      resetPendingState();
-    }
-    return () => {
-      if (timerId !== null) window.clearTimeout(timerId);
-    };
-  }, [pendingToggleAction, hasObservedGroupBusy, isGroupBusy, selectedGroupId, selectedStatusKey]);
-
-  const handleLaunchClick = () => {
-    if (launchDisabled || selectedStatusKey === "run") return;
-    setPendingToggleAction("launch");
-    setHasObservedGroupBusy(false);
-    if (launchMode === "activate") {
-      void onSetGroupState("active");
-      return;
-    }
-    onStartGroup();
-  };
-
-  const handlePauseClick = () => {
-    if (pauseDisabled || selectedStatusKey === "paused") return;
-    setPendingToggleAction("pause");
-    setHasObservedGroupBusy(false);
-    void onSetGroupState("paused");
-  };
-
-  const handleStopClick = () => {
-    if (stopDisabled || selectedStatusKey === "stop") return;
-    onStopGroup();
-  };
-
-  const handleToggleClick = () => {
-    if (isPauseAction) {
-      handlePauseClick();
-      return;
-    }
-    handleLaunchClick();
-  };
+  const runLabel = selectedStatus
+    ? t("groupRun.control", {
+        group: groupTitle,
+        state: t(
+          {
+            run: "statusRunning",
+            paused: "statusPaused",
+            idle: "statusIdle",
+            stop: "statusStopped",
+          }[selectedStatus.key],
+        ),
+      })
+    : "";
+  const runMenu = useGroupMenu(
+    runLabel,
+    selectedStatus && onControlGroup && !webReadOnly
+      ? groupRunMenuActions(
+          selectedStatus.key,
+          t,
+          (control) => onControlGroup(selectedGroupId, control),
+          controlsBusy,
+        )
+      : [],
+  );
   return (
-    <header className="absolute inset-x-0 top-0 z-20 flex h-14 flex-shrink-0 items-center justify-between gap-3 px-4 glass-header md:relative md:inset-auto md:px-5">
-      <div className="flex min-w-0 items-center gap-2">
-        <IconButton
-          type="button"
-          variant="secondary"
-          className="-ml-1 text-[var(--color-text-secondary)] md:hidden"
-          onClick={onOpenSidebar}
-          label={t("openSidebar")}
-        >
-          <MenuIcon size={18} />
-        </IconButton>
-
-        <div className="min-w-0 flex items-center gap-2">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <h1 className="truncate text-base font-semibold leading-tight text-[var(--color-text-primary)] md:text-[1.125rem]">
-              {groupDoc?.title || (selectedGroupId ? selectedGroupId : t("selectGroup"))}
+    <header className="@container/group-header absolute inset-x-0 top-0 z-20 flex h-14 shrink-0 items-center px-3 glass-header md:relative md:inset-auto md:px-4">
+      <div
+        className="@container/group-work-header flex min-w-0 flex-1 items-center gap-2 pr-2 md:pr-3"
+        data-group-header-work
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-2" data-group-header-identity>
+          <IconButton
+            type="button"
+            variant="secondary"
+            className="-ml-1 text-[var(--color-text-secondary)] md:hidden"
+            onClick={onOpenSidebar}
+            data-sidebar-toggle="true"
+            label={t("openSidebar")}
+          >
+            <MenuIcon size={18} />
+          </IconButton>
+          <div className="min-w-0">
+            <h1
+              className="min-w-0 truncate text-base font-semibold leading-tight text-[var(--color-text-primary)] md:text-[1.125rem]"
+              title={groupTitle}
+            >
+              {groupTitle}
             </h1>
-            {selectedGroupId && sseStatus !== "connected" && (
-              <span
-                className={classNames(
-                  "h-2 w-2 flex-shrink-0 rounded-full",
-                  sseStatus === "connecting" ? "bg-amber-400 animate-pulse" : "bg-rose-500",
-                )}
-                title={sseStatus === "connecting" ? t("reconnecting") : t("disconnected")}
-              />
+            {!!selectedGroupId && sseStatus !== "connected" && (
+              <p
+                role="status"
+                className="hidden truncate text-xs leading-tight text-[var(--color-text-secondary)] @min-[760px]/group-work-header:block"
+                title={t("connectionInterruptedHint")}
+              >
+                {sseStatus === "connecting" ? t("reconnecting") : t("disconnected")}
+              </p>
             )}
-            {selectedStatus && <GroupStatusIndicator status={selectedStatus} variant="badge" />}
           </div>
-
-          {selectedGroupId && !webReadOnly && onOpenGroupEdit && (
+          {canEditGroup && (
             <IconButton
               type="button"
               variant="ghost"
               size="sm"
-              className="hidden text-[var(--color-text-tertiary)] md:inline-flex"
-              onClick={onOpenGroupEdit}
+              className="hidden shrink-0 text-[var(--color-text-tertiary)] @min-[480px]/group-work-header:inline-flex"
               label={t("editGroup")}
+              aria-haspopup="dialog"
+              data-group-title-edit
+              onClick={onOpenGroupEdit}
             >
-              <EditIcon size={14} />
+              <EditIcon size={16} />
             </IconButton>
           )}
+          {!!selectedGroupId && sseStatus !== "connected" && (
+            <span
+              role="status"
+              className={`h-2 w-2 shrink-0 rounded-full @min-[760px]/group-work-header:hidden ${sseStatus === "connecting" ? "bg-amber-400 animate-pulse" : "bg-rose-500"}`}
+              title={`${sseStatus === "connecting" ? t("reconnecting") : t("disconnected")}. ${t("connectionInterruptedHint")}`}
+            >
+              <span className="sr-only">
+                {sseStatus === "connecting" ? t("reconnecting") : t("disconnected")}
+              </span>
+            </span>
+          )}
+          {selectedStatus && (
+            <span className="inline-flex shrink-0">
+              {runMenu.available ? (
+                <button
+                  type="button"
+                  data-group-run-controls
+                  data-group-run-control={selectedGroupId}
+                  aria-label={runLabel}
+                  title={runLabel}
+                  className="inline-flex min-h-8 min-w-8 items-center justify-center rounded-lg pointer-coarse:min-h-10 pointer-coarse:min-w-10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-text-secondary)]"
+                  aria-haspopup="menu"
+                  aria-expanded={runMenu.open}
+                  onClick={(event) => runMenu.toggle(event.currentTarget)}
+                  onKeyDown={(event) => {
+                    if (!runMenu.open && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+                      event.preventDefault();
+                      runMenu.toggle(event.currentTarget);
+                    } else runMenu.onKeyDown(event);
+                  }}
+                >
+                  <GroupStatusIndicator
+                    status={selectedStatus}
+                    variant="badge"
+                    className="min-h-8 min-w-8 justify-center pointer-coarse:min-h-10 pointer-coarse:min-w-10 [&>span:last-child]:hidden @min-[480px]/group-work-header:[&>span:last-child]:inline cursor-pointer transition-colors hover:bg-[var(--glass-tab-bg-hover)] hover:text-[var(--color-text-primary)]"
+                  />
+                </button>
+              ) : (
+                <GroupStatusIndicator status={selectedStatus} variant="badge" />
+              )}
+            </span>
+          )}
+          {runMenu.menu}
         </div>
-      </div>
 
-      {/* Right Actions */}
-      <div className="flex items-center gap-1.5">
+        <div
+          ref={workControlsRef}
+          className="flex shrink-0 items-center gap-1"
+          data-group-work-controls-host
+        />
+        {!webReadOnly && (
+          <div
+            className="hidden shrink-0 items-center gap-0.5 @min-[760px]/group-header:flex"
+            data-group-work-shortcuts
+          >
+            <IconButton
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onOpenSearch}
+              disabled={!selectedGroupId}
+              className="text-[var(--color-text-secondary)]"
+              label={t("searchMessages")}
+            >
+              <SearchIcon size={17} />
+            </IconButton>
+            <IconButton
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onOpenContext}
+              disabled={!selectedGroupId}
+              className="text-[var(--color-text-secondary)]"
+              label={t("context")}
+            >
+              <ClipboardIcon size={17} />
+            </IconButton>
+          </div>
+        )}
+      </div>
+      <div
+        className="flex shrink-0 items-center justify-end gap-2 md:w-[max(7.5rem,calc(var(--group-side-panel-width,0px)-1rem+4px))]"
+        data-group-header-resources
+      >
+        <div
+          ref={sidePanelControlsRef}
+          className="flex shrink-0 items-center gap-0.5"
+          data-group-side-panel-controls-host
+        />
         {!webReadOnly && (
           <>
-            {/* Desktop Actions */}
-            <div className="mr-1 hidden items-center gap-1.5 md:flex">
-              <div className={headerRailClass}>
-                <IconButton
-                  type="button"
-                  variant="ghost"
-                  size="rail"
-                  onClick={onOpenSearch}
-                  disabled={!selectedGroupId}
-                  className="text-[var(--color-text-secondary)]"
-                  label={t("searchMessages")}
-                >
-                  <SearchIcon size={17} />
-                </IconButton>
-
-                <IconButton
-                  type="button"
-                  variant="ghost"
-                  size="rail"
-                  onClick={onOpenContext}
-                  disabled={!selectedGroupId}
-                  className="text-[var(--color-text-secondary)]"
-                  label={t("context")}
-                >
-                  <ClipboardIcon size={17} />
-                </IconButton>
-                <span className={headerRailDividerClass} aria-hidden="true" />
-                <IconButton
-                  type="button"
-                  variant="ghost"
-                  onClick={handleToggleClick}
-                  disabled={toggleDisabled}
-                  className={classNames(
-                    toggleControl.className,
-                    toggleHardUnavailable && "opacity-45",
-                  )}
-                  label={toggleTitle}
-                  aria-pressed={toggleControl.active}
-                >
-                  {isPauseAction ? <PauseIcon size={17} /> : <PlayIcon size={17} />}
-                </IconButton>
-
-                <IconButton
-                  type="button"
-                  variant="ghost"
-                  onClick={handleStopClick}
-                  disabled={stopDisabled}
-                  className={classNames(stopControl.className, stopHardUnavailable && "opacity-45")}
-                  label={t("stopAllAgents")}
-                  aria-pressed={stopControl.active}
-                >
-                  <StopIcon size={17} />
-                </IconButton>
-              </div>
-
-              <div className={headerUtilityRailClass}>
-                <ThemeToggleCompact
-                  theme={theme}
-                  onThemeChange={onThemeChange}
-                  isDark={isDark}
-                  variant="rail"
-                  className={headerUtilityButtonClass}
-                />
-                <TextScaleSwitcher
-                  textScale={textScale}
-                  onTextScaleChange={onTextScaleChange}
-                  variant="rail"
-                  className={headerUtilityButtonClass}
-                />
-                <LanguageSwitcher
-                  isDark={isDark}
-                  variant="rail"
-                  className={classNames(
-                    headerUtilityButtonClass,
-                    "text-[10px] font-semibold tracking-[0.04em]",
-                  )}
-                />
-                <span
-                  className="mx-0.5 h-4 w-px bg-[var(--glass-border-subtle)]"
-                  aria-hidden="true"
-                />
-                {canAccessAccount ? (
-                  <IconButton
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={onOpenAccount}
-                    className={headerUtilityButtonClass}
-                    label={t("account")}
-                  >
-                    <AccountIcon size={17} />
-                  </IconButton>
-                ) : null}
-                <IconButton
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={onOpenSettings}
-                  disabled={!selectedGroupId && !canAccessAccount}
-                  className={classNames(
-                    headerUtilityButtonClass,
-                    "disabled:opacity-45 disabled:text-[var(--color-text-tertiary)]",
-                  )}
-                  label={t("settings")}
-                >
-                  <SettingsIcon size={18} />
-                </IconButton>
-              </div>
+            <div className="hidden shrink-0 border-l border-[var(--glass-border-subtle)] pl-2 @min-[760px]/group-header:block">
+              <AppSettingsMenu
+                key={selectedGroupId}
+                theme={theme}
+                textScale={textScale}
+                onThemeChange={onThemeChange}
+                onTextScaleChange={onTextScaleChange}
+                canAccessAccount={canAccessAccount}
+                accountLabel={accountLabel}
+                canOpenSettings={Boolean(selectedGroupId) || canAccessAccount}
+                onOpenAccount={onOpenAccount}
+                onOpenSettings={onOpenSettings}
+              />
             </div>
-
             <IconButton
               type="button"
               variant="secondary"
-              className="text-[var(--color-text-secondary)] md:hidden"
+              className="shrink-0 text-[var(--color-text-secondary)] @min-[760px]/group-header:hidden"
               onClick={onOpenMobileMenu}
               label={t("menu")}
             >

@@ -7,13 +7,15 @@ pub const DEFAULT_GROUP_CAPABILITY_SEED_VERSION: u64 = 2;
 
 const SELF_EVOLUTION_CAPSULE: &str = include_str!("../../../resources/cccc-self-evolution.md");
 
-pub const WEB_MODEL_CORE_TOOL_NAMES: &[&str] = &[
+/// Always visible to ordinary Actors, whether or not the daemon is reachable.
+pub const CORE_TOOL_NAMES: &[&str] = &[
     "cccc_help",
     "cccc_bootstrap",
     "cccc_capability_search",
     "cccc_capability_use",
     "cccc_inbox_read",
     "cccc_message_history",
+    "cccc_connect",
     "cccc_message_send",
     "cccc_message_reply",
     "cccc_message_deliver",
@@ -23,6 +25,9 @@ pub const WEB_MODEL_CORE_TOOL_NAMES: &[&str] = &[
     "cccc_coordination",
     "cccc_task",
     "cccc_agent_state",
+];
+
+const WEB_MODEL_EXTRA_TOOL_NAMES: &[&str] = &[
     "cccc_project_info",
     "cccc_capability_state",
     "cccc_capability_enable",
@@ -42,6 +47,49 @@ pub const WEB_MODEL_CORE_TOOL_NAMES: &[&str] = &[
     "cccc_write_stdin",
     "cccc_git",
 ];
+
+const VOICE_SECRETARY_TOOL_NAMES: &[&str] = &[
+    "cccc_help",
+    "cccc_bootstrap",
+    "cccc_project_info",
+    "cccc_inbox_read",
+    "cccc_message_history",
+    "cccc_context_get",
+    "cccc_agent_state",
+    "cccc_voice_secretary_document",
+    "cccc_voice_secretary_composer",
+    "cccc_voice_secretary_request",
+];
+
+pub fn web_model_tool_names() -> impl Iterator<Item = &'static str> {
+    CORE_TOOL_NAMES
+        .iter()
+        .chain(WEB_MODEL_EXTRA_TOOL_NAMES)
+        .copied()
+}
+
+/// Base exposure only. Enabled capability packs and administrative permissions
+/// remain the daemon's responsibility; loss of IPC must not change this profile.
+pub fn actor_base_tool_names(
+    actor_id: &str,
+    actor: Option<&cccc_contracts::Actor>,
+) -> impl Iterator<Item = &'static str> {
+    let secretary = actor_id == "voice-secretary"
+        || actor.and_then(|a| a.internal_kind.as_deref()) == Some("voice_secretary");
+    let base = if secretary {
+        VOICE_SECRETARY_TOOL_NAMES
+    } else {
+        CORE_TOOL_NAMES
+    };
+    let extra = if !secretary
+        && actor.is_some_and(|a| a.runtime == cccc_contracts::ActorRuntime::WebModel)
+    {
+        WEB_MODEL_EXTRA_TOOL_NAMES
+    } else {
+        &[]
+    };
+    base.iter().chain(extra).copied()
+}
 
 /// Local user-authority MCP sessions need the Group control plane without
 /// first mutating capability state. Actor sessions keep the smaller core and
@@ -86,22 +134,6 @@ pub fn all() -> Vec<Capability> {
             "IM Bind",
             &["cccc_im_bind"],
             &["im", "bind"],
-        ),
-        pack(
-            "pack:group_bridge",
-            "Group Bridge Remote Access",
-            &[
-                "cccc_remote_access",
-                "cccc_remote_context",
-                "cccc_remote_repo",
-                "cccc_remote_git",
-                "cccc_remote_repo_edit",
-                "cccc_remote_apply_patch",
-                "cccc_remote_shell",
-                "cccc_remote_exec_command",
-                "cccc_remote_write_stdin",
-            ],
-            &["group-bridge", "remote"],
         ),
         pack(
             "pack:space",

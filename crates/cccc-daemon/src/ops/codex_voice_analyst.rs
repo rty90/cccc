@@ -5,17 +5,20 @@ use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use tokio::sync::broadcast;
 
 mod acp;
+mod claude;
 mod control;
 mod grok;
 mod launch;
+mod launch_claude;
 mod launch_codex;
 mod launch_command;
 mod launch_grok;
 mod launch_opencode;
+pub(crate) mod lifecycle_timing;
+mod native_input;
 mod opencode;
 mod process;
 mod protocol;
@@ -23,11 +26,22 @@ mod protocol;
 mod tests;
 mod turns;
 
+pub(crate) fn remove_claude_actor_settings(
+    home: &HomeLayout,
+    group_id: &str,
+    actor_id: &str,
+) -> io::Result<()> {
+    claude::remove_actor_settings(home, group_id, actor_id)
+}
+
 use acp::AcpClient;
+use claude::ClaudeClient;
 use process::ChildOwner;
 use protocol::ProtocolClient;
 
 pub(crate) const MANAGED_AGENT_DISCONNECTED_METHOD: &str = "cccc/managedAgent/disconnected";
+pub(crate) const MANAGED_AGENT_DELEGATION_ATTACHED_METHOD: &str =
+    "cccc/managedAgent/delegationAttached";
 const CODEX_TURN_CORRELATION_KEY: &str = "cccc_turn_correlation_id";
 
 #[derive(Debug, Clone)]
@@ -44,7 +58,6 @@ pub(crate) struct ActorLaunchConfig {
     pub(crate) workdir: PathBuf,
     pub(crate) group_id: String,
     pub(crate) actor_id: String,
-    pub(crate) runner: cccc_contracts::RunnerKind,
     pub(crate) runtime: ActorRuntime,
     pub(crate) command: Vec<String>,
     pub(crate) environment: BTreeMap<String, String>,
@@ -122,7 +135,6 @@ pub(crate) struct AnalystSession {
     auxiliary_processes: Vec<Arc<ChildOwner>>,
     native_tui_command: Option<Vec<String>>,
     cleanup_paths: Vec<PathBuf>,
-    thread_materialized: AtomicBool,
     thread_resumed: bool,
     delegations: tokio::sync::Mutex<HashMap<String, DelegationState>>,
 }
@@ -130,6 +142,7 @@ pub(crate) struct AnalystSession {
 enum ManagedProtocol {
     Codex(ProtocolClient),
     Acp(AcpClient),
+    Claude(ClaudeClient),
 }
 
 fn acp_mcp_server(
@@ -155,23 +168,27 @@ fn acp_mcp_server(
     })
 }
 
+fn add_voice_mcp_origin(
+    server: &mut Value,
+    environment: &BTreeMap<String, String>,
+    purpose: SessionPurpose,
+) {
+    if purpose == SessionPurpose::VoiceAnalyst
+        && let Some(origin) = environment.get(cccc_core::voice_notifications::ORIGIN_ENV)
+        && let Some(env) = server["env"].as_array_mut()
+    {
+        env.push(
+            serde_json::json!({"name":cccc_core::voice_notifications::ORIGIN_ENV,"value":origin}),
+        );
+    }
+}
+
 impl ManagedProtocol {
     fn subscribe(&self) -> broadcast::Receiver<AnalystEvent> {
         match self {
             Self::Codex(protocol) => protocol.subscribe(),
             Self::Acp(protocol) => protocol.subscribe(),
-        }
-    }
-
-    async fn request(
-        &self,
-        method: &str,
-        params: Value,
-        timeout: std::time::Duration,
-    ) -> io::Result<Value> {
-        match self {
-            Self::Codex(protocol) => protocol.request(method, params, timeout).await,
-            Self::Acp(protocol) => protocol.request(method, params, timeout).await,
+            Self::Claude(protocol) => protocol.subscribe(),
         }
     }
 
@@ -179,6 +196,10 @@ impl ManagedProtocol {
         match self {
             Self::Codex(protocol) => protocol.respond(id, result).await,
             Self::Acp(protocol) => protocol.respond(id, result).await,
+            Self::Claude(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Claude Agent View does not expose generic JSON-RPC responses",
+            )),
         }
     }
 
@@ -186,13 +207,59 @@ impl ManagedProtocol {
         match self {
             Self::Codex(protocol) => protocol.respond_error(id, error).await,
             Self::Acp(protocol) => protocol.respond_error(id, error).await,
+            Self::Claude(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Claude Agent View does not expose generic JSON-RPC responses",
+            )),
         }
     }
 
-    async fn close(&self) {
+    async fn close(&self) -> io::Result<()> {
         match self {
-            Self::Codex(protocol) => protocol.close().await,
-            Self::Acp(protocol) => protocol.close().await,
+            Self::Codex(protocol) => {
+                protocol.close().await;
+                Ok(())
+            }
+            Self::Acp(protocol) => {
+                protocol.close().await;
+                Ok(())
+            }
+            Self::Claude(protocol) => protocol.close().await,
+        }
+    }
+
+    /// Best-effort stop request for sessions that are not owned process trees.
+    /// Codex and ACP providers are child processes and die with this process.
+    async fn kill_request(&self) -> io::Result<()> {
+        match self {
+            Self::Codex(_) | Self::Acp(_) => Ok(()),
+            Self::Claude(protocol) => protocol.kill_request().await,
+        }
+    }
+
+    async fn register_native_input(&self, delegation_id: &str, text: &str) -> io::Result<()> {
+        match self {
+            // Codex uses exact turn/steer whenever an active turn id exists. The only native-input
+            // fallback is the short thread-start admission window, whose next turn is correlated
+            // by the lifecycle owner.
+            Self::Codex(_) => Ok(()),
+            Self::Acp(protocol) => protocol.register_native_input(delegation_id, text).await,
+            Self::Claude(protocol) => protocol.register_native_input(delegation_id, text).await,
+        }
+    }
+
+    async fn forget_native_input(&self, delegation_id: &str) -> io::Result<()> {
+        match self {
+            Self::Codex(_) => Ok(()),
+            Self::Acp(protocol) => protocol.forget_native_input(delegation_id).await,
+            Self::Claude(protocol) => protocol.forget_native_input(delegation_id).await,
+        }
+    }
+
+    fn running(&self) -> bool {
+        match self {
+            Self::Claude(protocol) => protocol.running(),
+            Self::Codex(_) | Self::Acp(_) => true,
         }
     }
 
@@ -203,6 +270,9 @@ impl ManagedProtocol {
                 let _ = protocol.events.send(event);
             }
             Self::Acp(protocol) => {
+                let _ = protocol.events.send(event);
+            }
+            Self::Claude(protocol) => {
                 let _ = protocol.events.send(event);
             }
         }

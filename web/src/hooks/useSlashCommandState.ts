@@ -7,7 +7,7 @@ import { subscribeCapabilityChanged } from "../utils/capabilityEvents";
 const slashCommandCache = new Map<string, SlashCommandItem[]>();
 
 function cachedSlashCommands(groupId: string): SlashCommandItem[] {
-  return slashCommandCache.get(groupId) || buildSlashCommands({ state: null });
+  return slashCommandCache.get(groupId) || buildSlashCommands({ state: null, includeRoomCommands: true });
 }
 
 function cacheSlashCommands(groupId: string, commands: SlashCommandItem[]): SlashCommandItem[] {
@@ -43,7 +43,7 @@ export function useSlashCommandState(selectedGroupId: string) {
         ) {
           return;
         }
-        const commands = cacheSlashCommands(gid, buildSlashCommands({ state: stateResp.result }));
+        const commands = cacheSlashCommands(gid, buildSlashCommands({ state: stateResp.result, includeRoomCommands: true }));
         setSnapshot({ groupId: gid, commands });
       } catch {
         // Keep the last known-good catalog. A later event or SSE reconnect retries it.

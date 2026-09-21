@@ -88,6 +88,7 @@ pub fn space(value: &str) -> Option<&'static str> {
         "sources" => "group_space_sources",
         "artifact" => "group_space_artifact",
         "jobs" => "group_space_jobs",
+        "sync" => "group_space_sync",
         "provider_auth" | "auth" => "group_space_provider_auth",
         "provider_credential_status" => "group_space_provider_credential_status",
         "provider_credential_update" => "group_space_provider_credential_update",
@@ -116,16 +117,6 @@ pub fn debug(value: &str) -> Option<&'static str> {
         "snapshot" => "debug_snapshot",
         "tail" | "tail_logs" => "debug_tail_logs",
         "clear" => "debug_clear_logs",
-        _ => return None,
-    })
-}
-pub fn im(value: &str) -> Option<&'static str> {
-    Some(match value {
-        "bind" => "im_bind_chat",
-        "pending" => "im_list_pending",
-        "authorized" | "list" => "im_list_authorized",
-        "reject" => "im_reject_pending",
-        "revoke" => "im_revoke_chat",
         _ => return None,
     })
 }

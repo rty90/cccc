@@ -1,3 +1,7 @@
+use super::operation::{
+    Operation,
+    Policy::{Read, Write},
+};
 use cccc_contracts::{DaemonRequest, Event};
 use cccc_core::group::AUTOMATION_TIMING_KEYS;
 use cccc_core::ledger;
@@ -10,7 +14,6 @@ use crate::dispatch::{OpError, OpResult, object, required_arg, store, string_arg
 
 const SECTION_SETTING_KEYS: &[(&str, &str, &str)] = &[
     ("default_send_to", "messaging", "default_send_to"),
-    ("min_interval_seconds", "delivery", "min_interval_seconds"),
     (
         "mail_notice_after_seconds",
         "delivery",
@@ -39,13 +42,19 @@ const SECTION_SETTING_KEYS: &[(&str, &str, &str)] = &[
     ("panorama_enabled", "features", "panorama_enabled"),
 ];
 
-pub fn handle(home: &HomeLayout, request: &DaemonRequest) -> Option<OpResult> {
+pub(super) fn resolve_operation(request: &DaemonRequest) -> Option<Operation> {
     Some(match request.op.as_str() {
-        "group_settings_update" => group_settings(home, request),
-        "observability_get" => global_get(home, "observability"),
-        "observability_update" => global_update(home, request, "observability"),
-        "branding_get" => global_get(home, "branding"),
-        "branding_update" => global_update(home, request, "branding"),
+        "group_settings_update" => Operation::new(Write, group_settings),
+        "observability_get" => {
+            Operation::new(Read, |home, _request| global_get(home, "observability"))
+        }
+        "observability_update" => Operation::new(Write, |home, request| {
+            global_update(home, request, "observability")
+        }),
+        "branding_get" => Operation::new(Read, |home, _request| global_get(home, "branding")),
+        "branding_update" => Operation::new(Write, |home, request| {
+            global_update(home, request, "branding")
+        }),
         _ => return None,
     })
 }
@@ -283,7 +292,6 @@ mod tests {
                 "by":"user",
                 "patch":{
                     "keepalive_delay_seconds":456,
-                    "min_interval_seconds":42,
                     "terminal_transcript_visibility":"all",
                     "panorama_enabled":true
                 }
@@ -313,7 +321,6 @@ mod tests {
             stored.extra["messaging"]["default_send_to"],
             json!("foreman")
         );
-        assert_eq!(stored.extra["delivery"]["min_interval_seconds"], json!(42));
         assert_eq!(
             stored.extra["terminal_transcript"]["visibility"],
             json!("all")
@@ -325,7 +332,6 @@ mod tests {
         );
         assert_eq!(response["settings"]["keepalive_delay_seconds"], json!(456));
         assert_eq!(response["settings"]["default_send_to"], json!("foreman"));
-        assert_eq!(response["settings"]["min_interval_seconds"], json!(42));
         assert_eq!(response["group_id"], json!(group.group_id));
         assert_eq!(response["event"]["kind"], json!("group.settings_update"));
     }

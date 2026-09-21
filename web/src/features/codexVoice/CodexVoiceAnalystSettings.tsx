@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { ActorSecretManager } from "../../components/modals/ActorSecretManager";
 import {
+  OpenCodeManagedModelHint,
   RuntimeCommandControl,
   RuntimeConfigurationModePicker,
   RuntimeProfilePicker,
@@ -54,7 +55,6 @@ export function CodexVoiceAnalystSettings({
                 emptyHint={t("codexVoiceAnalystCompatibleProfilesEmpty")}
                 hostNote={t("codexVoiceAnalystProfileHostNote")}
                 detailsLabel={t("codexVoiceAnalystProfileDetails")}
-                showRunner={false}
                 onChange={form.selectProfile}
               />
             ) : (
@@ -71,13 +71,16 @@ export function CodexVoiceAnalystSettings({
                     ariaLabel={tActors("runtime")}
                     items={[
                       { value: "codex", label: RUNTIME_INFO.codex.label },
+                      { value: "claude", label: RUNTIME_INFO.claude.label },
                       { value: "grok", label: RUNTIME_INFO.grok.label },
                       { value: "opencode", label: RUNTIME_INFO.opencode.label },
+                      { value: "kilo", label: RUNTIME_INFO.kilo.label },
                     ]}
                   />
                   <p className="mt-1.5 text-[10px] leading-4 text-[var(--color-text-muted)]">
                     {t("codexVoiceAnalystSupportedRuntimesHint")}
                   </p>
+                  <OpenCodeManagedModelHint runtime={form.settings.runtime} />
                 </div>
 
                 <RuntimeCommandControl
@@ -122,15 +125,24 @@ export function CodexVoiceAnalystSettings({
         ) : null}
       </div>
 
-      <div className="sticky bottom-0 mt-auto flex flex-col gap-3 border-t border-[var(--glass-border-subtle)] bg-[var(--color-sidebar-bg)] px-5 py-4 backdrop-blur-xl safe-area-inset-bottom sm:flex-row sm:items-center sm:justify-between sm:px-6">
+      <div className="flex flex-col gap-3 border-t border-[var(--glass-border-subtle)] bg-[var(--color-sidebar-bg)] px-5 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom,0px))] backdrop-blur-xl sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <div className="min-w-0 text-xs">
+          {form.hasChanges ? (
+            <p className="mb-1 font-medium text-[var(--color-text-primary)]">
+              {t("codexVoiceUnsavedChanges")}
+            </p>
+          ) : null}
           {form.error ? (
             <p className="text-rose-500" role="alert">
               {form.error}
             </p>
-          ) : form.blocked ? (
+          ) : form.callActive ? (
             <p className="text-amber-700 dark:text-amber-300">
-              {t("codexVoiceAnalystSettingsBusy")}
+              {t("codexVoiceAnalystSettingsCallActive")}
+            </p>
+          ) : form.analystBusy ? (
+            <p className="text-amber-700 dark:text-amber-300">
+              {t("codexVoiceAnalystSettingsWorkActive")}
             </p>
           ) : form.saved ? (
             <p className="text-emerald-600 dark:text-emerald-400" role="status">
@@ -142,7 +154,17 @@ export function CodexVoiceAnalystSettings({
             </p>
           )}
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="flex flex-wrap gap-2">
+          {form.hasChanges ? (
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={form.editingDisabled}
+              onClick={form.discard}
+            >
+              {t("codexVoiceDiscardChanges")}
+            </Button>
+          ) : null}
           {form.mode === "custom" ? (
             <Button
               type="button"

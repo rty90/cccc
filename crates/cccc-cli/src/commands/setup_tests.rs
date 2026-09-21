@@ -33,6 +33,14 @@ fn builds_codex_command_with_compiled_binary() {
 }
 
 #[test]
+fn antigravity_uses_native_registration_with_inherited_launcher() {
+    assert_eq!(
+        add_command("antigravity", Path::new("/opt/cccc")).expect("command"),
+        ["agy", "mcp", "add", "cccc", "cccc", "mcp"]
+    );
+}
+
+#[test]
 fn manual_runtime_has_explicit_batch_status() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
@@ -69,18 +77,17 @@ fn builds_noninteractive_cline_command_with_compiled_binary() {
     );
 }
 
-#[test]
-fn grok_setup_reports_session_owned_mcp_without_a_global_command() {
+fn assert_managed_setup(runtime: &str, actor_runtime: ActorRuntime) {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
     let args = SetupArgs {
-        runtime: Some("grok".into()),
+        runtime: Some(runtime.into()),
         path: ".".into(),
     };
     let value = setup_one(
         &home,
         &args,
-        "grok",
+        runtime,
         Path::new("/opt/cccc"),
         &json!({"mcpServers":{}}),
     )
@@ -90,36 +97,16 @@ fn grok_setup_reports_session_owned_mcp_without_a_global_command() {
     assert_eq!(value["managed"], true);
     assert_eq!(value["mode"], "managed_session");
     assert_eq!(value["mcp"], "injected_per_session");
-    assert!(
-        cccc_core::runtime_mcp::add_command(ActorRuntime::Grok, Path::new("/opt/cccc")).is_none()
-    );
-    assert!(cccc_core::runtime_mcp::remove_command(ActorRuntime::Grok).is_none());
+    assert!(cccc_core::runtime_mcp::add_command(actor_runtime, Path::new("/opt/cccc")).is_none());
+    assert!(cccc_core::runtime_mcp::remove_command(actor_runtime).is_none());
+}
+
+#[test]
+fn claude_setup_reports_session_owned_mcp_without_global_config_mutation() {
+    assert_managed_setup("claude", ActorRuntime::Claude);
 }
 
 #[test]
 fn opencode_setup_reports_session_owned_mcp_without_global_config_mutation() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
-    let args = SetupArgs {
-        runtime: Some("opencode".into()),
-        path: ".".into(),
-    };
-    let value = setup_one(
-        &home,
-        &args,
-        "opencode",
-        Path::new("/opt/cccc"),
-        &json!({"mcpServers":{}}),
-    )
-    .expect("managed setup");
-
-    assert_eq!(value["status"], "ready");
-    assert_eq!(value["managed"], true);
-    assert_eq!(value["mode"], "managed_session");
-    assert_eq!(value["mcp"], "injected_per_session");
-    assert!(
-        cccc_core::runtime_mcp::add_command(ActorRuntime::Opencode, Path::new("/opt/cccc"))
-            .is_none()
-    );
-    assert!(cccc_core::runtime_mcp::remove_command(ActorRuntime::Opencode).is_none());
+    assert_managed_setup("opencode", ActorRuntime::Opencode);
 }

@@ -104,6 +104,10 @@ async fn call_generation_coalesces_delegations_and_projects_progress_once() {
         .expect("projection")
         .expect("first projection");
     assert_eq!(projection.delegation_id, "provider-delegation-2");
+    assert_eq!(
+        projection.delegation_ids,
+        ["provider-delegation-1", "provider-delegation-2"]
+    );
     assert_eq!(projection.commands.len(), 1);
     assert!(projection.commands.iter().all(|command| {
         command["type"] == "session.context.append" && command["channel"] == "speakable"
@@ -229,6 +233,71 @@ async fn call_generation_coalesces_delegations_and_projects_progress_once() {
             .collect::<String>(),
         long_result
     );
+    // A shared turn without any streamed progress must also address the session,
+    // not pretend the final result belongs only to the last input ID.
+    for delegation_id in ["shared-first", "shared-second"] {
+        call.follow_analyst_turn(&TurnReceipt {
+            turn_id: "shared-no-progress".into(),
+            delegation_id: delegation_id.into(),
+            thread_id: call.analyst_thread_id().into(),
+        })
+        .await;
+    }
+    let shared = call
+        .take_final_projection(
+            "call-a",
+            "shared-second",
+            "shared-no-progress",
+            "Both answers.",
+        )
+        .await
+        .expect("shared projection")
+        .expect("first result");
+    assert_eq!(shared.delegation_ids, ["shared-first", "shared-second"]);
+    assert!(
+        shared
+            .commands
+            .iter()
+            .all(|command| command["type"] == "session.context.append")
+    );
+    // Multiple close-together completions must keep independent finalization
+    // fences, including finals that never appeared in their progress deltas.
+    for index in 0..64 {
+        let receipt = TurnReceipt {
+            turn_id: format!("burst-turn-{index}"),
+            delegation_id: format!("burst-delegation-{index}"),
+            thread_id: call.analyst_thread_id().into(),
+        };
+        call.follow_analyst_turn(&receipt).await;
+        call.project_analyst_delta(
+            "call-a",
+            &receipt.turn_id,
+            "Checking one source. Checking another.",
+        )
+        .await
+        .expect("project burst progress");
+        let result = format!("Independent final result {index}.");
+        let projection = call
+            .take_final_projection("call-a", &receipt.delegation_id, &receipt.turn_id, &result)
+            .await
+            .expect("project burst final")
+            .expect("first final projection");
+        assert_eq!(projection.delegation_id, receipt.delegation_id);
+        assert_eq!(
+            projection
+                .commands
+                .iter()
+                .filter_map(|c| c["content"][0]["text"].as_str())
+                .collect::<String>(),
+            result
+        );
+        assert!(
+            call.take_final_projection("call-a", &receipt.delegation_id, &receipt.turn_id, &result)
+                .await
+                .expect("duplicate projection check")
+                .is_none()
+        );
+    }
     call.stop("call-a").await.expect("stop call");
     assert_eq!(
         voice_recording_lease::current(&home).expect("recording lease state"),

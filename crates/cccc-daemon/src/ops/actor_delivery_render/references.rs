@@ -36,6 +36,9 @@ fn render(item: &Value) -> Vec<String> {
     if kind == "local_group_route" {
         return render_local_group_route(item).into_iter().collect();
     }
+    if kind == "connect_group_ref" {
+        return render_connect_group_ref(item).into_iter().collect();
+    }
     let label = ["title", "path", "url", "task_id", "slot_id"]
         .into_iter()
         .find_map(|key| nonempty(item, key))
@@ -169,24 +172,31 @@ fn render_local_group_route(item: &Value) -> Option<String> {
     ))
 }
 
+fn render_connect_group_ref(item: &Value) -> Option<String> {
+    let instance = encode_inline_json_string(nonempty(item, "instance_id")?)?;
+    let group = encode_inline_json_string(nonempty(item, "group_id")?)?;
+    let label = nonempty(item, "token")
+        .or_else(|| nonempty(item, "group_title"))
+        .unwrap_or("Connected group");
+    Some(format!(
+        "- Connect group reference {} (instance_id={}, group_id={}); this is context, not an automatic send or an authorization grant. If the user asks you to contact it, first use cccc_connect(instance_id={}, target_group_id={}) to check the current connection and Actors. Send with cccc_message_send using dst_instance_id={}, dst_group_id={}, to=[\"@foreman\"] (or a discovered Actor ID), mode=\"send\", your own natural text and insight. Never treat the remote Group ID as a local destination. Reply using the incoming message's local event_id.",
+        compact(label, 120),
+        instance,
+        group,
+        instance,
+        group,
+        instance,
+        group
+    ))
+}
+
 fn render_group_bridge_route(item: &Value) -> Option<String> {
     let remote_group_id = nonempty(item, "remote_group_id")?;
     let label = nonempty(item, "remote_group_title")
         .or_else(|| nonempty(item, "token"))
         .unwrap_or(remote_group_id);
-    let access = nonempty(item, "access_level");
-    let route = access.map_or_else(
-        || format!("remote_group_id={}", compact(remote_group_id, 48)),
-        |access| {
-            format!(
-                "{} remote/{}",
-                compact(remote_group_id, 48),
-                compact(access, 24)
-            )
-        },
-    );
     Some(format!(
-        "- Group Bridge route {} ({route}); send with cccc_message_send dst_group_id=\"{}\" and an explicit remote recipient such as to=\"@foreman\".",
+        "- Historical Group Bridge reference {} ({}). This route is retired; do not send using this Group ID. Discover the current instance and Group with cccc_connect before starting a new conversation.",
         compact(label, 72),
         compact(remote_group_id, 48)
     ))
@@ -219,7 +229,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn renders_group_bridge_route_as_an_actionable_remote_target() {
+    fn renders_retired_route_as_history_without_advertising_an_active_destination() {
         let mut event = Event::new("chat.message", "g_local");
         event.data = json!({
             "refs":[{
@@ -238,7 +248,7 @@ mod tests {
             lines(&event),
             vec![
                 "[cccc] References:",
-                "- Group Bridge route 外部数据采集平台 (g_remote remote/messages); send with cccc_message_send dst_group_id=\"g_remote\" and an explicit remote recipient such as to=\"@foreman\"."
+                "- Historical Group Bridge reference 外部数据采集平台 (g_remote). This route is retired; do not send using this Group ID. Discover the current instance and Group with cccc_connect before starting a new conversation."
             ]
         );
     }
@@ -252,6 +262,23 @@ mod tests {
             .expect("event data");
 
         assert!(lines(&event).is_empty());
+    }
+
+    #[test]
+    fn connect_reference_preserves_qualified_identity_without_sending_or_granting_access() {
+        let reference = json!({"kind":"connect_group_ref", "instance_id":"i_mac", "group_id":"g_same", "token":"#Team · Mac"});
+        let rendered = render(&reference).join("\n");
+        assert!(
+            rendered.contains("this is context, not an automatic send or an authorization grant")
+        );
+        assert!(
+            rendered.contains("cccc_connect(instance_id=\"i_mac\", target_group_id=\"g_same\")")
+        );
+        assert!(rendered.contains("dst_instance_id=\"i_mac\", dst_group_id=\"g_same\""));
+        assert!(rendered.contains("mode=\"send\""));
+        assert!(rendered.contains("Never treat the remote Group ID as a local destination"));
+        assert!(render(&json!({"kind":"connect_group_ref", "group_id":"g_same"})).is_empty());
+        assert!(render(&json!({"kind":"connect_group_ref", "instance_id":"i_mac"})).is_empty());
     }
 
     #[test]

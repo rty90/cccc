@@ -1,5 +1,6 @@
 import { classNames } from "../../utils/classNames";
 import { ImageIcon } from "../Icons";
+import { AuthenticatedDownloadLink } from "../AuthenticatedDownloadLink";
 
 export function ImagePreviewFailure({
   href,
@@ -27,7 +28,7 @@ export function ImagePreviewFailure({
   const isGridLayout = layout === "grid";
 
   return (
-    <a
+    <AuthenticatedDownloadLink
       href={href}
       className={classNames(
         "group flex w-full flex-col overflow-hidden rounded-xl border p-2 text-left transition-colors",
@@ -67,7 +68,7 @@ export function ImagePreviewFailure({
         <div
           className={classNames(
             "w-full font-semibold",
-            isGridLayout ? "line-clamp-2 break-words text-[11px] leading-4" : "text-xs",
+            isGridLayout ? "line-clamp-2 break-words text-xs leading-4" : "text-xs",
             isDark ? "text-white" : "text-[rgb(30,41,59)]",
           )}
         >
@@ -76,7 +77,7 @@ export function ImagePreviewFailure({
         <div
           className={classNames(
             "w-full",
-            isGridLayout ? "mt-0.5 truncate text-[10px] leading-4" : "mt-1 text-[11px]",
+            isGridLayout ? "mt-0.5 truncate text-xs leading-4" : "mt-1 text-xs",
             isDark ? "text-white/72" : "text-[rgb(100,116,139)]",
           )}
         >
@@ -86,13 +87,13 @@ export function ImagePreviewFailure({
       <div className={classNames("min-w-0 px-1", isGridLayout ? "pt-1" : "pt-2")}>
         <div
           className={classNames(
-            "truncate text-[11px] font-medium",
+            "truncate text-xs font-medium",
             isDark ? "text-white/88" : "text-[rgb(51,65,85)]",
           )}
         >
           {alt}
         </div>
       </div>
-    </a>
+    </AuthenticatedDownloadLink>
   );
 }

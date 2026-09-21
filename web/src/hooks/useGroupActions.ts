@@ -1,89 +1,71 @@
-// Group action helpers (start/stop/state).
-import { useCallback } from "react";
+// Explicit targets keep asynchronous Group actions independent of the current view.
+import { useCallback, useRef } from "react";
 import { useGroupStore, useUIStore } from "../stores";
 import * as api from "../services/api";
+import type { GroupControl } from "../utils/groupControls";
+import i18n from "../i18n";
 
 export function useGroupActions() {
-  const { selectedGroupId, groupDoc, setGroupDoc, refreshGroups, refreshActors } = useGroupStore();
-
-  const { setBusy, showError } = useUIStore();
-
-  // Start group
-  const handleStartGroup = useCallback(async () => {
-    if (!selectedGroupId) return;
-    setBusy("group-start");
+  const pending = useRef(false);
+  const run = useCallback(async (groupId: string, control: GroupControl | "delete") => {
+    const gid = groupId.trim();
+    if (!gid || pending.current) return;
+    const store = useGroupStore.getState();
+    const title = store.groups.find((group) => group.group_id === gid)?.title || gid;
+    if (
+      control === "delete" &&
+      !window.confirm(i18n.t("actors:deleteGroupConfirm", { name: title }))
+    )
+      return;
+    pending.current = true;
+    const { setBusy, showError } = useUIStore.getState();
+    const busyKey = `group-${control === "launch" ? "start" : control}`;
+    setBusy(busyKey);
     try {
-      const resp = await api.startGroup(selectedGroupId);
-      if (!resp.ok) {
-        showError(`${resp.error.code}: ${resp.error.message}`);
-        return;
+      if (control === "delete") {
+        const response = await api.deleteGroup(gid);
+        if (!response.ok) showError(`${title}: ${response.error.message}`);
+        else if (useGroupStore.getState().selectedGroupId === gid) {
+          // This setter already clears the selected view and handles its draft.
+          useGroupStore.getState().setSelectedGroupId("");
+        }
+      } else {
+        let response =
+          control === "launch"
+            ? await api.startGroup(gid)
+            : control === "stop"
+              ? await api.stopGroup(gid)
+              : await api.setGroupState(gid, control === "pause" ? "paused" : "active");
+        if (
+          response.ok &&
+          control === "activate" &&
+          !(response.result.group.runtime_status?.runtime_running ?? response.result.group.running)
+        ) {
+          response = await api.startGroup(gid);
+        }
+        if (!response.ok) showError(`${title}: ${response.error.message}`);
       }
-      await refreshActors();
-      await refreshGroups();
+    } catch {
+      showError(i18n.t("layout:groupRun.failed", { group: title }));
     } finally {
-      setBusy("");
-    }
-  }, [selectedGroupId, setBusy, showError, refreshActors, refreshGroups]);
-
-  // Stop group
-  const handleStopGroup = useCallback(async () => {
-    if (!selectedGroupId) return;
-    setBusy("group-stop");
-    try {
-      const resp = await api.stopGroup(selectedGroupId);
-      if (!resp.ok) {
-        showError(`${resp.error.code}: ${resp.error.message}`);
-        return;
-      }
-      await refreshActors();
-      await refreshGroups();
-    } finally {
-      setBusy("");
-    }
-  }, [selectedGroupId, setBusy, showError, refreshActors, refreshGroups]);
-
-  // Set group state
-  const handleSetGroupState = useCallback(
-    async (s: "active" | "idle" | "paused") => {
-      if (!selectedGroupId) return;
-      setBusy(s === "active" ? "group-activate" : s === "paused" ? "group-pause" : "group-idle");
       try {
-        const resp = await api.setGroupState(selectedGroupId, s);
-        if (!resp.ok) {
-          showError(`${resp.error.code}: ${resp.error.message}`);
-          return;
-        }
-        setGroupDoc(
-          groupDoc
-            ? {
-                ...groupDoc,
-                state: s,
-                runtime_status: {
-                  runtime_running: groupDoc.runtime_status?.runtime_running ?? false,
-                  running_actor_count: groupDoc.runtime_status?.running_actor_count ?? 0,
-                  has_running_foreman: groupDoc.runtime_status?.has_running_foreman ?? false,
-                  ...groupDoc.runtime_status,
-                  lifecycle_state: s,
-                },
-              }
-            : null,
-        );
-        // When resuming to active and no actors are running, also start
-        // the group so processes get relaunched (not just the state flag).
-        if (s === "active" && groupDoc && !groupDoc.running) {
-          const startResp = await api.startGroup(selectedGroupId);
-          if (!startResp.ok) {
-            showError(`${startResp.error.code}: ${startResp.error.message}`);
-          }
-          await refreshActors();
-        }
-        await refreshGroups();
+        // These store methods refresh by Group ID and guard navigation races.
+        await useGroupStore.getState().refreshGroups();
+        if (control !== "delete") await useGroupStore.getState().refreshActors(gid);
       } finally {
-        setBusy("");
+        pending.current = false;
+        if (useUIStore.getState().busy === busyKey) setBusy("");
       }
-    },
-    [selectedGroupId, groupDoc, setBusy, showError, setGroupDoc, refreshGroups, refreshActors],
+    }
+  }, []);
+  const handleGroupControl = useCallback(
+    (groupId: string, control: GroupControl) => run(groupId, control),
+    [run],
   );
-
-  return { handleStartGroup, handleStopGroup, handleSetGroupState };
+  const handleStartGroup = useCallback(
+    () => run(useGroupStore.getState().selectedGroupId, "launch"),
+    [run],
+  );
+  const handleDeleteGroup = useCallback((groupId: string) => run(groupId, "delete"), [run]);
+  return { handleStartGroup, handleGroupControl, handleDeleteGroup };
 }

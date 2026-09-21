@@ -10,10 +10,7 @@ pub(super) fn resolve_launch_actor(
     actor: &Actor,
 ) -> Result<Actor, OpError> {
     let mut actor = actor_profile_runtime::resolve(home, actor)?;
-    let profile_secrets = actor_profile_runtime::profile_secrets(home, &actor)?;
-    let actor_secret_values = actor_secrets::values(home, &group.group_id, &actor.id)?;
-    actor.env.extend(profile_secrets);
-    actor.env.extend(actor_secret_values);
+    actor.env = actor_secrets::effective_values(home, &group.group_id, &actor)?;
     Ok(actor)
 }
 
@@ -23,6 +20,9 @@ pub(super) fn launch_env(
     actor: &Actor,
 ) -> BTreeMap<String, String> {
     let mut env = actor.env.clone();
+    // Packaged/test installations need the same CLI as their owning daemon,
+    // even when that executable is not installed on the user's shell PATH.
+    crate::ops::codex_mcp::configure_actor_cli(&mut env);
     env.insert(
         "CCCC_HOME".into(),
         home.root().to_string_lossy().into_owned(),

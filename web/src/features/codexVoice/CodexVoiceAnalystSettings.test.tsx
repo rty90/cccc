@@ -47,11 +47,14 @@ afterEach(() => {
   api.copyVoiceSecrets.mockReset();
   api.updateProfileEnv.mockReset();
   vi.restoreAllMocks();
+  Reflect.deleteProperty(window, "confirm");
   Reflect.deleteProperty(window, "prompt");
   document.body.innerHTML = "";
 });
 
-function controller(): CodexVoiceSessionController {
+function controller(
+  overrides: Partial<CodexVoiceSessionController> = {},
+): CodexVoiceSessionController {
   return {
     isEngaged: false,
     analyst: null,
@@ -61,6 +64,7 @@ function controller(): CodexVoiceSessionController {
       realtime_credentials_available: true,
     },
     refresh: vi.fn(async () => undefined),
+    ...overrides,
   } as unknown as CodexVoiceSessionController;
 }
 
@@ -72,18 +76,120 @@ function buttonWithText(container: HTMLElement, text: string): HTMLButtonElement
   return button;
 }
 
-async function renderSettings() {
+async function renderSettings(sessionController = controller()) {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
   await act(async () =>
-    root.render(<CodexVoiceAnalystSettings active controller={controller()} />),
+    root.render(<CodexVoiceAnalystSettings active controller={sessionController} />),
   );
   await act(async () => undefined);
   return { host, root };
 }
 
 describe("CodexVoiceAnalystSettings", () => {
+  it("refreshes a clean form on return so another settings change does not stay hidden", async () => {
+    api.fetchSettings
+      .mockResolvedValueOnce({
+        ok: true,
+        result: { settings: customSettings, environment_keys: [] },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        result: { settings: { ...customSettings, runtime: "claude" }, environment_keys: [] },
+      });
+    api.listProfiles.mockResolvedValue({ ok: true, result: { profiles: [] } });
+    const sessionController = controller();
+    const { host, root } = await renderSettings(sessionController);
+    await act(async () =>
+      root.render(<CodexVoiceAnalystSettings active={false} controller={sessionController} />),
+    );
+    await act(async () =>
+      root.render(<CodexVoiceAnalystSettings active controller={sessionController} />),
+    );
+    expect(api.fetchSettings).toHaveBeenCalledTimes(2);
+    expect(host.querySelector('[role="combobox"]')?.textContent).toContain("Claude");
+    expect(host.textContent).not.toContain("codexVoiceUnsavedChanges");
+    await act(async () => root.unmount());
+  });
+  it.each([true, false])(
+    "preserves unsaved drafts across tab changes (profiles loaded: %s) until discarded",
+    async (profilesOk) => {
+      api.fetchSettings.mockResolvedValue({
+        ok: true,
+        result: { settings: customSettings, environment_keys: [] },
+      });
+      api.listProfiles.mockResolvedValue(
+        profilesOk
+          ? { ok: true, result: { profiles: [] } }
+          : { ok: false, error: { message: "unavailable" } },
+      );
+      const sessionController = controller();
+      const { host, root } = await renderSettings(sessionController);
+      const toggle = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+      await act(async () => toggle.click());
+      expect(toggle.checked).toBe(false);
+      await act(async () =>
+        root.render(<CodexVoiceAnalystSettings active={false} controller={sessionController} />),
+      );
+      await act(async () =>
+        root.render(<CodexVoiceAnalystSettings active controller={sessionController} />),
+      );
+      expect(api.fetchSettings).toHaveBeenCalledOnce();
+      expect(toggle.checked).toBe(false);
+      expect(host.textContent).toContain("codexVoiceUnsavedChanges");
+      expect(api.updateSettings).not.toHaveBeenCalled();
+      await act(async () => buttonWithText(host, "codexVoiceDiscardChanges").click());
+      expect(toggle.checked).toBe(true);
+      expect(host.textContent).not.toContain("codexVoiceUnsavedChanges");
+      await act(async () => root.unmount());
+    },
+  );
+  it("allows an explicit runtime switch while Analyst work is still active", async () => {
+    api.fetchSettings.mockResolvedValue({
+      ok: true,
+      result: { settings: customSettings, environment_keys: [] },
+    });
+    api.listProfiles.mockResolvedValue({ ok: true, result: { profiles: [] } });
+    api.updateSettings.mockResolvedValue({
+      ok: true,
+      result: { analyst: null, restarted: true, started_new_session: true, discarded_work: true },
+    });
+    const confirm = vi.fn(() => true);
+    Object.defineProperty(window, "confirm", { configurable: true, value: confirm });
+    const { host, root } = await renderSettings(
+      controller({
+        analyst: {
+          generation: "analyst-1",
+          tui_ready: true,
+          phase: "working",
+          last_result: "",
+          warning: "",
+        },
+      }),
+    );
+
+    const toggle = host.querySelector('input[type="checkbox"]');
+    if (!(toggle instanceof HTMLInputElement)) throw new Error("default command toggle not found");
+    await act(async () => toggle.click());
+
+    expect(host.textContent).toContain("codexVoiceAnalystSettingsWorkActive");
+    const save = buttonWithText(host, "codexVoiceAnalystSettingsApplyRestart");
+    expect(save.disabled).toBe(false);
+    await act(async () => save.click());
+
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(confirm).toHaveBeenCalledWith("codexVoiceAnalystSettingsDiscardConfirm");
+    expect(api.updateSettings).toHaveBeenCalledWith({
+      settings: { ...customSettings, command: "codex" },
+      environmentSet: {},
+      environmentUnset: [],
+      environmentClear: false,
+      discardCurrentWork: true,
+    });
+    await act(async () => root.unmount());
+  });
+
   it("uses the same runtime mode and private environment controls as Actor editing", async () => {
     api.fetchSettings.mockResolvedValue({
       ok: true,
@@ -103,6 +209,19 @@ describe("CodexVoiceAnalystSettings", () => {
     await act(async () => buttonWithText(host, "fromActorProfile").click());
     expect(host.textContent).toContain("codexVoiceAnalystCompatibleProfilesEmpty");
     expect(host.textContent).not.toContain("secretManager.addVariable");
+    await act(async () => root.unmount());
+  });
+
+  it("shows the temporary OpenCode model synchronization guidance only for OpenCode", async () => {
+    api.fetchSettings.mockResolvedValue({
+      ok: true,
+      result: { settings: { ...customSettings, runtime: "opencode" }, environment_keys: [] },
+    });
+    api.listProfiles.mockResolvedValue({ ok: true, result: { profiles: [] } });
+
+    const { host, root } = await renderSettings();
+
+    expect(host.textContent).toContain("opencodeManagedModelHint");
     await act(async () => root.unmount());
   });
 
@@ -134,6 +253,7 @@ describe("CodexVoiceAnalystSettings", () => {
       environmentSet: {},
       environmentUnset: [],
       environmentClear: false,
+      discardCurrentWork: false,
     });
     await act(async () => root.unmount());
   });
@@ -158,6 +278,7 @@ describe("CodexVoiceAnalystSettings", () => {
       environmentSet: {},
       environmentUnset: [],
       environmentClear: true,
+      discardCurrentWork: false,
     });
     await act(async () => root.unmount());
   });
@@ -207,15 +328,110 @@ describe("CodexVoiceAnalystSettings", () => {
       environmentSet: {},
       environmentUnset: [],
       environmentClear: false,
+      discardCurrentWork: false,
     });
     await act(async () => root.unmount());
   });
 
-  it("saves custom Analyst configuration and write-only secrets as a Runtime Profile", async () => {
-    api.fetchSettings.mockResolvedValue({
+  it.each(["none", "copy", "environment"])(
+    "saves Analyst draft and retries a %s failure against the same Profile",
+    async (failure) => {
+      api.fetchSettings.mockResolvedValue({
+        ok: true,
+        result: { settings: customSettings, environment_keys: ["ZAI_API_KEY"] },
+      });
+      api.listProfiles.mockResolvedValue({ ok: true, result: { profiles: [] } });
+      const profile = {
+        id: "voice-zai",
+        name: "Voice ZAI",
+        scope: "global",
+        owner_id: "",
+        runtime: "codex",
+        runner: "pty",
+        command: [],
+        submit: "enter",
+        env: {},
+        created_at: "2026-09-02T00:00:00Z",
+        updated_at: "2026-09-02T00:00:00Z",
+        revision: 1,
+      };
+      api.upsertProfile.mockResolvedValue({ ok: true, result: { profile } });
+      api.copyVoiceSecrets.mockResolvedValue({
+        ok: true,
+        result: { profile_id: profile.id, keys: ["ZAI_API_KEY"] },
+      });
+      api.updateProfileEnv.mockResolvedValue({
+        ok: true,
+        result: { profile_id: profile.id, keys: [] },
+      });
+      api.updateSettings.mockResolvedValue({
+        ok: true,
+        result: { analyst: null, restarted: false, started_new_session: false },
+      });
+      if (failure === "copy")
+        api.copyVoiceSecrets.mockResolvedValueOnce({
+          ok: false,
+          error: { message: "copy failed" },
+        });
+      if (failure === "environment")
+        api.updateProfileEnv.mockResolvedValueOnce({
+          ok: false,
+          error: { message: "environment failed" },
+        });
+      Object.defineProperty(window, "prompt", {
+        configurable: true,
+        value: vi.fn().mockReturnValue("Voice ZAI"),
+      });
+      const { host, root } = await renderSettings();
+
+      await act(async () => buttonWithText(host, "secretManager.clearAllAction").click());
+      await act(async () => buttonWithText(host, "addToActorProfiles").click());
+      if (failure !== "none") {
+        expect(host.textContent).toContain("codexVoiceAnalystProfileSaveFailed");
+        await act(async () => buttonWithText(host, "addToActorProfiles").click());
+        expect(api.upsertProfile.mock.calls[1][0].id).toBe("voice-zai");
+        expect(api.upsertProfile.mock.calls[1][1]).toBe(1);
+        expect(window.prompt).toHaveBeenCalledTimes(1);
+        expect(api.copyVoiceSecrets).toHaveBeenCalledTimes(failure === "copy" ? 2 : 1);
+      }
+
+      expect(api.upsertProfile).toHaveBeenCalledWith(
+        {
+          id: undefined,
+          name: "Voice ZAI",
+          runtime: "codex",
+          command: "",
+          submit: "enter",
+          env: {},
+        },
+        undefined,
+      );
+      expect(api.copyVoiceSecrets).toHaveBeenCalledWith("voice-zai");
+      expect(api.updateProfileEnv).toHaveBeenCalledWith("voice-zai", {}, [], true, {
+        scope: "global",
+        ownerId: "",
+      });
+      expect(host.textContent).toContain("codexVoiceAnalystProfileCreated");
+
+      await act(async () => buttonWithText(host, "codexVoiceAnalystSettingsSave").click());
+      expect(api.updateSettings).toHaveBeenCalledWith({
+        settings: { ...customSettings, command: "", profile_id: "voice-zai" },
+        environmentSet: {},
+        environmentUnset: [],
+        environmentClear: false,
+        discardCurrentWork: false,
+      });
+      await act(async () => root.unmount());
+    },
+  );
+
+  it("refreshes a partially created Profile's environment after saving the Analyst draft", async () => {
+    let analystEnvironment: Record<string, string> = { ZAI_API_KEY: "fixture-value" };
+    let profileEnvironment: Record<string, string> = {};
+    api.fetchSettings.mockImplementation(async () => ({
       ok: true,
-      result: { settings: customSettings, environment_keys: ["ZAI_API_KEY"] },
-    });
+      result: { settings: customSettings, environment_keys: Object.keys(analystEnvironment) },
+    }));
     api.listProfiles.mockResolvedValue({ ok: true, result: { profiles: [] } });
     const profile = {
       id: "voice-zai",
@@ -227,22 +443,23 @@ describe("CodexVoiceAnalystSettings", () => {
       command: [],
       submit: "enter",
       env: {},
-      created_at: "2026-09-02T00:00:00Z",
-      updated_at: "2026-09-02T00:00:00Z",
       revision: 1,
     };
     api.upsertProfile.mockResolvedValue({ ok: true, result: { profile } });
-    api.copyVoiceSecrets.mockResolvedValue({
-      ok: true,
-      result: { profile_id: profile.id, keys: ["ZAI_API_KEY"] },
+    api.copyVoiceSecrets.mockImplementation(async () => {
+      profileEnvironment = { ...analystEnvironment };
+      return {
+        ok: true,
+        result: { profile_id: profile.id, keys: Object.keys(profileEnvironment) },
+      };
     });
-    api.updateProfileEnv.mockResolvedValue({
-      ok: true,
-      result: { profile_id: profile.id, keys: [] },
+    api.updateProfileEnv.mockResolvedValueOnce({
+      ok: false,
+      error: { message: "environment failed" },
     });
-    api.updateSettings.mockResolvedValue({
-      ok: true,
-      result: { analyst: null, restarted: false, started_new_session: false },
+    api.updateSettings.mockImplementation(async (request) => {
+      if (request.environmentClear) analystEnvironment = {};
+      return { ok: true, result: { analyst: null, restarted: false, started_new_session: false } };
     });
     Object.defineProperty(window, "prompt", {
       configurable: true,
@@ -252,29 +469,21 @@ describe("CodexVoiceAnalystSettings", () => {
 
     await act(async () => buttonWithText(host, "secretManager.clearAllAction").click());
     await act(async () => buttonWithText(host, "addToActorProfiles").click());
-
-    expect(api.upsertProfile).toHaveBeenCalledWith({
-      name: "Voice ZAI",
-      runtime: "codex",
-      runner: "pty",
-      command: "",
-      submit: "enter",
-      env: {},
-    });
-    expect(api.copyVoiceSecrets).toHaveBeenCalledWith("voice-zai");
-    expect(api.updateProfileEnv).toHaveBeenCalledWith("voice-zai", {}, [], true, {
-      scope: "global",
-      ownerId: "",
-    });
-    expect(host.textContent).toContain("codexVoiceAnalystProfileCreated");
+    expect(host.textContent).toContain("codexVoiceAnalystProfileSaveFailed");
+    expect(Object.keys(profileEnvironment)).toEqual(["ZAI_API_KEY"]);
 
     await act(async () => buttonWithText(host, "codexVoiceAnalystSettingsSave").click());
-    expect(api.updateSettings).toHaveBeenCalledWith({
-      settings: { ...customSettings, command: "", profile_id: "voice-zai" },
-      environmentSet: {},
-      environmentUnset: [],
-      environmentClear: false,
-    });
+    expect(analystEnvironment).toEqual({});
+    expect(host.textContent).not.toContain("codexVoiceUnsavedChanges");
+    await act(async () => buttonWithText(host, "addToActorProfiles").click());
+
+    expect(host.textContent).toContain("codexVoiceAnalystProfileCreated");
+    expect(profileEnvironment).toEqual({});
+    expect(api.copyVoiceSecrets).toHaveBeenCalledTimes(2);
+    expect(api.updateProfileEnv).toHaveBeenCalledTimes(1);
+    expect(api.upsertProfile.mock.calls[1][0].id).toBe(profile.id);
+    expect(api.upsertProfile.mock.calls[1][1]).toBe(profile.revision);
+    expect(window.prompt).toHaveBeenCalledTimes(1);
     await act(async () => root.unmount());
   });
 

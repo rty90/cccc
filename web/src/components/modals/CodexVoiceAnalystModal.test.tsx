@@ -28,10 +28,11 @@ function controller(
     analyst: null,
     owned: false,
     checking: false,
-    userTranscript: "",
-    assistantTranscript: "",
+    conversation: [],
+    notificationPaused: false,
     microphoneMuted: false,
     playbackBlocked: false,
+    outputStatus: { queued: 0, blocked: null },
     error: "",
     isStarting: false,
     isEngaged: false,
@@ -134,15 +135,17 @@ describe("CodexVoiceAnalystModal", () => {
     expect(html).not.toContain("Alpha");
   });
 
-  it("shows accumulated current-turn captions at readable hierarchy", () => {
+  it("shows accumulated current-turn captions", () => {
     const html = renderToStaticMarkup(
       <CodexVoiceAnalystModal
         isOpen
         isDark={false}
         isSmallScreen={false}
         controller={controller({
-          userTranscript: "今天天气怎么样",
-          assistantTranscript: "我来帮你查一下。",
+          conversation: [
+            { id: "user", role: "user", text: "今天天气怎么样", final: true },
+            { id: "assistant", role: "assistant", text: "我来帮你查一下。", final: true },
+          ],
         })}
         onClose={vi.fn()}
       />,
@@ -150,7 +153,6 @@ describe("CodexVoiceAnalystModal", () => {
 
     expect(html).toContain("今天天气怎么样");
     expect(html).toContain("我来帮你查一下。");
-    expect(html).toContain("text-[15px]");
   });
 
   it("shows a concise terminal placeholder before the first investigation", () => {

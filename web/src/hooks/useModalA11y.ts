@@ -1,8 +1,31 @@
 // useModalA11y: Escape key, focus trap, and body scroll lock for modals.
-import { useCallback, useEffect, useId, useRef } from "react";
+import { useCallback, useEffect, useId, useRef, type RefObject } from "react";
 
 const FOCUSABLE_SELECTOR =
-  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
+
+function focusableElements(modal: HTMLElement): HTMLElement[] {
+  return Array.from(modal.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter((element) => {
+    if (element.tabIndex < 0 || element.closest('[hidden], [inert], [aria-hidden="true"]'))
+      return false;
+    for (let node: HTMLElement | null = element; node; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        style.visibility === "collapse"
+      )
+        return false;
+      if (
+        node instanceof HTMLDetailsElement &&
+        !node.open &&
+        !node.querySelector(":scope > summary")?.contains(element)
+      )
+        return false;
+    }
+    return true;
+  });
+}
 
 type BodyStyleSnapshot = { overflow: string; position: string; top: string; width: string };
 
@@ -25,7 +48,7 @@ function removeModal(id: string): void {
 }
 
 function focusFirst(modal: HTMLDivElement): void {
-  const first = modal.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
+  const first = focusableElements(modal)[0];
   if (first) {
     first.focus();
     return;
@@ -34,11 +57,12 @@ function focusFirst(modal: HTMLDivElement): void {
   modal.focus();
 }
 
-function focusTopModal(): void {
+function focusTopModal(previous?: HTMLElement | null): void {
   if (modalStack.length === 0) return;
   const topId = modalStack[modalStack.length - 1];
   const topModal = modalElements.get(topId);
-  if (topModal) focusFirst(topModal);
+  if (topModal && previous && topModal.contains(previous)) previous.focus();
+  else if (topModal) focusFirst(topModal);
 }
 
 function lockBodyScroll(): void {
@@ -79,7 +103,13 @@ function unlockBodyScroll(): void {
  * 2. Focus is trapped inside the top-most modal (Tab/Shift+Tab cycle)
  * 3. Body scroll is locked while any modal is open
  */
-export function useModalA11y(isOpen: boolean, onClose: () => void) {
+export function useModalA11y(
+  isOpen: boolean,
+  onClose: () => void,
+  options?: { preserveTerminalKeys?: boolean; initialFocusRef?: RefObject<HTMLElement | null> },
+) {
+  const preserveTerminalKeys = options?.preserveTerminalKeys === true;
+  const initialFocusRef = options?.initialFocusRef;
   const instanceId = useId();
   const modalRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -91,24 +121,27 @@ export function useModalA11y(isOpen: boolean, onClose: () => void) {
 
   const handleEscape = useCallback(
     (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      // Nested popovers handle Escape first in capture; do not dismiss their parent too.
+      if (e.key !== "Escape" || e.defaultPrevented) return;
       if (!isTopModal(instanceId)) return;
+      if (preserveTerminalKeys && e.target instanceof Element && e.target.closest(".xterm")) return;
       e.preventDefault();
       e.stopPropagation();
       onCloseRef.current();
     },
-    [instanceId],
+    [instanceId, preserveTerminalKeys],
   );
 
   const handleTab = useCallback(
     (e: KeyboardEvent) => {
       if (e.key !== "Tab") return;
+      if (preserveTerminalKeys && e.target instanceof Element && e.target.closest(".xterm")) return;
       if (!isTopModal(instanceId)) return;
 
       const modal = modalRef.current;
       if (!modal) return;
 
-      const focusables = Array.from(modal.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+      const focusables = focusableElements(modal);
       if (focusables.length === 0) {
         e.preventDefault();
         modal.setAttribute("tabindex", "-1");
@@ -133,7 +166,7 @@ export function useModalA11y(isOpen: boolean, onClose: () => void) {
         first.focus();
       }
     },
-    [instanceId],
+    [instanceId, preserveTerminalKeys],
   );
 
   useEffect(() => {
@@ -153,7 +186,11 @@ export function useModalA11y(isOpen: boolean, onClose: () => void) {
       const modal = modalRef.current;
       if (!modal) return;
       modalElements.set(id, modal);
-      if (isTopModal(id)) focusFirst(modal);
+      if (isTopModal(id)) {
+        const initial = initialFocusRef?.current;
+        if (initial && modal.contains(initial)) initial.focus();
+        else focusFirst(modal);
+      }
     });
 
     return () => {
@@ -170,10 +207,11 @@ export function useModalA11y(isOpen: boolean, onClose: () => void) {
           previous.focus();
         }
       } else {
-        requestAnimationFrame(() => focusTopModal());
+        const previous = previousFocusRef.current;
+        requestAnimationFrame(() => focusTopModal(previous));
       }
     };
-  }, [isOpen, instanceId, handleEscape, handleTab]);
+  }, [isOpen, instanceId, handleEscape, handleTab, initialFocusRef]);
 
   return { modalRef };
 }

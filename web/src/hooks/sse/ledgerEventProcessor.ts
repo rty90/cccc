@@ -1,4 +1,5 @@
 import { useGroupStore, useModalStore, useUIStore } from "../../stores";
+import { groupMessagesVisible } from "../../stores/useUIStore";
 import type { Actor, ChatMessageData, LedgerEvent } from "../../types";
 import {
   extractMailReadData,
@@ -38,6 +39,7 @@ export type LedgerEventProcessorDeps = {
   activeTab: string;
   chatAtBottom: boolean;
   onContextSync: () => void;
+  onGroupScopeChanged: () => void;
   appendEvent: GroupState["appendEvent"];
   updateReadStatus: GroupState["updateReadStatus"];
   updateObligationStatus: GroupState["updateObligationStatus"];
@@ -114,11 +116,15 @@ export function processLedgerEvent(
     return;
   }
   if (isReplyRequestCancelledEvent(event)) {
+    if (event.data?.connect_cancel) deps.appendEvent(event, groupId);
     const sourceEventId = extractCancelledSourceEventId(event);
     if (sourceEventId) {
       deps.updateObligationStatus(sourceEventId, { cancelled: true }, groupId);
     }
     return;
+  }
+  if (["group.set_active_scope", "group.attach", "group.detach_scope"].includes(event.kind || "")) {
+    deps.onGroupScopeChanged();
   }
   const reconciliation = reconcileCanonicalOutboxEvent(event, groupId);
   const nextEvent = reconciliation.event;
@@ -143,7 +149,7 @@ export function processLedgerEvent(
     const replyTo = String(data?.reply_to || "").trim();
     const replyBy = String(nextEvent.by || "").trim();
     if (replyTo && replyBy) {
-      deps.updateObligationStatus(replyTo, { actorId: replyBy, replied: true }, groupId);
+      deps.updateObligationStatus(replyTo, { reply: nextEvent }, groupId);
     }
     if (hasRenderableChatMessageContent(nextEvent) && replyBy && replyBy !== "user") {
       deps.clearEmptyStreamingEventsForActor(replyBy, groupId);
@@ -166,7 +172,13 @@ export function processLedgerEvent(
     }
   }
 
-  if (shouldIncrementUnread(nextEvent, deps.activeTab === "chat", deps.chatAtBottom)) {
+  if (
+    shouldIncrementUnread(
+      nextEvent,
+      deps.activeTab === "chat" && groupMessagesVisible(groupId, useUIStore.getState()),
+      deps.chatAtBottom,
+    )
+  ) {
     deps.incrementChatUnread(groupId);
   }
   const refreshMode = getActorRefreshMode(nextEvent);

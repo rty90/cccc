@@ -1,8 +1,12 @@
+import { buttonVariants } from "../ui/button-variants";
+import { GraphicViewer } from "../viewer/GraphicViewer";
+import { useModalA11y } from "../../hooks/useModalA11y";
+import { AuthenticatedDownloadLink } from "../AuthenticatedDownloadLink";
 import { FloatingPortal } from "@floating-ui/react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { classNames } from "../../utils/classNames";
-import { CloseIcon } from "../Icons";
+import { CloseIcon, DownloadIcon } from "../Icons";
 import { MESSAGE_IMAGE_PREVIEW_HEIGHT_PX } from "./imageLayout";
 import { ImagePreviewFailure } from "./ImagePreviewFailure";
 
@@ -142,20 +146,11 @@ export function ImagePreview({
     };
   }, [displaySrc, href, resolvedHref]);
 
+  const isLightboxVisible = isLightboxOpen && !loadError;
+  const { modalRef } = useModalA11y(isLightboxVisible, () => setIsLightboxOpen(false));
   useEffect(() => {
-    if (!isLightboxOpen) {
-      return undefined;
-    }
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setIsLightboxOpen(false);
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isLightboxOpen]);
+    if (loadError) setIsLightboxOpen(false);
+  }, [loadError]);
 
   if (loadError) {
     return (
@@ -230,7 +225,9 @@ export function ImagePreview({
             }
             loading={isSvg ? "lazy" : "eager"}
             decoding="async"
-            onError={() => {
+            onError={(event) => {
+              // A previous preview can remain visible while the next source is preloaded.
+              if (event.currentTarget.getAttribute("src") !== (resolvedHref || href)) return;
               IMAGE_LOAD_ERROR_CACHE.add(href);
               setLoadError(true);
             }}
@@ -238,9 +235,9 @@ export function ImagePreview({
         )}
       </button>
 
-      {isLightboxOpen && (
+      {isLightboxVisible && (
         <FloatingPortal>
-          <div className="fixed inset-0 z-[80] flex items-center justify-center p-3 sm:p-6 animate-fade-in">
+          <div className="fixed inset-0 z-[80] flex items-center justify-center sm:p-4 animate-fade-in">
             <button
               type="button"
               className={classNames("absolute inset-0", "glass-overlay")}
@@ -250,9 +247,10 @@ export function ImagePreview({
 
             <div
               className={classNames(
-                "relative z-[81] flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border shadow-2xl",
+                "relative z-[81] flex h-[100dvh] sm:h-[90dvh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border shadow-2xl",
                 "glass-modal",
               )}
+              ref={modalRef}
               role="dialog"
               aria-modal="true"
               aria-label={t("imagePreviewDialog")}
@@ -278,30 +276,21 @@ export function ImagePreview({
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <a
+                <div className="flex shrink-0 items-center gap-2">
+                  <AuthenticatedDownloadLink
                     href={downloadHref}
                     download={downloadName}
-                    className={classNames(
-                      "inline-flex items-center rounded-lg px-3 py-2 text-xs font-medium transition-colors",
-                      isDark
-                        ? "bg-slate-800 text-slate-100 hover:bg-slate-700"
-                        : "bg-gray-100 text-gray-700 hover:bg-gray-200",
-                    )}
+                    className={`${buttonVariants({ variant: "ghost", size: "icon" })} max-sm:h-11 max-sm:w-11`}
                     title={t("download", { name: alt })}
+                    aria-label={t("download", { name: alt })}
                   >
-                    {t("download", { name: alt })}
-                  </a>
+                    <DownloadIcon size={18} aria-hidden="true" />
+                  </AuthenticatedDownloadLink>
 
                   <button
                     type="button"
                     onClick={() => setIsLightboxOpen(false)}
-                    className={classNames(
-                      "inline-flex items-center justify-center rounded-lg p-2 transition-colors",
-                      isDark
-                        ? "text-slate-300 hover:bg-slate-800 hover:text-slate-100"
-                        : "text-gray-500 hover:bg-gray-100 hover:text-gray-700",
-                    )}
+                    className={`${buttonVariants({ variant: "ghost", size: "icon" })} max-sm:h-11 max-sm:w-11`}
                     aria-label={t("common:close")}
                   >
                     <CloseIcon size={18} />
@@ -309,13 +298,8 @@ export function ImagePreview({
                 </div>
               </div>
 
-              <div className="flex items-center justify-center overflow-auto p-4 sm:p-6">
-                <img
-                  src={displaySrc || resolvedHref || href}
-                  alt={alt}
-                  className="max-h-[75vh] w-auto max-w-full rounded-xl object-contain"
-                  style={isUserMessage || isDark ? undefined : LIGHT_THEME_IMAGE_ENHANCEMENT_STYLE}
-                />
+              <div className="min-h-0 flex-1">
+                <GraphicViewer src={displaySrc || resolvedHref || href} alt={alt} />
               </div>
             </div>
           </div>

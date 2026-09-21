@@ -1,6 +1,7 @@
 import {
   startCodexVoiceCall,
   stopCodexVoiceCall,
+  prepareCodexVoiceNotificationOutput,
   type CodexVoiceAnalystInfo,
   type CodexVoiceCallInfo,
 } from "../../services/api";
@@ -15,7 +16,6 @@ import {
   waitForIceGathering,
 } from "./codexVoiceMedia";
 import {
-  asRecord,
   boundedDelta,
   boundedText,
   failure,
@@ -23,10 +23,15 @@ import {
   normalizedErrorCode,
   RealtimeTranscriptAccumulator,
   realtimeTranscriptUpdate,
+  realtimeProviderError,
   shouldForwardProviderEvent,
 } from "./codexVoiceProtocol";
 import { CodexVoiceProviderChannel } from "./codexVoiceProviderChannel";
 import { CodexVoicePeerMonitor } from "./codexVoicePeerMonitor";
+
+// Leave room for JSON escaping of 256-byte managed result IDs inside the
+// server's 128 KiB frame limit, independently of its 1,024-ID observation limit.
+const UNSENT_OUTPUT_REPORT_BATCH_SIZE = 64;
 
 export {
   eventStreamCloseCode,
@@ -62,8 +67,36 @@ export class CodexVoiceBrowserSession {
     this.callbacks = args.callbacks;
     this.providerChannel = new CodexVoiceProviderChannel(
       (data) => void this.handleProviderMessage(data),
-      (code) => void this.fail(code),
+      (code) => {
+        console.warn("Codex Voice output failed", { code, ...this.providerChannel.receipt() });
+        void this.fail(code);
+      },
       () => this.stopping,
+      () => {
+        // Bounded transport metadata only; no source text or credentials. Keep
+        // failure evidence in the browser even without a host tracing subscriber.
+        console.warn("Codex Voice output unconfirmed", this.providerChannel.receipt());
+        this.sendServerMessage({ type: "provider_receipt", ...this.providerChannel.receipt() });
+        this.callbacks.onError("provider_context_unconfirmed");
+      },
+      (resultId) => {
+        if (!this.sendServerMessage({ type: "notification_output_submitted", result_id: resultId }))
+          void this.fail("event_stream_disconnected");
+      },
+      async (resultId, signal) => {
+        if (!this.call || this.stopping) throw failure("event_stream_disconnected");
+        const response = await prepareCodexVoiceNotificationOutput(
+          this.call.generation,
+          resultId,
+          signal,
+        );
+        if (!response.ok) throw failure(response.error.code);
+        return response.result.message;
+      },
+      () => {
+        this.callbacks.onOutputStatus?.(this.providerChannel.outputStatus());
+        this.sendServerMessage({ type: "provider_receipt", ...this.providerChannel.receipt() });
+      },
     );
   }
 
@@ -77,6 +110,7 @@ export class CodexVoiceBrowserSession {
         throw failure("webrtc_unsupported");
       }
       await applyOutputDevice(this.audio, this.preferences.outputDeviceId);
+      if (this.stopping) return;
       const stream = await captureMicrophone(this.preferences.inputDeviceId);
       if (this.stopping) {
         for (const track of stream.getTracks()) track.stop();
@@ -99,8 +133,11 @@ export class CodexVoiceBrowserSession {
       this.providerChannel.bind(dataChannel);
 
       const offer = await peer.createOffer();
+      if (this.stopping) return;
       await peer.setLocalDescription(offer);
+      if (this.stopping) return;
       await waitForIceGathering(peer);
+      if (this.stopping) return;
       const offerSdp = peer.localDescription?.sdp;
       if (!offerSdp?.trim()) throw failure("webrtc_offer_failed");
 
@@ -115,7 +152,13 @@ export class CodexVoiceBrowserSession {
       });
       this.requestAbort = null;
       if (!response.ok) throw failure(response.error.code);
-      if (this.stopping) return;
+      if (this.stopping) {
+        // Abort can lose to a completed HTTP response. Release only this
+        // generation; it must not occupy the lease or stop a newer call.
+        const stopped = await stopCodexVoiceCall(response.result.call.generation);
+        if (!stopped.ok) throw failure(stopped.error.code);
+        return;
+      }
       this.call = response.result.call;
       this.analyst = response.result.analyst;
       this.callbacks.onCall(this.call);
@@ -129,15 +172,18 @@ export class CodexVoiceBrowserSession {
       );
       this.eventSocket = eventSocket;
       await eventSocket.connect();
+      if (this.stopping) return;
       await peer.setRemoteDescription({ type: "answer", sdp: response.result.answer_sdp });
+      if (this.stopping) return;
       await waitForDataChannelOpen(peer, () => this.providerChannel.readyState());
       if (this.stopping) return;
       this.callbacks.onPhase("listening");
     } catch (error) {
-      if (!this.stopping) {
-        this.callbacks.onError(failureCode(error));
-        this.callbacks.onPhase("failed");
-      }
+      // A cancelled startup is finished. Rejecting it later would let its
+      // controller failure handler interfere with a newly started call.
+      if (this.stopping) return;
+      this.callbacks.onError(failureCode(error));
+      this.callbacks.onPhase("failed");
       await this.stop({ notifyPhase: false });
       throw error;
     }
@@ -155,12 +201,14 @@ export class CodexVoiceBrowserSession {
   }
 
   async resumeAudio(): Promise<boolean> {
+    if (this.stopping) return false;
     try {
       await this.audio.play();
+      if (this.stopping) return false;
       this.callbacks.onPlaybackBlocked(false);
       return true;
     } catch {
-      this.callbacks.onPlaybackBlocked(true);
+      if (!this.stopping) this.callbacks.onPlaybackBlocked(true);
       return false;
     }
   }
@@ -174,6 +222,14 @@ export class CodexVoiceBrowserSession {
     this.peerMonitor.close();
 
     const call = this.call;
+    const unsent = this.providerChannel.unsentResultIds();
+    for (let i = 0; i < unsent.length; i += UNSENT_OUTPUT_REPORT_BATCH_SIZE) {
+      this.sendServerMessage({
+        type: "notification_output_not_submitted",
+        result_ids: unsent.slice(i, i + UNSENT_OUTPUT_REPORT_BATCH_SIZE),
+      });
+    }
+    this.sendServerMessage({ type: "provider_receipt", ...this.providerChannel.receipt() });
     this.sendServerMessage({ type: "stop" });
     this.eventSocket?.close();
     this.eventSocket = null;
@@ -196,9 +252,16 @@ export class CodexVoiceBrowserSession {
   }
 
   private handleServerMessage(message: CodexVoiceServerMessage): void {
+    if (this.stopping) return;
     switch (message.type) {
+      case "notification_status":
+        this.callbacks.onNotificationPaused?.(message.paused === true);
+        break;
       case "provider_command":
-        this.sendProviderCommand(message.message);
+        this.providerChannel.send(
+          message.message,
+          typeof message.result_id === "string" ? message.result_id : undefined,
+        );
         break;
       case "analyst_working":
         this.callbacks.onAnalystProgress("");
@@ -207,7 +270,6 @@ export class CodexVoiceBrowserSession {
           this.analyst = { ...this.analyst, tui_ready: true, phase: "working", warning: "" };
           this.callbacks.onAnalyst(this.analyst);
         }
-        this.callbacks.onPhase("analysing");
         break;
       case "analyst_progress":
         this.callbacks.onAnalystProgress(boundedDelta(message.text));
@@ -227,10 +289,8 @@ export class CodexVoiceBrowserSession {
           this.analyst = { ...this.analyst, phase: "ready" };
           this.callbacks.onAnalyst(this.analyst);
         }
-        this.callbacks.onPhase("listening");
         break;
       case "analyst_cancelling":
-        this.callbacks.onPhase("analysing");
         break;
       case "error":
         this.callbacks.onError(normalizedErrorCode(message.code) || "unknown");
@@ -248,15 +308,23 @@ export class CodexVoiceBrowserSession {
     else if (data instanceof Blob) text = await data.text();
     else if (data instanceof ArrayBuffer) text = new TextDecoder().decode(data);
     else return;
+    // Blob decoding can finish after orderly stop. A late event must not
+    // overwrite the stopped/failed call's status or the next call's UI.
+    if (this.stopping) return;
     let event: unknown;
     try {
       event = JSON.parse(text);
     } catch {
       return;
     }
+    if (this.providerChannel.observe(event)) {
+      this.sendServerMessage({ type: "provider_receipt", ...this.providerChannel.receipt() });
+    }
+    this.transcripts.observeTurn(event);
     const transcript = realtimeTranscriptUpdate(event);
     if (transcript) {
       const accumulatedText = this.transcripts.apply(transcript);
+      this.callbacks.onConversation?.(this.transcripts.history());
       if (transcript.role === "user") {
         this.callbacks.onUserTranscript(accumulatedText);
         if (transcript.final) this.callbacks.onPhase("responding");
@@ -266,29 +334,34 @@ export class CodexVoiceBrowserSession {
       }
     }
     if (shouldForwardProviderEvent(event)) {
-      this.callbacks.onPhase("analysing");
       this.sendServerMessage({ type: "provider_event", event });
     }
-    const record = asRecord(event);
-    if (record?.type === "error") {
-      const detail = asRecord(record.error);
-      void this.fail(
-        normalizedErrorCode(detail?.code) || normalizedErrorCode(record.code) || "provider_error",
-      );
+    const providerError = realtimeProviderError(event);
+    if (providerError && !this.stopping) {
+      const { message, ...diagnostic } = providerError;
+      console.warn("Codex Realtime Voice provider error", { ...diagnostic, message });
+      this.sendServerMessage({ type: "provider_error", error: diagnostic });
+      await this.fail("provider_error", providerError.code || undefined);
     }
-  }
-
-  private sendProviderCommand(command: unknown): void {
-    this.providerChannel.send(command);
   }
 
   private sendServerMessage(message: unknown): boolean {
     return this.eventSocket?.send(message) || false;
   }
 
-  private async fail(code: string): Promise<void> {
+  private async fail(code: string, providerCode?: string): Promise<void> {
     if (this.stopping) return;
-    this.callbacks.onError(normalizedErrorCode(code) || "unknown");
+    if (code !== "provider_error") {
+      console.warn("Codex Voice session connection failed", {
+        code: normalizedErrorCode(code) || "unknown",
+        generation: this.call?.generation,
+        time_unix_ms: Date.now(),
+        page_state: globalThis.document?.visibilityState,
+        peer_state: this.peer?.connectionState,
+        ice_state: this.peer?.iceConnectionState,
+      });
+    }
+    this.callbacks.onError(normalizedErrorCode(code) || "unknown", providerCode);
     this.callbacks.onPhase("failed");
     await this.stop({ notifyPhase: false });
   }

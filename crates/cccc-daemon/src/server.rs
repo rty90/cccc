@@ -33,6 +33,9 @@ async fn run_with_restore(home: HomeLayout, restore: RuntimeRestoreSpawner) -> R
     let paths = DaemonPaths::new(home);
     std::fs::create_dir_all(&paths.daemon_dir)?;
     let lock = acquire_daemon_lock(&paths.lock)?;
+    if let Err(error) = cccc_core::group_bridge_retirement::retire(&paths.home) {
+        tracing::warn!(%error, "manual Group Bridge state retained for retirement on next startup");
+    }
     crate::runtime_start_gate::allow(&paths.home).map_err(anyhow::Error::msg)?;
     cleanup_stale(&paths);
     let mut lifecycle = DaemonLifecycle::new(paths, lock);
@@ -40,8 +43,6 @@ async fn run_with_restore(home: HomeLayout, restore: RuntimeRestoreSpawner) -> R
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let actor_activity = ActorActivityService::start(lifecycle.paths.home.clone());
     let dispatch_locks = DispatchLocks::default();
-    let group_bridge_sessions =
-        crate::group_bridge_sessions::SessionManager::start(lifecycle.paths.home.clone());
 
     let result = if use_tcp() {
         serve_tcp(
@@ -63,7 +64,6 @@ async fn run_with_restore(home: HomeLayout, restore: RuntimeRestoreSpawner) -> R
         .await
     };
     actor_activity.finish().await;
-    group_bridge_sessions.shutdown().await;
     lifecycle.finish(result)
 }
 
@@ -94,6 +94,9 @@ async fn serve_tcp(
     let mut automation_interval = tokio::time::interval(Duration::from_secs(5));
     automation_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut automation = AutomationScheduler::new();
+    let reach_restore = crate::ops::ReachRestore::start(paths.home.clone(), dispatch_locks.clone());
+    let connect_service =
+        crate::ops::ConnectService::start(paths.home.clone(), dispatch_locks.clone());
     let mut connections = ConnectionTasks::default();
     let signal = shutdown_signal();
     tokio::pin!(signal);
@@ -117,6 +120,8 @@ async fn serve_tcp(
         }
     }
     begin_runtime_shutdown(&paths.home);
+    drop(reach_restore);
+    drop(connect_service);
     automation.finish().await;
     connections.finish().await;
     Ok(())
@@ -161,6 +166,9 @@ async fn serve_platform_default(
     let mut automation_interval = tokio::time::interval(Duration::from_secs(5));
     automation_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut automation = AutomationScheduler::new();
+    let reach_restore = crate::ops::ReachRestore::start(paths.home.clone(), dispatch_locks.clone());
+    let connect_service =
+        crate::ops::ConnectService::start(paths.home.clone(), dispatch_locks.clone());
     let mut connections = ConnectionTasks::default();
     let signal = shutdown_signal();
     tokio::pin!(signal);
@@ -184,6 +192,8 @@ async fn serve_platform_default(
         }
     }
     begin_runtime_shutdown(&paths.home);
+    drop(reach_restore);
+    drop(connect_service);
     automation.finish().await;
     connections.finish().await;
     Ok(())
@@ -292,7 +302,6 @@ fn use_tcp() -> bool {
 
 fn begin_runtime_shutdown(home: &HomeLayout) {
     let _ = crate::runtime_start_gate::prevent(home);
-    crate::ops::actor_runtime::cancel_resume_verifications();
 }
 
 #[cfg(test)]
@@ -300,6 +309,64 @@ mod tests {
     use super::*;
     use cccc_contracts::Actor;
     use cccc_core::{GroupStore, ledger};
+
+    #[tokio::test]
+    async fn startup_reconciles_saved_reach_without_a_status_poll() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+        home.initialize().expect("initialize");
+        cccc_core::settings::update(&home, |global| {
+            global
+                .remote_access
+                .insert("provider".into(), "reach".into());
+            global.remote_access.insert("enabled".into(), true.into());
+            Ok(())
+        })
+        .expect("enable Reach");
+        cccc_core::membership::save(
+            &home,
+            &cccc_core::membership::MembershipState {
+                logged_in: true,
+                account_origin: Some("http://127.0.0.1:1".into()),
+                device_token: Some("isolated-device-fixture".into()),
+                ..Default::default()
+            },
+        )
+        .expect("membership");
+        let (shutdown, receiver) = watch::channel(false);
+        let worker_home = home.clone();
+        let worker_shutdown = shutdown.clone();
+        let worker = tokio::spawn(async move {
+            let paths = DaemonPaths::new(worker_home);
+            serve_tcp(
+                &paths,
+                worker_shutdown,
+                receiver,
+                DispatchLocks::default(),
+                |_, _| {},
+            )
+            .await
+        });
+        let observed = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if cccc_core::membership::load(&home)
+                    .expect("state")
+                    .last_error
+                    .is_some_and(|error| error.contains("administrator access token"))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        shutdown.send(true).expect("shutdown fixture");
+        worker.await.expect("server task").expect("server");
+        assert!(
+            observed.is_ok(),
+            "daemon startup must reconcile saved Reach intent even without polling settings"
+        );
+    }
 
     fn assert_address_is_published(home: HomeLayout, _locks: DispatchLocks) {
         let paths = DaemonPaths::new(home);

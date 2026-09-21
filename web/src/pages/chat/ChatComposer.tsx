@@ -1,3 +1,6 @@
+import { ComposerResizeHandle } from "./ComposerResizeHandle";
+import { useComposerHeightResize } from "./useComposerHeightResize";
+
 // ChatComposer renders the chat message composer.
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -70,7 +73,11 @@ import {
   startComposerHistory,
   type ComposerHistorySession,
 } from "./chatComposerHistory";
-import { normalizeReplyMessageMode, type ComposerMessageMode } from "../../stores/useComposerStore";
+import {
+  normalizeReplyMessageMode,
+  useComposerStore,
+  type ComposerMessageMode,
+} from "../../stores/useComposerStore";
 
 const SLASH_COMMAND_PAGE_SIZE = 8;
 const MENTION_MENU_DESKTOP_WIDTH = 320;
@@ -132,9 +139,6 @@ export interface ChatComposerProps {
   // Recipients
   toTokens: string[];
   onToggleRecipient: (token: string) => void;
-  remoteGroups?: GroupMeta[];
-  selectedRemoteGroupIds?: string[];
-  onToggleRemoteGroup?: (groupId: string) => void;
   onClearRecipients: () => void;
 
   // Files
@@ -145,7 +149,6 @@ export interface ChatComposerProps {
 
   // Text input
   composerRef: RefObject<HTMLTextAreaElement | null>;
-  composerText: string;
   setComposerText: Dispatch<SetStateAction<string>>;
   messageMode: ComposerMessageMode;
   setMessageMode: (mode: ComposerMessageMode) => void;
@@ -155,6 +158,7 @@ export interface ChatComposerProps {
   showMentionMenu: boolean;
   setShowMentionMenu: Dispatch<SetStateAction<boolean>>;
   mentionSuggestions: ComposerMentionSuggestion[];
+  connectMentionStatus?: "loading" | "incomplete";
   mentionSelectedIndex: number;
   setMentionSelectedIndex: Dispatch<SetStateAction<number>>;
   setMentionFilter: Dispatch<SetStateAction<string>>;
@@ -192,16 +196,12 @@ export function ChatComposer({
   onClearQuotedVoiceDocumentRef,
   toTokens,
   onToggleRecipient,
-  remoteGroups = [],
-  selectedRemoteGroupIds = [],
-  onToggleRemoteGroup,
   onClearRecipients,
   composerFiles,
   onRemoveComposerFile,
   appendComposerFiles,
   fileInputRef,
   composerRef,
-  composerText,
   setComposerText,
   messageMode,
   setMessageMode,
@@ -209,6 +209,7 @@ export function ChatComposer({
   showMentionMenu,
   setShowMentionMenu,
   mentionSuggestions,
+  connectMentionStatus,
   mentionSelectedIndex,
   setMentionSelectedIndex,
   setMentionFilter,
@@ -221,11 +222,15 @@ export function ChatComposer({
   setComposerAgentMentionTokens,
   slashCommands,
 }: ChatComposerProps) {
+  // The draft text is owned here, not by ChatTab: only the composer needs a
+  // re-render per keystroke.
+  const composerText = useComposerStore((s) => s.composerText);
   const composerHistoryRef = useRef<ComposerHistorySession | null>(null);
   const [showModeMenu, setShowModeMenu] = useState(false);
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
   const [slashVisibleCount, setSlashVisibleCount] = useState(SLASH_COMMAND_PAGE_SIZE);
+  const [voiceStatusTarget, setVoiceStatusTarget] = useState<HTMLDivElement | null>(null);
   const [voiceCaptureMode, setVoiceCaptureMode] = useState<VoiceSecretaryCaptureMode>("prompt");
   const [mentionMenuLeft, setMentionMenuLeft] = useState(8);
   const [composerScrollTop, setComposerScrollTop] = useState(0);
@@ -245,12 +250,18 @@ export function ChatComposer({
   };
 
   const [rootFontScale, setRootFontScale] = useState(readRootFontScale);
+  const footerRef = useRef<HTMLElement>(null);
+  const composerResize = useComposerHeightResize({
+    footerRef,
+    composerRef,
+    enabled: !isSmallScreen,
+    scale: rootFontScale,
+  });
   const baseComposerHeight = (isSmallScreen ? 44 : 48) * rootFontScale;
-  const desktopComposerHeight = 64 * rootFontScale;
   const minComposerHeight = isSmallScreen
     ? Math.max(baseComposerHeight + 6, 52)
-    : desktopComposerHeight;
-  const maxComposerHeight = isSmallScreen ? 128 * rootFontScale : desktopComposerHeight;
+    : composerResize.minHeight;
+  const maxComposerHeight = isSmallScreen ? 128 * rootFontScale : composerResize.maxHeight;
   const composerFontSize = (isSmallScreen ? 15 : 14) * rootFontScale;
   const composerLineHeight = (isSmallScreen ? 24 : 20) * rootFontScale;
 
@@ -798,6 +809,7 @@ export function ChatComposer({
       setComposerText(before + tokenText + " ");
       const token = createComposerGroupMentionToken({
         groupId: selected.value,
+        remote: selected.remote,
         token: tokenText,
         start: before.length,
       });
@@ -835,17 +847,13 @@ export function ChatComposer({
     ? normalizeReplyMessageMode(messageMode)
     : messageMode;
   const activeMode = modeOptions.find((opt) => opt.key === effectiveMessageMode) || modeOptions[0];
-  const requestReplyRecipientsReady = hasConcreteReplyRecipients(
-    toTokens,
-    selectedRemoteGroupIds.length > 0,
-  );
+  const requestReplyRecipientsReady = hasConcreteReplyRecipients(toTokens);
   const canSend = getComposerCanSend({
     composerText,
     composerFilesCount: composerFiles.length,
     recipientResolutionBusy: selectedGroupActorsHydrating || recipientActorsBusy,
     messageMode: effectiveMessageMode,
     toTokens,
-    hasRemoteGroupSelection: selectedRemoteGroupIds.length > 0,
   });
 
   const recentChatExcerpt = useMemo(
@@ -927,498 +935,524 @@ export function ChatComposer({
 
   return (
     <footer
+      ref={footerRef}
       className={classNames(
-        "relative z-40 flex-shrink-0 border-t px-2 py-1.5 safe-area-bottom-compact transition-colors sm:px-2.5 sm:py-2",
-        "border-[var(--glass-border)] bg-[var(--glass-panel-bg)] backdrop-blur-md",
+        "relative z-40 flex-shrink-0 border-t px-2 pt-1.5 pb-[calc(0.375rem+env(safe-area-inset-bottom,0px)*0.6)] transition-colors sm:px-4 sm:pt-2 sm:pb-[calc(0.5rem+env(safe-area-inset-bottom,0px)*0.6)]",
+        // The panel background is 90%+ opaque: a backdrop blur under it is
+        // invisible but still re-filters the whole footer on every frame.
+        "border-[var(--glass-border)] bg-[var(--glass-panel-bg)]",
       )}
     >
-      {/* Reply indicator */}
-      {replyTarget && (
-        <div
-          className={classNames(
-            "mb-2.5 flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px]",
-            isDark
-              ? "border-white/[0.06] bg-white/[0.035] text-[var(--color-text-tertiary)]"
-              : "border-black/[0.05] bg-black/[0.025] text-gray-500",
-          )}
-        >
-          <ReplyIcon size={12} className="flex-shrink-0 opacity-45" />
-          <span className="min-w-0 flex-1 truncate">
-            <span className="mr-1 opacity-55">{t("replyingTo")}</span>
-            <span
-              className={classNames("font-medium", isDark ? "text-slate-300/90" : "text-gray-700")}
-            >
-              {replyByDisplayName}
+      {!isSmallScreen ? (
+        <ComposerResizeHandle {...composerResize} label={t("layout:resizeComposer")} />
+      ) : null}
+      <div className="chat-reading-width">
+        {/* Reply indicator */}
+        {replyTarget && (
+          <div
+            className={classNames(
+              "mb-2.5 flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs",
+              isDark
+                ? "border-white/[0.06] bg-white/[0.035] text-[var(--color-text-tertiary)]"
+                : "border-black/[0.05] bg-black/[0.025] text-gray-500",
+            )}
+          >
+            <ReplyIcon size={12} className="flex-shrink-0 opacity-45" />
+            <span className="min-w-0 flex-1 truncate">
+              <span className="mr-1 opacity-55">{t("replyingTo")}</span>
+              <span
+                className={classNames(
+                  "font-medium",
+                  isDark ? "text-slate-300/90" : "text-gray-700",
+                )}
+              >
+                {replyByDisplayName}
+              </span>
+              <span className="mx-1 opacity-40">"</span>
+              <span className="opacity-75">{replyTarget.text}</span>
+              <span className="opacity-40">"</span>
             </span>
-            <span className="mx-1 opacity-40">"</span>
-            <span className="opacity-75">{replyTarget.text}</span>
-            <span className="opacity-40">"</span>
-          </span>
-          <button
+            <button
+              className={classNames(
+                "rounded-full p-1 transition-colors",
+                isDark
+                  ? "text-[var(--color-text-tertiary)] hover:bg-white/[0.08] hover:text-[var(--color-text-primary)]"
+                  : "text-gray-400 hover:bg-black/[0.06] hover:text-gray-600",
+              )}
+              onClick={onCancelReply}
+              title={t("cancelReply")}
+              aria-label={t("cancelReply")}
+            >
+              <CloseIcon size={14} />
+            </button>
+          </div>
+        )}
+
+        {quotedPresentationRef && (
+          <div
             className={classNames(
-              "rounded-full p-1 transition-colors",
+              "mb-2.5 flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs",
               isDark
-                ? "text-[var(--color-text-tertiary)] hover:bg-white/[0.08] hover:text-[var(--color-text-primary)]"
-                : "text-gray-400 hover:bg-black/[0.06] hover:text-gray-600",
+                ? "border-cyan-400/12 bg-cyan-500/6 text-[var(--color-text-tertiary)]"
+                : "border-cyan-200/70 bg-cyan-50/70 text-gray-600",
             )}
-            onClick={onCancelReply}
-            title={t("cancelReply")}
-            aria-label={t("cancelReply")}
           >
-            <CloseIcon size={14} />
-          </button>
-        </div>
-      )}
+            <span
+              className={classNames(
+                "flex-shrink-0 font-medium",
+                isDark ? "text-cyan-100/90" : "text-cyan-700",
+              )}
+            >
+              {t("presentationQuotedViewLabel", { defaultValue: "Quoted view" })}
+            </span>
+            <span
+              className="min-w-0 flex-1 truncate opacity-80"
+              title={quotedPresentationRef.title || quotedPresentationRefLabel}
+            >
+              {quotedPresentationRefLabel}
+            </span>
+            <button
+              className={classNames(
+                "rounded-full p-1 transition-colors",
+                isDark
+                  ? "text-[var(--color-text-tertiary)] hover:bg-white/[0.08] hover:text-[var(--color-text-primary)]"
+                  : "text-gray-400 hover:bg-black/[0.06] hover:text-gray-600",
+              )}
+              onClick={onClearQuotedPresentationRef}
+              title={t("presentationRemoveQuotedView", { defaultValue: "Remove quoted view" })}
+              aria-label={t("presentationRemoveQuotedView", { defaultValue: "Remove quoted view" })}
+            >
+              <CloseIcon size={14} />
+            </button>
+          </div>
+        )}
 
-      {quotedPresentationRef && (
-        <div
-          className={classNames(
-            "mb-2.5 flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px]",
-            isDark
-              ? "border-cyan-400/12 bg-cyan-500/6 text-[var(--color-text-tertiary)]"
-              : "border-cyan-200/70 bg-cyan-50/70 text-gray-600",
-          )}
-        >
-          <span
+        {quotedVoiceDocumentRef && (
+          <div
             className={classNames(
-              "flex-shrink-0 font-medium",
-              isDark ? "text-cyan-100/90" : "text-cyan-700",
-            )}
-          >
-            {t("presentationQuotedViewLabel", { defaultValue: "Quoted view" })}
-          </span>
-          <span
-            className="min-w-0 flex-1 truncate opacity-80"
-            title={quotedPresentationRef.title || quotedPresentationRefLabel}
-          >
-            {quotedPresentationRefLabel}
-          </span>
-          <button
-            className={classNames(
-              "rounded-full p-1 transition-colors",
+              "mb-2.5 flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs",
               isDark
-                ? "text-[var(--color-text-tertiary)] hover:bg-white/[0.08] hover:text-[var(--color-text-primary)]"
-                : "text-gray-400 hover:bg-black/[0.06] hover:text-gray-600",
-            )}
-            onClick={onClearQuotedPresentationRef}
-            title={t("presentationRemoveQuotedView", { defaultValue: "Remove quoted view" })}
-            aria-label={t("presentationRemoveQuotedView", { defaultValue: "Remove quoted view" })}
-          >
-            <CloseIcon size={14} />
-          </button>
-        </div>
-      )}
-
-      {quotedVoiceDocumentRef && (
-        <div
-          className={classNames(
-            "mb-2.5 flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px]",
-            isDark
-              ? "border-violet-400/12 bg-violet-500/6 text-[var(--color-text-tertiary)]"
-              : "border-violet-200/70 bg-violet-50/70 text-gray-600",
-          )}
-        >
-          <span
-            className={classNames(
-              "flex-shrink-0 font-medium",
-              isDark ? "text-violet-100/90" : "text-violet-700",
+                ? "border-violet-400/12 bg-violet-500/6 text-[var(--color-text-tertiary)]"
+                : "border-violet-200/70 bg-violet-50/70 text-gray-600",
             )}
           >
-            {t("voiceSecretaryQuotedDocumentLabel", { defaultValue: "Quoted document" })}
-          </span>
-          <span
-            className="min-w-0 flex-1 truncate opacity-80"
-            title={quotedVoiceDocumentRef.document_path}
-          >
-            {quotedVoiceDocumentRefLabel}
-          </span>
-          <button
-            className={classNames(
-              "rounded-full p-1 transition-colors",
-              isDark
-                ? "text-[var(--color-text-tertiary)] hover:bg-white/[0.08] hover:text-[var(--color-text-primary)]"
-                : "text-gray-400 hover:bg-black/[0.06] hover:text-gray-600",
-            )}
-            onClick={onClearQuotedVoiceDocumentRef}
-            title={t("voiceSecretaryRemoveQuotedDocument", {
-              defaultValue: "Remove quoted document",
-            })}
-            aria-label={t("voiceSecretaryRemoveQuotedDocument", {
-              defaultValue: "Remove quoted document",
-            })}
-          >
-            <CloseIcon size={14} />
-          </button>
-        </div>
-      )}
+            <span
+              className={classNames(
+                "flex-shrink-0 font-medium",
+                isDark ? "text-violet-100/90" : "text-violet-700",
+              )}
+            >
+              {t("voiceSecretaryQuotedDocumentLabel", { defaultValue: "Quoted document" })}
+            </span>
+            <span
+              className="min-w-0 flex-1 truncate opacity-80"
+              title={quotedVoiceDocumentRef.document_path}
+            >
+              {quotedVoiceDocumentRefLabel}
+            </span>
+            <button
+              className={classNames(
+                "rounded-full p-1 transition-colors",
+                isDark
+                  ? "text-[var(--color-text-tertiary)] hover:bg-white/[0.08] hover:text-[var(--color-text-primary)]"
+                  : "text-gray-400 hover:bg-black/[0.06] hover:text-gray-600",
+              )}
+              onClick={onClearQuotedVoiceDocumentRef}
+              title={t("voiceSecretaryRemoveQuotedDocument", {
+                defaultValue: "Remove quoted document",
+              })}
+              aria-label={t("voiceSecretaryRemoveQuotedDocument", {
+                defaultValue: "Remove quoted document",
+              })}
+            >
+              <CloseIcon size={14} />
+            </button>
+          </div>
+        )}
 
-      {/* File list */}
-      {composerFiles.length > 0 && (
-        <div className="mb-3 flex flex-wrap gap-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
-          {composerFiles.map((f, idx) => (
-            <ComposerFilePreview
-              key={`${f.name}:${idx}`}
-              file={f}
-              onRemove={() => onRemoveComposerFile(idx)}
-              removeLabel={t("removeAttachment", { name: f.name })}
-            />
-          ))}
-        </div>
-      )}
+        {/* File list */}
+        {composerFiles.length > 0 && (
+          <div className="mb-3 flex flex-wrap gap-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
+            {composerFiles.map((f, idx) => (
+              <ComposerFilePreview
+                key={`${f.name}:${idx}`}
+                file={f}
+                onRemove={() => onRemoveComposerFile(idx)}
+                removeLabel={t("removeAttachment", { name: f.name })}
+              />
+            ))}
+          </div>
+        )}
 
-      <input
-        ref={fileInputRef as RefObject<HTMLInputElement>}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={(e) => {
-          const files = Array.from(e.target.files || []);
-          if (files.length > 0) appendComposerFiles(files);
-          e.target.value = "";
-        }}
-      />
+        <input
+          ref={fileInputRef as RefObject<HTMLInputElement>}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            const files = Array.from(e.target.files || []);
+            if (files.length > 0) appendComposerFiles(files);
+            e.target.value = "";
+          }}
+        />
 
-      {/* Integrated composer */}
-      <div className="flex flex-col">
-        <div className="relative flex min-w-0 flex-1 flex-col">
-          {/* Knots: routing is typed as @mentions in the text, so the chip row only appears once something
-              beyond the default recipient was chosen (a reply target, an explicit chip, a remote group). */}
-          {toTokens.some((token) => token !== "@foreman") || (Array.isArray(selectedRemoteGroupIds) && selectedRemoteGroupIds.length > 0) ? (
-          <ComposerRecipientsRow
-            isDark={isDark}
-            isSmallScreen={isSmallScreen}
-            selectedGroupId={selectedGroupId}
-            busy={busy}
-            actors={actors}
-            selectedGroupActorsHydrating={selectedGroupActorsHydrating}
-            toTokens={toTokens}
-            onToggleRecipient={onToggleRecipient}
-            remoteGroups={remoteGroups}
-            selectedRemoteGroupIds={selectedRemoteGroupIds}
-            onToggleRemoteGroup={onToggleRemoteGroup}
-            onClearRecipients={onClearRecipients}
-          />
-          ) : null}
+        {/* Integrated composer */}
+        <div className="flex flex-col">
+          <div className="relative flex min-w-0 flex-1 flex-col">
+            {/* Knots: routing is typed as @mentions in the text, so the chip row only appears once something
+                beyond the default recipient was chosen (a reply target or an explicit chip). */}
+            {toTokens.some((token) => token !== "@foreman") ? (
+              <ComposerRecipientsRow
+                isDark={isDark}
+                isSmallScreen={isSmallScreen}
+                selectedGroupId={selectedGroupId}
+                busy={busy}
+                actors={actors}
+                selectedGroupActorsHydrating={selectedGroupActorsHydrating}
+                toTokens={toTokens}
+                onToggleRecipient={onToggleRecipient}
+                onClearRecipients={onClearRecipients}
+              />
+            ) : null}
 
-          {/* Row 2 — Textarea */}
-          <div className="relative min-w-0 flex-1">
-            {mentionOverlay ? (
-              <div
-                className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words border-none px-4 py-3 text-transparent"
+            <div ref={setVoiceStatusTarget} data-voice-mobile-status-slot />
+
+            {/* Row 2 — Textarea */}
+            <div className="relative min-w-0 flex-1">
+              {mentionOverlay ? (
+                <div
+                  className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words border-none px-4 py-3 text-transparent"
+                  style={{
+                    minHeight: isSmallScreen
+                      ? `${minComposerHeight}px`
+                      : `var(--composer-min-height, ${minComposerHeight}px)`,
+                    maxHeight: isSmallScreen
+                      ? `${maxComposerHeight}px`
+                      : `var(--composer-max-height, ${maxComposerHeight}px)`,
+                    fontSize: `${composerFontSize}px`,
+                    lineHeight: `${composerLineHeight}px`,
+                    border: "none",
+                  }}
+                  aria-hidden="true"
+                >
+                  <div
+                    style={{ transform: `translateY(-${composerScrollTop}px)` }}
+                    dangerouslySetInnerHTML={{ __html: mentionOverlay }}
+                  />
+                </div>
+              ) : null}
+              <textarea
+                ref={composerRef as RefObject<HTMLTextAreaElement>}
+                className={classNames(
+                  "relative w-full bg-transparent border-none py-3 resize-none overflow-y-auto scrollbar-hide focus:outline-none focus:ring-0 focus-visible:shadow-none text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)]",
+                  showSuggestedUserMessage ? "pl-11 pr-4" : "px-4",
+                )}
                 style={{
-                  minHeight: `${minComposerHeight}px`,
-                  maxHeight: `${maxComposerHeight}px`,
+                  minHeight: isSmallScreen
+                    ? `${minComposerHeight}px`
+                    : `var(--composer-min-height, ${minComposerHeight}px)`,
+                  maxHeight: isSmallScreen
+                    ? `${maxComposerHeight}px`
+                    : `var(--composer-max-height, ${maxComposerHeight}px)`,
                   fontSize: `${composerFontSize}px`,
                   lineHeight: `${composerLineHeight}px`,
                   border: "none",
+                  outline: "none",
+                  boxShadow: "none",
                 }}
-                aria-hidden="true"
-              >
-                <div
-                  style={{ transform: `translateY(-${composerScrollTop}px)` }}
-                  dangerouslySetInnerHTML={{ __html: mentionOverlay }}
-                />
-              </div>
-            ) : null}
-            <textarea
-              ref={composerRef as RefObject<HTMLTextAreaElement>}
-              className={classNames(
-                "relative w-full bg-transparent border-none py-3 resize-none overflow-y-auto scrollbar-hide focus:outline-none focus:ring-0 focus-visible:shadow-none text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)]",
-                showSuggestedUserMessage ? "pl-11 pr-4" : "px-4",
-              )}
-              style={{
-                minHeight: `${minComposerHeight}px`,
-                maxHeight: `${maxComposerHeight}px`,
-                fontSize: `${composerFontSize}px`,
-                lineHeight: `${composerLineHeight}px`,
-                border: "none",
-                outline: "none",
-                boxShadow: "none",
-              }}
-              placeholder={composerPlaceholder}
-              rows={1}
-              value={composerText}
-              onPaste={handlePaste}
-              onChange={handleChange}
-              onKeyDown={handleKeyDown}
-              onPointerDown={exitComposerHistory}
-              onScroll={(event) => setComposerScrollTop(event.currentTarget.scrollTop)}
-              onBlur={() => setTimeout(() => setShowMentionMenu(false), 150)}
-              aria-label={t("messageInput")}
-              aria-describedby={suggestedUserMessageHelpId}
-            />
-            {showSuggestedUserMessage && suggestedUserMessage ? (
-              <button
-                type="button"
-                className={classNames(
-                  "absolute left-3 top-3 z-10 flex h-6 w-6 items-center justify-center rounded-md transition-colors",
-                  isDark
-                    ? "text-white/45 hover:bg-white/10 hover:text-white/75"
-                    : "text-gray-400 hover:bg-black/[0.06] hover:text-gray-600",
-                )}
-                onClick={acceptSuggestedUserMessage}
-                aria-label={suggestedUserMessageUseLabel}
-                title={suggestedUserMessageUseLabel}
-              >
-                <SparklesIcon size={14} aria-hidden="true" />
-              </button>
-            ) : null}
-            {showSuggestedUserMessage && suggestedUserMessage ? (
-              <div
-                className={classNames(
-                  "pointer-events-none absolute inset-x-0 top-0 overflow-hidden py-3 pl-11 pr-4 whitespace-pre-wrap",
-                  isDark ? "text-white/22" : "text-gray-400/80",
-                )}
-                style={{
-                  maxHeight: `${maxComposerHeight}px`,
-                  fontSize: `${composerFontSize}px`,
-                  lineHeight: `${composerLineHeight}px`,
-                }}
-                aria-hidden="true"
-              >
-                {suggestedUserMessage.text}
-              </div>
-            ) : null}
-            {showSuggestedUserMessage && suggestedUserMessageHelpId ? (
-              <span id={suggestedUserMessageHelpId} className="sr-only">
-                {suggestedUserMessageHintLabel}
-              </span>
-            ) : null}
-
-            {/* Mention menu */}
-            {showMentionMenu && mentionSuggestions.length > 0 && (
-              <ChatMentionMenu
-                isDark={isDark}
-                isSmallScreen={isSmallScreen}
-                items={mentionSuggestions}
-                left={mentionMenuLeft}
-                selectedIndex={mentionSelectedIndex}
-                onSelect={(item) => {
-                  selectMention(item);
-                  composerRef.current?.focus();
-                }}
-                onHover={setMentionSelectedIndex}
+                placeholder={composerPlaceholder}
+                rows={1}
+                value={composerText}
+                onPaste={handlePaste}
+                onChange={handleChange}
+                onKeyDown={handleKeyDown}
+                onPointerDown={exitComposerHistory}
+                onScroll={(event) => setComposerScrollTop(event.currentTarget.scrollTop)}
+                onBlur={() => setTimeout(() => setShowMentionMenu(false), 150)}
+                aria-label={t("messageInput")}
+                aria-describedby={suggestedUserMessageHelpId}
               />
-            )}
-
-            {showSlashMenu && visibleSlashSuggestions.length > 0 && (
-              <SlashCommandMenu
-                isDark={isDark}
-                suggestions={visibleSlashSuggestions}
-                selectedIndex={Math.min(slashSelectedIndex, visibleSlashSuggestions.length - 1)}
-                hasMore={hasMoreSlashSuggestions}
-                loadMoreLabel={t("slashCommandLoadMore", { defaultValue: "Scroll for more" })}
-                onSelect={selectSlashCommand}
-                onHover={setSlashSelectedIndex}
-                onLoadMore={() => {
-                  setSlashVisibleCount((count) =>
-                    Math.min(count + SLASH_COMMAND_PAGE_SIZE, slashSuggestions.length),
-                  );
-                }}
-              />
-            )}
-          </div>
-          {/* Row 3 — Action bar */}
-          <div
-            className={classNames(
-              "grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem_2.75rem] items-center gap-2 px-2 pb-2 pt-1 sm:flex sm:justify-between",
-            )}
-          >
-            <div className="contents sm:flex sm:items-center sm:gap-1.5">
-              <button
-                className={classNames(
-                  "glass-btn flex h-11 w-11 items-center justify-center rounded-lg text-[var(--color-text-secondary)] transition-colors disabled:cursor-not-allowed disabled:text-[var(--color-text-tertiary)] disabled:opacity-60 sm:h-9 sm:w-9",
-                  busy !== "send" && selectedGroupId && !isCrossGroup
-                    ? isDark
-                      ? "hover:bg-white/10 hover:text-[var(--color-text-primary)]"
-                      : "hover:bg-black/5 hover:text-gray-800"
-                    : "",
-                )}
-                onClick={() => fileInputRef.current?.click()}
-                disabled={!selectedGroupId || busy === "send" || isCrossGroup}
-                aria-label={t("attachFile")}
-                title={fileDisabledReason}
-              >
-                <AttachmentIcon size={18} />
-              </button>
-
-              <div className="min-w-0 sm:min-w-max">
-                <LazyVoiceSecretaryComposerControl
-                  isDark={isDark}
-                  selectedGroupId={selectedGroupId}
-                  busy={busy}
-                  disabled={!selectedGroupId || busy === "send" || !composerGroupSettled}
-                  variant="assistantRow"
-                  captureMode={voiceCaptureMode}
-                  onCaptureModeChange={setVoiceCaptureMode}
-                  composerText={composerText}
-                  composerContext={composerAssistantContext}
-                  onQuoteDocument={onQuoteVoiceDocumentRef}
-                  onPromptDraft={fillPromptDraftFromSpeech}
-                />
-              </div>
-            </div>
-
-            <div className="contents sm:flex sm:items-center sm:gap-1.5">
-              <div ref={modeMenuRef} className="relative z-20">
+              {showSuggestedUserMessage && suggestedUserMessage ? (
                 <button
                   type="button"
                   className={classNames(
-                    "inline-flex h-11 w-11 items-center justify-center gap-0.5 rounded-lg border px-0 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60 sm:h-9 sm:w-auto sm:gap-1.5 sm:px-2.5",
-                    isDark ? "border-white/10" : "border-black/10",
-                    busy === "send" || !selectedGroupId
-                      ? isDark
-                        ? "text-[var(--color-text-tertiary)]"
-                        : "text-gray-400"
-                      : effectiveMessageMode === "request_reply"
-                        ? isDark
-                          ? "bg-violet-500/18 text-violet-200 hover:bg-violet-500/26"
-                          : "bg-violet-100 text-violet-700 hover:bg-violet-200"
-                        : effectiveMessageMode === "mail"
-                          ? isDark
-                            ? "bg-sky-500/14 text-sky-200 hover:bg-sky-500/22"
-                            : "bg-sky-50 text-sky-700 hover:bg-sky-100"
-                          : isDark
-                            ? "text-slate-200 hover:bg-white/10"
-                            : "text-gray-700 hover:bg-black/5",
+                    "absolute left-3 top-3 z-10 flex h-6 w-6 items-center justify-center rounded-md transition-colors",
+                    isDark
+                      ? "text-white/45 hover:bg-white/10 hover:text-white/75"
+                      : "text-gray-400 hover:bg-black/[0.06] hover:text-gray-600",
                   )}
-                  disabled={busy === "send" || !selectedGroupId}
-                  onClick={() => setShowModeMenu((v) => !v)}
-                  aria-label={t("messageMode", { mode: activeMode.label })}
-                  aria-haspopup="menu"
-                  aria-expanded={showModeMenu}
-                  title={t("messageMode", { mode: activeMode.label })}
+                  onClick={acceptSuggestedUserMessage}
+                  aria-label={suggestedUserMessageUseLabel}
+                  title={suggestedUserMessageUseLabel}
                 >
-                  {effectiveMessageMode === "request_reply" ? (
-                    <ReplyIcon size={13} />
-                  ) : effectiveMessageMode === "mail" ? (
-                    <InboxIcon size={13} />
-                  ) : (
-                    <SendIcon size={13} />
+                  <SparklesIcon size={14} aria-hidden="true" />
+                </button>
+              ) : null}
+              {showSuggestedUserMessage && suggestedUserMessage ? (
+                <div
+                  className={classNames(
+                    "pointer-events-none absolute inset-x-0 top-0 overflow-hidden py-3 pl-11 pr-4 whitespace-pre-wrap",
+                    isDark ? "text-white/22" : "text-gray-400/80",
                   )}
-                  {effectiveMessageMode !== "send" ? <span className="hidden sm:inline">{activeMode.label}</span> : null}
-                  <ChevronDownIcon size={12} className="opacity-70" />
+                  style={{
+                    maxHeight: isSmallScreen
+                      ? `${maxComposerHeight}px`
+                      : `var(--composer-max-height, ${maxComposerHeight}px)`,
+                    fontSize: `${composerFontSize}px`,
+                    lineHeight: `${composerLineHeight}px`,
+                  }}
+                  aria-hidden="true"
+                >
+                  {suggestedUserMessage.text}
+                </div>
+              ) : null}
+              {showSuggestedUserMessage && suggestedUserMessageHelpId ? (
+                <span id={suggestedUserMessageHelpId} className="sr-only">
+                  {suggestedUserMessageHintLabel}
+                </span>
+              ) : null}
+
+              {/* Mention menu */}
+              {showMentionMenu && (mentionSuggestions.length > 0 || connectMentionStatus) && (
+                <ChatMentionMenu
+                  isDark={isDark}
+                  isSmallScreen={isSmallScreen}
+                  items={mentionSuggestions}
+                  status={connectMentionStatus}
+                  left={mentionMenuLeft}
+                  selectedIndex={mentionSelectedIndex}
+                  onSelect={(item) => {
+                    selectMention(item);
+                    composerRef.current?.focus();
+                  }}
+                  onHover={setMentionSelectedIndex}
+                />
+              )}
+
+              {showSlashMenu && visibleSlashSuggestions.length > 0 && (
+                <SlashCommandMenu
+                  isDark={isDark}
+                  suggestions={visibleSlashSuggestions}
+                  selectedIndex={Math.min(slashSelectedIndex, visibleSlashSuggestions.length - 1)}
+                  hasMore={hasMoreSlashSuggestions}
+                  loadMoreLabel={t("slashCommandLoadMore", { defaultValue: "Scroll for more" })}
+                  onSelect={selectSlashCommand}
+                  onHover={setSlashSelectedIndex}
+                  onLoadMore={() => {
+                    setSlashVisibleCount((count) =>
+                      Math.min(count + SLASH_COMMAND_PAGE_SIZE, slashSuggestions.length),
+                    );
+                  }}
+                />
+              )}
+            </div>
+            {/* Row 3 — Action bar */}
+            <div
+              data-composer-action-bar
+              className={classNames(
+                "grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem_2.75rem] items-center gap-2 px-2 pb-2 pt-1 sm:flex sm:justify-between",
+              )}
+            >
+              <div className="contents sm:flex sm:min-w-0 sm:flex-1 sm:items-center sm:gap-1.5">
+                <button
+                  className={classNames(
+                    "glass-btn flex h-11 w-11 items-center justify-center rounded-lg text-[var(--color-text-secondary)] transition-colors disabled:cursor-not-allowed disabled:text-[var(--color-text-tertiary)] disabled:opacity-60 sm:h-9 sm:w-9",
+                    busy !== "send" && selectedGroupId && !isCrossGroup
+                      ? isDark
+                        ? "hover:bg-white/10 hover:text-[var(--color-text-primary)]"
+                        : "hover:bg-black/5 hover:text-gray-800"
+                      : "",
+                  )}
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={!selectedGroupId || busy === "send" || isCrossGroup}
+                  aria-label={t("attachFile")}
+                  title={fileDisabledReason}
+                >
+                  <AttachmentIcon size={18} />
                 </button>
 
-                {showModeMenu && (
-                  <div
-                    className={classNames(
-                      "glass-panel absolute bottom-full right-0 mb-2 z-40 w-56 sm:w-64 rounded-2xl border p-1.5 shadow-2xl pointer-events-auto",
-                    )}
-                    role="menu"
-                    aria-label={t("messageTypeOptions")}
-                  >
-                    {modeOptions.map((opt) => {
-                      const active = effectiveMessageMode === opt.key;
-                      const unavailable =
-                        opt.key === "request_reply" && !requestReplyRecipientsReady;
-                      return (
-                        <button
-                          key={opt.key}
-                          type="button"
-                          className={classNames(
-                            "w-full rounded-xl px-3 py-2.5 text-left flex items-center gap-2.5 transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-                            active
-                              ? isDark
-                                ? "bg-white/10"
-                                : "bg-black/5"
-                              : isDark
-                                ? "hover:bg-white/5"
-                                : "hover:bg-black/5",
-                          )}
-                          role="menuitemradio"
-                          aria-checked={active}
-                          disabled={unavailable}
-                          aria-disabled={unavailable}
-                          title={unavailable ? t("modeSendReplyRequiresConcrete") : opt.description}
-                          onClick={() => {
-                            if (unavailable) return;
-                            setMessageMode(opt.key);
-                            setShowModeMenu(false);
-                          }}
-                        >
-                          <span
-                            className={classNames(
-                              "w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0",
-                              opt.key === "request_reply"
-                                ? isDark
-                                  ? "bg-violet-500/25 text-violet-200"
-                                  : "bg-violet-100 text-violet-700"
-                                : opt.key === "mail"
-                                  ? isDark
-                                    ? "bg-sky-500/20 text-sky-200"
-                                    : "bg-sky-50 text-sky-700"
-                                  : isDark
-                                    ? "bg-slate-700 text-slate-200"
-                                    : "bg-gray-100 text-gray-700",
-                            )}
-                          >
-                            {opt.key === "request_reply" ? (
-                              <ReplyIcon size={13} />
-                            ) : opt.key === "mail" ? (
-                              <InboxIcon size={13} />
-                            ) : (
-                              <SendIcon size={13} />
-                            )}
-                          </span>
-                          <span className="min-w-0 flex-1">
-                            <span
-                              className={classNames(
-                                "block text-sm font-semibold",
-                                isDark ? "text-slate-100" : "text-gray-900",
-                              )}
-                            >
-                              {opt.label}
-                            </span>
-                            <span
-                              className={classNames(
-                                "block text-[11px]",
-                                isDark ? "text-[var(--color-text-tertiary)]" : "text-gray-500",
-                              )}
-                            >
-                              {opt.description}
-                            </span>
-                          </span>
-                          {active && (
-                            <span
-                              className={classNames(
-                                "text-xs font-semibold",
-                                isDark ? "text-emerald-300" : "text-emerald-600",
-                              )}
-                            >
-                              ✓
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
+                <div className="min-w-0">
+                  <LazyVoiceSecretaryComposerControl
+                    isDark={isDark}
+                    selectedGroupId={selectedGroupId}
+                    busy={busy}
+                    disabled={!selectedGroupId || busy === "send" || !composerGroupSettled}
+                    variant="assistantRow"
+                    statusPortalTarget={voiceStatusTarget}
+                    captureMode={voiceCaptureMode}
+                    onCaptureModeChange={setVoiceCaptureMode}
+                    composerText={composerText}
+                    composerContext={composerAssistantContext}
+                    onQuoteDocument={onQuoteVoiceDocumentRef}
+                    onPromptDraft={fillPromptDraftFromSpeech}
+                  />
+                </div>
               </div>
 
-              <button
-                className={classNames(
-                  "flex h-11 w-11 items-center justify-center rounded-lg font-semibold transition-[background-color,box-shadow,transform] duration-150 disabled:cursor-not-allowed sm:h-9 sm:w-[5.5rem]",
-                  busy === "send" || !canSend
-                    ? isDark
-                      ? "bg-white/[0.06] text-[var(--color-text-tertiary)]"
-                      : "bg-gray-100 text-gray-400"
-                    : "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)] shadow-[var(--glass-accent-shadow)] hover:brightness-110 active:scale-[0.97]",
-                )}
-                onClick={onSendMessage}
-                disabled={busy === "send" || !canSend}
-                aria-label={t("sendMessage")}
-                title={sendButtonTitle}
-              >
-                {busy === "send" ? (
-                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                ) : (
-                  <>
-                    <SendIcon size={16} className="sm:hidden" />
-                    <span className="hidden sm:inline">{t("send")}</span>
-                  </>
-                )}
-              </button>
+              <div className="contents sm:flex sm:items-center sm:gap-1.5">
+                <div ref={modeMenuRef} className="relative z-20">
+                  <button
+                    type="button"
+                    className={classNames(
+                      "inline-flex h-11 w-11 items-center justify-center gap-0.5 rounded-lg px-0 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60 sm:h-9 sm:w-auto sm:gap-1.5 sm:px-2.5",
+                      busy === "send" || !selectedGroupId
+                        ? isDark
+                          ? "text-[var(--color-text-tertiary)]"
+                          : "text-gray-400"
+                        : effectiveMessageMode === "request_reply"
+                          ? isDark
+                            ? "bg-violet-500/18 text-violet-200 hover:bg-violet-500/26"
+                            : "bg-violet-100 text-violet-700 hover:bg-violet-200"
+                          : effectiveMessageMode === "mail"
+                            ? isDark
+                              ? "bg-sky-500/14 text-sky-200 hover:bg-sky-500/22"
+                              : "bg-sky-50 text-sky-700 hover:bg-sky-100"
+                            : isDark
+                              ? "text-slate-200 hover:bg-white/10"
+                              : "text-gray-700 hover:bg-black/5",
+                    )}
+                    disabled={busy === "send" || !selectedGroupId}
+                    onClick={() => setShowModeMenu((v) => !v)}
+                    aria-label={t("messageMode", { mode: activeMode.label })}
+                    aria-haspopup="menu"
+                    aria-expanded={showModeMenu}
+                    title={t("messageMode", { mode: activeMode.label })}
+                  >
+                    {effectiveMessageMode === "request_reply" ? (
+                      <ReplyIcon size={13} />
+                    ) : effectiveMessageMode === "mail" ? (
+                      <InboxIcon size={13} />
+                    ) : (
+                      <SendIcon size={13} />
+                    )}
+                    {effectiveMessageMode !== "send" ? (
+                      <span className="hidden sm:inline">{activeMode.label}</span>
+                    ) : null}
+                    <ChevronDownIcon size={12} className="opacity-70" />
+                  </button>
+
+                  {showModeMenu && (
+                    <div
+                      className={classNames(
+                        "glass-panel absolute bottom-full right-0 mb-2 z-40 w-56 sm:w-64 rounded-2xl border p-1.5 shadow-2xl pointer-events-auto",
+                      )}
+                      role="menu"
+                      aria-label={t("messageTypeOptions")}
+                    >
+                      {modeOptions.map((opt) => {
+                        const active = effectiveMessageMode === opt.key;
+                        const unavailable =
+                          opt.key === "request_reply" && !requestReplyRecipientsReady;
+                        return (
+                          <button
+                            key={opt.key}
+                            type="button"
+                            className={classNames(
+                              "w-full rounded-xl px-3 py-2.5 text-left flex items-center gap-2.5 transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+                              active
+                                ? isDark
+                                  ? "bg-white/10"
+                                  : "bg-black/5"
+                                : isDark
+                                  ? "hover:bg-white/5"
+                                  : "hover:bg-black/5",
+                            )}
+                            role="menuitemradio"
+                            aria-checked={active}
+                            disabled={unavailable}
+                            aria-disabled={unavailable}
+                            title={
+                              unavailable ? t("modeSendReplyRequiresConcrete") : opt.description
+                            }
+                            onClick={() => {
+                              if (unavailable) return;
+                              setMessageMode(opt.key);
+                              setShowModeMenu(false);
+                            }}
+                          >
+                            <span
+                              className={classNames(
+                                "w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0",
+                                opt.key === "request_reply"
+                                  ? isDark
+                                    ? "bg-violet-500/25 text-violet-200"
+                                    : "bg-violet-100 text-violet-700"
+                                  : opt.key === "mail"
+                                    ? isDark
+                                      ? "bg-sky-500/20 text-sky-200"
+                                      : "bg-sky-50 text-sky-700"
+                                    : isDark
+                                      ? "bg-slate-700 text-slate-200"
+                                      : "bg-gray-100 text-gray-700",
+                              )}
+                            >
+                              {opt.key === "request_reply" ? (
+                                <ReplyIcon size={13} />
+                              ) : opt.key === "mail" ? (
+                                <InboxIcon size={13} />
+                              ) : (
+                                <SendIcon size={13} />
+                              )}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span
+                                className={classNames(
+                                  "block text-sm font-semibold",
+                                  isDark ? "text-slate-100" : "text-gray-900",
+                                )}
+                              >
+                                {opt.label}
+                              </span>
+                              <span
+                                className={classNames(
+                                  "block text-xs",
+                                  isDark ? "text-[var(--color-text-tertiary)]" : "text-gray-500",
+                                )}
+                              >
+                                {opt.description}
+                              </span>
+                            </span>
+                            {active && (
+                              <span
+                                className={classNames(
+                                  "text-xs font-semibold",
+                                  isDark ? "text-emerald-300" : "text-emerald-600",
+                                )}
+                              >
+                                ✓
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  className={classNames(
+                    "flex h-11 w-11 items-center justify-center rounded-lg font-semibold transition-[background-color,box-shadow,transform] duration-150 disabled:cursor-not-allowed sm:h-9 sm:w-[5.5rem]",
+                    busy === "send" || !canSend
+                      ? isDark
+                        ? "bg-white/[0.06] text-[var(--color-text-tertiary)]"
+                        : "bg-gray-100 text-gray-400"
+                      : "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)] shadow-[var(--glass-accent-shadow)] hover:brightness-110 active:scale-[0.97]",
+                  )}
+                  onClick={onSendMessage}
+                  disabled={busy === "send" || !canSend}
+                  aria-label={t("sendMessage")}
+                  title={sendButtonTitle}
+                >
+                  {busy === "send" ? (
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <>
+                      <SendIcon size={16} className="sm:hidden" />
+                      <span className="hidden sm:inline">{t("send")}</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>

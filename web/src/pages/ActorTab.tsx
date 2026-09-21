@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { lazy, memo, Suspense, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Actor, AgentState } from "../types";
 
@@ -15,6 +15,10 @@ export interface ActorTabProps {
   isDark: boolean;
   isSmallScreen: boolean;
   isVisible: boolean;
+  compact?: boolean;
+  onExpand?: () => void;
+  navigation?: ReactNode;
+  onPage?: (direction: -1 | 1) => void;
   readOnly?: boolean;
   actorStatusProvisional: boolean;
   onToggleEnabled: (isRunning: boolean) => void;
@@ -27,7 +31,7 @@ export interface ActorTabProps {
   onStatusChange?: () => void;
 }
 
-export function ActorTab({
+export const ActorTab = memo(function ActorTab({
   actor,
   groupId,
   agentState,
@@ -36,6 +40,10 @@ export function ActorTab({
   isDark,
   isSmallScreen,
   isVisible,
+  compact,
+  onExpand,
+  navigation,
+  onPage,
   readOnly,
   actorStatusProvisional,
   onToggleEnabled,
@@ -72,6 +80,10 @@ export function ActorTab({
         termEpoch={termEpoch}
         agentState={agentState}
         isVisible={isVisible}
+        compact={compact}
+        onExpand={onExpand}
+        navigation={navigation}
+        onPage={onPage}
         readOnly={readOnly}
         actorStatusProvisional={actorStatusProvisional}
         onQuit={() => onToggleEnabled(true)}
@@ -84,8 +96,8 @@ export function ActorTab({
         busy={busy}
         isDark={isDark}
         isSmallScreen={isSmallScreen}
-        onStatusChange={onStatusChange}
+        onStatusChange={isVisible ? onStatusChange : undefined}
       />
     </Suspense>
   );
-}
+});

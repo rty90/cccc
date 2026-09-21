@@ -1,4 +1,4 @@
-use cccc_contracts::{Actor, ActorRuntime, ActorSubmit, GroupState};
+use cccc_contracts::{Actor, ActorRuntime, GroupState};
 use cccc_core::GroupStore;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -6,29 +6,17 @@ use std::time::Duration;
 use crate::ops::actor_delivery::{DeliveryJob, complete_job};
 use crate::ops::actor_runtime;
 
-const SUBMIT_DELAY: Duration = Duration::from_millis(1_500);
-const REPEAT_SUBMIT_DELAY: Duration = Duration::from_millis(200);
 const PREAMBLE_DELAY: Duration = Duration::from_millis(500);
 const INPUT_MODE_TIMEOUT: Duration = Duration::from_secs(5);
-const SESSION_START_TIMEOUT: Duration = Duration::from_secs(30);
+const ANTIGRAVITY_STARTUP_SETTLE: Duration = Duration::from_millis(1_500);
 
-pub fn wait_for_delivery_slot(
-    job: &DeliveryJob,
-    last_delivery: &Option<std::time::Instant>,
-    cancelled: &AtomicBool,
-) -> bool {
-    let Ok(group) =
-        GroupStore::new(job.home.clone()).and_then(|store| store.load(&job.group.group_id))
-    else {
-        return false;
-    };
-    apply_throttle(&group, last_delivery, cancelled)
-}
+#[cfg(all(test, unix))]
+#[path = "actor_delivery_startup_tests.rs"]
+mod startup_tests;
 
 pub fn process_batch(
     jobs: &[DeliveryJob],
     preamble_session: &mut String,
-    last_delivery: &mut Option<std::time::Instant>,
     cancelled: &AtomicBool,
 ) -> bool {
     let Some(job) = jobs.first() else {
@@ -60,55 +48,50 @@ pub fn process_batch(
         return false;
     }
     if current_actor.runtime == ActorRuntime::Deepseek {
-        return process_deepseek_batch(
-            jobs,
-            &job.home,
-            &current_group,
-            &current_actor,
-            last_delivery,
-            cancelled,
-        );
+        return process_deepseek_batch(jobs, &job.home, &current_group, &current_actor, cancelled);
     }
     if crate::ops::local_headless::supports(&current_actor) {
-        return process_headless_batch(
-            jobs,
-            &job.home,
-            &current_group,
-            &current_actor,
-            last_delivery,
-        );
+        return process_managed_batch(jobs, &job.home, &current_group, &current_actor, cancelled);
     }
     let Some(status) = ensure_running(&job.home, &current_group, &current_actor) else {
         return false;
     };
-    if *preamble_session != status.started_at {
+    let first_delivery = *preamble_session != status.started_at;
+    if first_delivery {
         if current_actor.runtime != ActorRuntime::Custom
-            && !wait_for_runtime_ready(
-                &job.home,
-                &current_group.group_id,
-                &current_actor,
-                &status,
-                cancelled,
-            )
+            && !wait_for_input_mode(&current_group.group_id, &current_actor.id, cancelled)
         {
             return false;
         }
-        if !submit_text(
-            &current_group.group_id,
-            &current_actor,
-            &super::actor_delivery_preamble::render(&job.home, &current_group, &current_actor),
-            cancelled,
-        ) {
+        // agy can enable paste mode before its conversation input is mounted.
+        // The ordinary submit delay comes AFTER writing and cannot protect the
+        // first payload. Allow this observed startup transition to settle before
+        // writing anything. This is bounded PTY pacing, not a provider handshake.
+        if current_actor.runtime == ActorRuntime::Antigravity
+            && !interruptible_sleep(ANTIGRAVITY_STARTUP_SETTLE, cancelled)
+        {
             return false;
         }
-        preamble_session.clone_from(&status.started_at);
-        if !interruptible_sleep(PREAMBLE_DELAY, cancelled) {
-            return false;
+        // Custom terminal programs retain their line-oriented preamble contract.
+        // Native agents receive their startup context and task in one submission.
+        if current_actor.runtime == ActorRuntime::Custom {
+            if !submit_text(
+                &current_group.group_id,
+                &current_actor,
+                &super::actor_delivery_preamble::render(&job.home, &current_group, &current_actor),
+                cancelled,
+            ) {
+                return false;
+            }
+            preamble_session.clone_from(&status.started_at);
+            if !interruptible_sleep(PREAMBLE_DELAY, cancelled) {
+                return false;
+            }
         }
     }
 
     let events = jobs.iter().map(|job| job.event.clone()).collect::<Vec<_>>();
-    let Some(payload) = super::actor_delivery_render::render_batch_with_mail_context(
+    let Some(mut payload) = super::actor_delivery_render::render_batch_with_mail_context(
         &job.home,
         &current_group,
         &current_actor.id,
@@ -116,8 +99,19 @@ pub fn process_batch(
     ) else {
         return false;
     };
+    if first_delivery && current_actor.runtime != ActorRuntime::Custom {
+        payload = format!(
+            "{}\n\n{payload}",
+            super::actor_delivery_preamble::render(&job.home, &current_group, &current_actor)
+                .trim_end()
+        );
+    } else if current_actor.runtime == ActorRuntime::Antigravity {
+        payload = format!(
+            "[CCCC] If this conversation has not completed CCCC initialization, call cccc_bootstrap before handling this task. Otherwise continue without repeating bootstrap.\n\n{payload}"
+        );
+    }
     if submit_text(&current_group.group_id, &current_actor, &payload, cancelled) {
-        *last_delivery = Some(std::time::Instant::now());
+        preamble_session.clone_from(&status.started_at);
         finish_jobs(jobs);
         return true;
     }
@@ -129,7 +123,6 @@ fn process_deepseek_batch(
     home: &cccc_core::HomeLayout,
     group: &cccc_core::GroupDoc,
     actor: &Actor,
-    last_delivery: &mut Option<std::time::Instant>,
     cancelled: &AtomicBool,
 ) -> bool {
     if !crate::ops::deepseek_runtime::running(&group.group_id, &actor.id) {
@@ -147,18 +140,17 @@ fn process_deepseek_batch(
         {
             return false;
         }
-        *last_delivery = Some(std::time::Instant::now());
         complete_job(job);
     }
     true
 }
 
-fn process_headless_batch(
+fn process_managed_batch(
     jobs: &[DeliveryJob],
     home: &cccc_core::HomeLayout,
     group: &cccc_core::GroupDoc,
     actor: &Actor,
-    last_delivery: &mut Option<std::time::Instant>,
+    cancelled: &AtomicBool,
 ) -> bool {
     if !crate::ops::local_headless::running(&group.group_id, &actor.id) {
         match actor_runtime::apply(home, group, &actor.id, "actor.start") {
@@ -169,17 +161,14 @@ fn process_headless_batch(
                     group_id = %group.group_id,
                     actor_id = %actor.id,
                     message = %error.message,
-                    "failed to auto-wake headless actor for message delivery"
+                    "failed to auto-wake managed actor for message delivery"
                 );
                 return false;
             }
         }
     }
-    if jobs
-        .iter()
-        .all(|job| crate::ops::local_headless::submit(home, group, actor, &job.event))
-    {
-        *last_delivery = Some(std::time::Instant::now());
+    let events = jobs.iter().map(|job| job.event.clone()).collect::<Vec<_>>();
+    if crate::ops::local_headless::submit_batch(home, group, actor, &events, cancelled) {
         finish_jobs(jobs);
         return true;
     }
@@ -224,128 +213,13 @@ fn ensure_running(
     Some(status)
 }
 
-fn apply_throttle(
-    group: &cccc_core::GroupDoc,
-    last_delivery: &Option<std::time::Instant>,
-    cancelled: &AtomicBool,
-) -> bool {
-    let seconds = super::actor_delivery::delivery_setting(group, "min_interval_seconds")
-        .and_then(|value| value.as_u64())
-        .unwrap_or(0);
-    let Some(remaining) =
-        last_delivery.and_then(|last| Duration::from_secs(seconds).checked_sub(last.elapsed()))
-    else {
-        return true;
-    };
-    interruptible_sleep(remaining, cancelled)
-}
-
 fn submit_text(group_id: &str, actor: &Actor, text: &str, cancelled: &AtomicBool) -> bool {
-    let raw = text.trim_end_matches(['\r', '\n']);
-    if raw.is_empty() {
-        return false;
-    }
-    // Prompt-assisted TUIs get the MCP-setup preamble typed before the first message; a fresh Antigravity opened one
-    // conversation per input when both arrived before its input loop existed. Wait (once per session, at most 15 s)
-    // until the terminal enables bracketed paste. Only for those runtimes: a plain shell or a test fixture never
-    // enables it and must not pay the wait.
-    if matches!(actor.runtime, ActorRuntime::Antigravity | ActorRuntime::Cursor | ActorRuntime::Kilo)
-        && !cccc_runtime::wait_for_input_ready(group_id, &actor.id, Duration::from_secs(15), cancelled).unwrap_or(true)
-    {
-        return false;
-    }
-    let bracketed = raw.contains(['\r', '\n'])
-        && cccc_runtime::bracketed_paste_enabled(group_id, &actor.id).unwrap_or(false);
-    let payload = if bracketed {
-        format!("\u{1b}[200~{raw}\u{1b}[201~")
-    } else if raw.contains(['\r', '\n']) {
-        raw.lines().collect::<Vec<_>>().join(" ")
-    } else {
-        raw.to_owned()
-    };
-    let submits = submit_sequence(actor);
-    let delay = if submits.is_empty() {
-        Duration::ZERO
-    } else {
-        SUBMIT_DELAY
-    };
-    cccc_runtime::submit_sequence_interruptible(
-        group_id,
-        &actor.id,
-        payload.as_bytes(),
-        submits,
-        delay,
-        REPEAT_SUBMIT_DELAY,
-        cancelled,
-    )
-    .unwrap_or(false)
+    super::actor_delivery::submit_terminal_text(group_id, actor, text, cancelled)
 }
 
+#[cfg(test)]
 fn submit_sequence(actor: &Actor) -> &'static [&'static [u8]] {
-    match actor.submit {
-        ActorSubmit::Enter
-            if matches!(
-                actor.runtime,
-                ActorRuntime::Codex | ActorRuntime::Copilot | ActorRuntime::Kimi
-            ) =>
-        {
-            &[b"\r", b"\r"]
-        }
-        ActorSubmit::Enter => &[b"\r"],
-        ActorSubmit::Newline => &[b"\n"],
-        ActorSubmit::None => &[],
-    }
-}
-
-/// Claude Code reports through its SessionStart hook when the session is
-/// actually accepting input. Before that the TUI may still be showing a
-/// startup dialog (workspace trust, bypass-permissions warning, login) whose
-/// default answer is "No, exit" - and bracketed paste is already enabled on
-/// those screens, so the input-mode heuristic cannot tell them apart from the
-/// prompt. Typing the preamble there and pressing Enter exits the process.
-/// Wait for the hook when this launch has hook projection; otherwise fall
-/// back to the bracketed-paste heuristic. Returning `false` defers the batch,
-/// so nothing is lost while the session is still starting.
-fn wait_for_runtime_ready(
-    home: &cccc_core::HomeLayout,
-    group_id: &str,
-    actor: &Actor,
-    status: &cccc_runtime::SessionStatus,
-    cancelled: &AtomicBool,
-) -> bool {
-    if actor.runtime != ActorRuntime::Claude {
-        return wait_for_input_mode(group_id, &actor.id, cancelled);
-    }
-    let Some(capability) =
-        super::runtime_hook_session::validated(home, "claude", group_id, &actor.id, status.pid)
-    else {
-        return wait_for_input_mode(group_id, &actor.id, cancelled);
-    };
-    let deadline = std::time::Instant::now() + SESSION_START_TIMEOUT;
-    while std::time::Instant::now() < deadline {
-        if !cccc_runtime::status(group_id, &actor.id).is_ok_and(|status| status.running) {
-            return false;
-        }
-        let session_started =
-            cccc_core::codex_hook_state::read_runtime(home, "claude", group_id, &actor.id)
-                .is_some_and(|state| {
-                    state.launch_token == capability.launch_token
-                        && !state.awaiting_session_start
-                        && !state.session_closed
-                });
-        if session_started {
-            return wait_for_input_mode(group_id, &actor.id, cancelled);
-        }
-        if !interruptible_sleep(Duration::from_millis(200), cancelled) {
-            return false;
-        }
-    }
-    tracing::warn!(
-        group_id = %group_id,
-        actor_id = %actor.id,
-        "Claude has not reported SessionStart; holding delivery so it is not typed into a startup dialog"
-    );
-    false
+    super::actor_delivery::terminal_submit_sequence(actor)
 }
 
 fn wait_for_input_mode(group_id: &str, actor_id: &str, cancelled: &AtomicBool) -> bool {
@@ -400,12 +274,6 @@ mod tests {
             &[b"\r".as_slice(), b"\r".as_slice()]
         );
 
-        actor.runtime = ActorRuntime::Kimi;
-        assert_eq!(
-            submit_sequence(&actor),
-            &[b"\r".as_slice(), b"\r".as_slice()]
-        );
-
         actor.runtime = ActorRuntime::Claude;
         assert_eq!(submit_sequence(&actor), &[b"\r".as_slice()]);
 
@@ -442,7 +310,6 @@ mod tests {
         assert!(!process_batch(
             &[job],
             &mut String::new(),
-            &mut None,
             &AtomicBool::new(false),
         ));
         let saved = store.load(&group.group_id).expect("reload group");

@@ -1,8 +1,9 @@
+use super::realtime::event::{EventStream, StreamEvent};
 use axum::Router;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
-use futures_util::Stream;
+use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Deserializer};
 use serde_json::json;
 use std::convert::Infallible;
@@ -11,12 +12,15 @@ use std::time::Duration;
 
 use crate::AppState;
 use crate::api::{ApiResult, call, object, success};
+use crate::auth::Principal;
+use crate::connect_frames::{LIVE_ACCESS_INTERVAL, live_group_access};
 use crate::routes::headless_store::{HeadlessEventTail, read_replay_events};
 
 #[derive(Debug, Deserialize)]
 struct StreamQuery {
     #[serde(default = "default_true", deserialize_with = "deserialize_replay")]
     replay: bool,
+    connect_frame: Option<String>,
 }
 
 fn deserialize_replay<'de, D>(deserializer: D) -> Result<bool, D::Error>
@@ -64,11 +68,32 @@ async fn stream(
     State(state): State<AppState>,
     Path(group_id): Path<String>,
     Query(query): Query<StreamQuery>,
+    Extension(principal): Extension<Principal>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    Sse::new(
+        headless_source(
+            state,
+            group_id,
+            principal,
+            query.replay,
+            query.connect_frame,
+        )
+        .map(|event| event.map(StreamEvent::into_sse)),
+    )
+    .keep_alive(KeepAlive::default())
+}
+
+pub(super) fn headless_source(
+    state: AppState,
+    group_id: String,
+    principal: Principal,
+    replay: bool,
+    connect_frame: Option<String>,
+) -> EventStream {
     let mut shutdown = state.shutdown.subscribe();
     let path = events_path(&state, &group_id);
     let output = async_stream::stream! {
-        let (mut tail, replay_events) = match tokio::task::spawn_blocking(move || HeadlessEventTail::open(path, query.replay)).await {
+        let (mut tail, replay_events) = match tokio::task::spawn_blocking(move || HeadlessEventTail::open(path, replay)).await {
             Ok(Ok(value)) => value,
             Ok(Err(error)) => {
                 yield Ok(stream_error("headless_stream_open_failed", &error.to_string()));
@@ -79,16 +104,30 @@ async fn stream(
                 return;
             }
         };
-        for item in replay_events {
-            yield Ok(Event::default().event("headless").json_data(item).unwrap_or_default());
+        if !live_group_access(&state, &principal, &group_id, connect_frame.as_deref()) {
+            yield Ok(stream_error("auth_required", "Web access expired; reopen this Group"));
+            return;
+        }
+        let mut access_poll = tokio::time::interval(LIVE_ACCESS_INTERVAL);
+        access_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        if replay {
+            // A snapshot restores state atomically. Its events are not new activity.
+            // The same tail owns the following increments, so there is no GET/stream gap.
+            yield Ok(StreamEvent::new("headless.snapshot", json!({"events":replay_events})));
         }
         loop {
             tokio::select! {
                 _ = shutdown.recv() => break,
+                _ = access_poll.tick() => {
+                    if !live_group_access(&state, &principal, &group_id, connect_frame.as_deref()) {
+                        yield Ok(stream_error("auth_required", "Web access expired; reopen this Group"));
+                        break;
+                    }
+                },
                 _ = tokio::time::sleep(Duration::from_millis(300)) => {
                     match tail.read_new() {
                         Ok(events) => for item in events {
-                            yield Ok(Event::default().event("headless").json_data(item).unwrap_or_default());
+                            yield Ok(StreamEvent::new("headless", item));
                         },
                         Err(error) => {
                             yield Ok(stream_error("headless_stream_read_failed", &error.to_string()));
@@ -99,14 +138,11 @@ async fn stream(
             }
         }
     };
-    Sse::new(output).keep_alive(KeepAlive::default())
+    Box::pin(output)
 }
 
-fn stream_error(code: &str, message: &str) -> Event {
-    Event::default()
-        .event("error")
-        .json_data(json!({"ok":false,"error":{"code":code,"message":message}}))
-        .unwrap_or_default()
+fn stream_error(code: &str, message: &str) -> StreamEvent {
+    StreamEvent::error(code, message)
 }
 
 async fn validate_group(state: &AppState, group_id: &str) -> Result<(), crate::api::ApiError> {

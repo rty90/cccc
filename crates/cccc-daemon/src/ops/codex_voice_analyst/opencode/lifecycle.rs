@@ -8,6 +8,12 @@ use std::time::Duration;
 
 const SSE_BUFFER_LIMIT: usize = 512 * 1024;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ObservedUserMessage {
+    pub(super) id: String,
+    pub(super) model: Option<String>,
+}
+
 pub(super) fn reserve_loopback_port() -> io::Result<u16> {
     let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))?;
     listener.local_addr().map(|address| address.port())
@@ -75,13 +81,17 @@ pub(super) async fn attach(
     username: &str,
     password: &str,
     session_id: &str,
+    workdir: &std::path::Path,
 ) -> io::Result<()> {
     let client = reqwest::Client::builder()
         .no_proxy()
         .build()
         .map_err(|error| io::Error::other(format!("build OpenCode event client: {error}")))?;
     let response = client
-        .get(format!("{endpoint}/global/event"))
+        // /event registers its listener before returning the response. The
+        // global endpoint subscribes lazily and can lose the first submission.
+        .get(format!("{endpoint}/event"))
+        .query(&[("directory", workdir.to_string_lossy().as_ref())])
         .header(
             reqwest::header::AUTHORIZATION,
             basic_authorization(username, password),
@@ -107,7 +117,7 @@ pub(super) async fn attach(
     let task = tokio::spawn(async move {
         let mut response = response;
         let mut buffer = Vec::new();
-        let mut current_user_message_id = None;
+        let mut stream = super::stream::SessionStream::default();
         let outcome: io::Result<()> =
             async {
                 while let Some(chunk) = response.chunk().await.map_err(|error| {
@@ -144,29 +154,7 @@ pub(super) async fn attach(
                             )
                         })?;
                         let payload = value.get("payload").unwrap_or(&value);
-                        if let Some(text) =
-                            observed_user_text(payload, &session_id, &mut current_user_message_id)
-                        {
-                            control.user_text(&session_id, &text).await?;
-                        }
-                        if payload.get("type").and_then(Value::as_str) == Some("session.status")
-                            && payload
-                                .pointer("/properties/sessionID")
-                                .and_then(Value::as_str)
-                                == Some(session_id.as_str())
-                        {
-                            match payload
-                                .pointer("/properties/status/type")
-                                .and_then(Value::as_str)
-                            {
-                                Some("busy") => control.status(&session_id, true).await?,
-                                Some("idle") => {
-                                    control.status(&session_id, false).await?;
-                                    current_user_message_id = None;
-                                }
-                                _ => {}
-                            }
-                        }
+                        stream.observe(payload, &session_id, &control).await?;
                     }
                 }
                 Err(io::Error::new(
@@ -183,10 +171,10 @@ pub(super) async fn attach(
     Ok(())
 }
 
-fn observed_user_text(
+pub(super) fn observed_user_text(
     payload: &Value,
     session_id: &str,
-    current_user_message_id: &mut Option<String>,
+    current_user_message: &mut Option<ObservedUserMessage>,
 ) -> Option<String> {
     match payload.get("type").and_then(Value::as_str) {
         Some("message.updated") => {
@@ -196,7 +184,15 @@ fn observed_user_text(
             {
                 return None;
             }
-            *current_user_message_id = info.get("id").and_then(Value::as_str).map(str::to_owned);
+            let id = info
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())?;
+            *current_user_message = Some(ObservedUserMessage {
+                id: id.to_owned(),
+                model: observed_model(info),
+            });
             None
         }
         Some("message.part.updated") => {
@@ -204,17 +200,45 @@ fn observed_user_text(
             if part.get("sessionID").and_then(Value::as_str) != Some(session_id)
                 || part.get("type").and_then(Value::as_str) != Some("text")
                 || part.get("messageID").and_then(Value::as_str)
-                    != current_user_message_id.as_deref()
+                    != current_user_message
+                        .as_ref()
+                        .map(|message| message.id.as_str())
             {
                 return None;
             }
             part.get("text")
                 .and_then(Value::as_str)
+                // Native paste placeholders can add a trailing separator. This is a complete
+                // stored text part, not an ACP delta; use the same outer-whitespace boundary
+                // as the submitted Voice input without changing any interior content.
+                .map(str::trim)
                 .filter(|text| !text.is_empty())
                 .map(str::to_owned)
         }
         _ => None,
     }
+}
+
+fn observed_model(info: &Value) -> Option<String> {
+    let provider = info
+        .pointer("/model/providerID")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let model = info
+        .pointer("/model/modelID")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let variant = info
+        .pointer("/model/variant")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "default");
+    Some(match variant {
+        Some(variant) => format!("{provider}/{model}/{variant}"),
+        None => format!("{provider}/{model}"),
+    })
 }
 
 fn basic_authorization(username: &str, password: &str) -> String {
@@ -236,7 +260,7 @@ mod tests {
 
     #[test]
     fn only_the_matching_backend_user_message_yields_prompt_text() {
-        let mut user_message_id = None;
+        let mut user_message = None;
         assert_eq!(
             observed_user_text(
                 &serde_json::json!({
@@ -245,14 +269,25 @@ mod tests {
                         "id":"message-user",
                         "sessionID":"session-owned",
                         "role":"user",
+                        "model":{
+                            "providerID":"anthropic",
+                            "modelID":"claude-sonnet-4",
+                            "variant":"high",
+                        },
                     }}
                 }),
                 "session-owned",
-                &mut user_message_id,
+                &mut user_message,
             ),
             None
         );
-        assert_eq!(user_message_id.as_deref(), Some("message-user"));
+        assert_eq!(
+            user_message,
+            Some(ObservedUserMessage {
+                id: "message-user".into(),
+                model: Some("anthropic/claude-sonnet-4/high".into()),
+            })
+        );
         assert_eq!(
             observed_user_text(
                 &serde_json::json!({
@@ -261,14 +296,14 @@ mod tests {
                         "sessionID":"session-owned",
                         "messageID":"message-user",
                         "type":"text",
-                        "text":"owned prompt",
+                        "text":" \nowned  prompt \n",
                     }}
                 }),
                 "session-owned",
-                &mut user_message_id,
+                &mut user_message,
             )
             .as_deref(),
-            Some("owned prompt")
+            Some("owned  prompt")
         );
         assert_eq!(
             observed_user_text(
@@ -282,9 +317,24 @@ mod tests {
                     }}
                 }),
                 "session-owned",
-                &mut user_message_id,
+                &mut user_message,
             ),
             None
+        );
+    }
+
+    #[test]
+    fn default_variant_uses_the_plain_acp_model_value() {
+        assert_eq!(
+            observed_model(&serde_json::json!({
+                "model":{
+                    "providerID":"openai",
+                    "modelID":"gpt-5",
+                    "variant":"default",
+                }
+            }))
+            .as_deref(),
+            Some("openai/gpt-5")
         );
     }
 }

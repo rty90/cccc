@@ -12,13 +12,15 @@ import {
   primaryButtonClass,
   secondaryButtonClass,
   settingsWorkspaceBodyClass,
+  settingsWorkspaceActionBarClass,
   settingsWorkspaceHeaderClass,
   settingsWorkspacePanelClass,
+  settingsWorkspaceSectionClass,
   settingsWorkspaceShellClass,
   settingsWorkspaceSoftPanelClass,
 } from "./types";
 import { copyTextToClipboard } from "../../../utils/copy";
-import { canStartIMBridge } from "./imBridgeConfig";
+import { canStartIMBridge, isValidMattermostUrl } from "./imBridgeConfig";
 import { imRevokeKey, revokeIMChatAuthorization } from "./imBridgeRevoke";
 
 const IM_PENDING_AUTO_REFRESH_MS = 12000;
@@ -33,6 +35,8 @@ interface IMBridgeTabProps {
   setImBotTokenEnv: (v: string) => void;
   imAppTokenEnv: string;
   setImAppTokenEnv: (v: string) => void;
+  imMattermostUrl: string;
+  setImMattermostUrl: (v: string) => void;
   // Feishu fields
   imFeishuDomain: string;
   setImFeishuDomain: (v: string) => void;
@@ -61,6 +65,7 @@ interface IMBridgeTabProps {
   onLogoutWeixin: () => void;
   // Actions
   imBusy: boolean;
+  imConfigError?: string;
   onSaveConfig: () => void;
   onRemoveConfig: () => void;
   onStartBridge: () => void;
@@ -141,6 +146,8 @@ export function IMBridgeTab({
   setImBotTokenEnv,
   imAppTokenEnv,
   setImAppTokenEnv,
+  imMattermostUrl,
+  setImMattermostUrl,
   imFeishuDomain,
   setImFeishuDomain,
   imFeishuAppId,
@@ -164,6 +171,7 @@ export function IMBridgeTab({
   onVerifyWeixin,
   onLogoutWeixin,
   imBusy,
+  imConfigError,
   onSaveConfig,
   onRemoveConfig,
   onStartBridge,
@@ -206,6 +214,8 @@ export function IMBridgeTab({
         return "SLACK_BOT_TOKEN (or xoxb-...)";
       case "discord":
         return "DISCORD_BOT_TOKEN (or <token>)";
+      case "mattermost":
+        return "MATTERMOST_BOT_TOKEN (or <token>)";
       default:
         return "";
     }
@@ -225,12 +235,21 @@ export function IMBridgeTab({
       return true;
     }
     if (!imBotTokenEnv) return false;
+    if (imPlatform === "mattermost" && !isValidMattermostUrl(imMattermostUrl)) return false;
     if (imPlatform === "slack" && !imAppTokenEnv) return false;
     return true;
   };
 
   const needsBotToken =
-    imPlatform === "telegram" || imPlatform === "slack" || imPlatform === "discord";
+    imPlatform === "telegram" ||
+    imPlatform === "slack" ||
+    imPlatform === "discord" ||
+    imPlatform === "mattermost";
+
+  const mattermostUrlInvalid =
+    imPlatform === "mattermost" &&
+    !!imMattermostUrl.trim() &&
+    !isValidMattermostUrl(imMattermostUrl);
 
   // Authorized chats state
   const [authChats, setAuthChats] = useState<api.IMAuthorizedChat[]>([]);
@@ -509,7 +528,7 @@ export function IMBridgeTab({
           )}
 
           {/* Configuration */}
-          <div className={settingsWorkspacePanelClass(_isDark)}>
+          <div className={settingsWorkspaceSectionClass}>
             <div>
               <div className={sectionTitleClass}>{t("imBridge.platform")}</div>
               <div className={sectionHintClass}>{t("imBridge.description")}</div>
@@ -522,6 +541,7 @@ export function IMBridgeTab({
                     { value: "telegram", label: "Telegram" },
                     { value: "slack", label: "Slack" },
                     { value: "discord", label: "Discord" },
+                    { value: "mattermost", label: "Mattermost" },
                     { value: "feishu", label: "Feishu/Lark" },
                     { value: "dingtalk", label: "DingTalk" },
                     { value: "wecom", label: t("imBridge.wecom") },
@@ -534,7 +554,50 @@ export function IMBridgeTab({
                 />
               </div>
 
-              {/* Bot Token (Telegram/Slack/Discord) */}
+              {imPlatform === "mattermost" && (
+                <div>
+                  <label htmlFor="im-mattermost-url" className={labelClass()}>
+                    {t("imBridge.mattermostUrl")}
+                  </label>
+                  <input
+                    id="im-mattermost-url"
+                    type="url"
+                    value={imMattermostUrl}
+                    onChange={(e) => setImMattermostUrl(e.target.value)}
+                    placeholder="https://mattermost.example.com"
+                    aria-invalid={mattermostUrlInvalid}
+                    aria-describedby={
+                      mattermostUrlInvalid
+                        ? "im-mattermost-url-hint im-mattermost-url-error"
+                        : "im-mattermost-url-hint"
+                    }
+                    className={`${inputClass()} placeholder-[var(--color-text-muted)]`}
+                  />
+                  <p
+                    id="im-mattermost-url-hint"
+                    className="text-xs mt-1 text-[var(--color-text-muted)]"
+                  >
+                    {t("imBridge.mattermostUrlHint")}
+                  </p>
+                  {mattermostUrlInvalid && (
+                    <p
+                      id="im-mattermost-url-error"
+                      role="alert"
+                      className="mt-2 break-words text-xs text-red-600 dark:text-red-400"
+                    >
+                      {t("imBridge.mattermostUrlInvalid")}
+                    </p>
+                  )}
+                  <p className="text-xs mt-1 text-[var(--color-text-muted)]">
+                    {t("imBridge.mattermostUsageHint")}
+                  </p>
+                  <p className="text-xs mt-1 text-[var(--color-text-muted)]">
+                    {t("imBridge.mattermostBotIsolationHint")}
+                  </p>
+                </div>
+              )}
+
+              {/* Bot Token (Telegram/Slack/Discord/Mattermost) */}
               {needsBotToken && (
                 <div>
                   <label className={labelClass()}>{getBotTokenLabel()}</label>
@@ -736,7 +799,7 @@ export function IMBridgeTab({
                         <div className="font-medium">{t("imBridge.weixinErrorDetails")}</div>
                         <div className="mt-1 break-words">{weixinErrorText}</div>
                         {weixinLoginStatus?.updated_at && (
-                          <div className="mt-2 text-[11px] text-red-500/80 dark:text-red-300/80">
+                          <div className="mt-2 text-xs text-red-500/80 dark:text-red-300/80">
                             {t("imBridge.weixinLastUpdated")}: {weixinLoginStatus.updated_at}
                           </div>
                         )}
@@ -779,7 +842,7 @@ export function IMBridgeTab({
                       </div>
                     )}
                     {!weixinLoginStatus?.qrcode_url && weixinLoginStatus?.qr_ascii && (
-                      <pre className="mt-3 overflow-auto rounded-lg bg-black/5 p-3 text-[10px] leading-none text-[var(--color-text-secondary)]">
+                      <pre className="mt-3 overflow-auto rounded-lg bg-black/5 p-3 text-[0.625rem] leading-none text-[var(--color-text-secondary)]">
                         {weixinLoginStatus.qr_ascii}
                       </pre>
                     )}
@@ -829,7 +892,7 @@ export function IMBridgeTab({
                             components={[
                               <code
                                 key="command"
-                                className="rounded bg-black/5 px-1 py-0.5 font-mono text-[11px] text-[var(--color-text-secondary)]"
+                                className="rounded bg-black/5 px-1 py-0.5 font-mono text-xs text-[var(--color-text-secondary)]"
                               />,
                             ]}
                           />
@@ -866,11 +929,8 @@ export function IMBridgeTab({
           </div>
 
           {/* Actions */}
-          <div className={settingsWorkspacePanelClass(_isDark)}>
-            <div className={sectionTitleClass}>
-              {t("common:actions", { defaultValue: "Actions" })}
-            </div>
-            <div className="mt-4 flex flex-wrap gap-2">
+          <div className={settingsWorkspaceActionBarClass(_isDark)}>
+            <div className="flex flex-wrap gap-2">
               <button
                 onClick={onSaveConfig}
                 disabled={imBusy || !canSaveIM()}
@@ -892,7 +952,9 @@ export function IMBridgeTab({
                   ) : (
                     <button
                       onClick={onStartBridge}
-                      disabled={imBusy || !bridgeCanStart}
+                      disabled={
+                        imBusy || !bridgeCanStart || (imPlatform === "mattermost" && !canSaveIM())
+                      }
                       className={primaryButtonClass(imBusy)}
                       title={!bridgeCanStart ? t("imBridge.weixinLoginRequired") : undefined}
                     >
@@ -911,6 +973,12 @@ export function IMBridgeTab({
               )}
             </div>
           </div>
+
+          {imPlatform === "mattermost" && imConfigError && (
+            <p role="alert" className="mt-2 break-words text-xs text-red-600 dark:text-red-400">
+              {imConfigError}
+            </p>
+          )}
 
           {/* Pending Requests */}
           {imStatus?.configured && !usesAutomaticAuthorization && (

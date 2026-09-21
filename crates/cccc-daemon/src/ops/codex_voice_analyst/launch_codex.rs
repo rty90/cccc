@@ -3,7 +3,6 @@ use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 impl AnalystSession {
@@ -15,9 +14,12 @@ impl AnalystSession {
         resume_thread_id: Option<String>,
         purpose: SessionPurpose,
     ) -> io::Result<Self> {
-        let (process, lines) = process::spawn_app_server(&command, &binding.root, &env)?;
+        let (process, lines) = lifecycle_timing::run_sync("codex.spawn", || {
+            process::spawn_app_server(&command, &binding.root, &env)
+        })?;
         let process = Arc::new(process);
-        let endpoint = process::wait_for_endpoint(lines).await?;
+        let endpoint =
+            lifecycle_timing::run("codex.endpoint", process::wait_for_endpoint(lines)).await?;
         let generation = uuid::Uuid::new_v4().simple().to_string();
         let result = Self::connect(ConnectConfig {
             binding,
@@ -50,8 +52,13 @@ impl AnalystSession {
             purpose,
         } = config;
         process::validate_loopback_endpoint(&endpoint)?;
-        let socket = protocol::connect_with_retry(&endpoint).await?;
-        let protocol = ProtocolClient::new(socket, generation.clone());
+        let socket =
+            lifecycle_timing::run("codex.connect", protocol::connect_with_retry(&endpoint)).await?;
+        let protocol = ProtocolClient::new(
+            socket,
+            generation.clone(),
+            process.as_ref().map(Arc::downgrade),
+        );
         protocol
             .request(
                 "initialize",
@@ -129,6 +136,38 @@ impl AnalystSession {
                 "Codex app-server resumed a different thread",
             ));
         }
+        if !thread_resumed {
+            // thread/start reserves an id/path but does not persist an empty
+            // rollout. Native TUI resume needs that rollout, even on the same
+            // app-server. Naming the new thread materializes it without a model
+            // turn or synthetic conversation item; never rename resumed history.
+            let name = match purpose {
+                SessionPurpose::Actor => "CCCC Actor",
+                SessionPurpose::VoiceAnalyst => "CCCC Voice Analyst",
+            };
+            protocol
+                .request(
+                    "thread/name/set",
+                    json!({"threadId":thread_id,"name":name}),
+                    Duration::from_secs(20),
+                )
+                .await?;
+            let persisted = protocol
+                .request(
+                    "thread/read",
+                    json!({"threadId":thread_id,"includeTurns":true}),
+                    Duration::from_secs(20),
+                )
+                .await?;
+            if persisted["thread"]["id"].as_str() != Some(thread_id.as_str())
+                || !persisted["thread"]["turns"].is_array()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Codex did not expose the new thread's durable history for terminal resume",
+                ));
+            }
+        }
         Ok(Self {
             #[cfg(test)]
             binding,
@@ -143,7 +182,6 @@ impl AnalystSession {
             native_tui_command: None,
             cleanup_paths: Vec::new(),
             runtime: cccc_contracts::ActorRuntime::Codex,
-            thread_materialized: AtomicBool::new(thread_resumed),
             thread_resumed,
             delegations: tokio::sync::Mutex::new(delegations),
         })

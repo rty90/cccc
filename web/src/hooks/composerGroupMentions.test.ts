@@ -4,14 +4,12 @@ import type { GroupMeta } from "../types";
 import {
   createComposerAgentMentionToken,
   createComposerGroupMentionToken,
-  buildComposerGroupBridgeRouteRefs,
   resolveSelectedComposerGroupMentionTargets,
   pruneComposerAgentMentionTokens,
   pruneComposerGroupMentionTokens,
   resolveControlledComposerMentionContext,
   resolveSelectedComposerGroupMention,
 } from "./composerGroupMentions";
-import { isGroupBridgeRouteMessageRef } from "../utils/groupBridgeRouteRefs";
 
 const groups = [
   { group_id: "g_local", title: "Local" },
@@ -113,6 +111,21 @@ describe("composer group mention tokens", () => {
     ).toBeNull();
   });
 
+  it("returns the same token array when nothing needs pruning", () => {
+    const groupTokens = [{ token: "#alpha", groupId: "g_alpha", start: 0, end: 6 }];
+    expect(pruneComposerGroupMentionTokens({ text: "#alpha hi", tokens: groupTokens })).toBe(
+      groupTokens,
+    );
+    const empty: never[] = [];
+    expect(pruneComposerGroupMentionTokens({ text: "typing", tokens: empty })).toBe(empty);
+    const agentTokens = [
+      { token: "@peer", actorId: "peer", start: 0, end: 5, scope: "selected" as const },
+    ];
+    expect(pruneComposerAgentMentionTokens({ text: "@peer hi", tokens: agentTokens })).toBe(
+      agentTokens,
+    );
+  });
+
   it("keeps only menu-selected agent tokens that still match the text range", () => {
     const text = "ask @target to help";
     const token = createComposerAgentMentionToken({
@@ -149,47 +162,5 @@ describe("composer group mention tokens", () => {
         tokens: [selected],
       }),
     ).toEqual({ scope: "destination", mentionTargetGroupId: "self-agent" });
-  });
-
-  it("builds structured route refs for selected remote group labels", () => {
-    const text = "ask #Remote Product @foreman";
-    const token = createComposerGroupMentionToken({
-      groupId: "g_remote",
-      token: "#Remote Product",
-      start: 4,
-    })!;
-    const refs = buildComposerGroupBridgeRouteRefs({
-      text,
-      tokens: [token],
-      groups: [
-        ...groups,
-        {
-          group_id: "g_remote",
-          title: "Remote Product",
-          group_bridge_remote: true,
-          group_bridge_local_group_id: "g_owner",
-          group_bridge_remote_endpoint: "https://remote.example",
-          group_bridge_remote_peer_id: "peer_remote",
-          group_bridge_trust_id: "ptrust_1",
-          group_bridge_access_level: "read",
-        },
-      ] as GroupMeta[],
-    });
-
-    expect(refs).toEqual([
-      {
-        kind: "group_bridge_route",
-        local_group_id: "g_owner",
-        remote_group_id: "g_remote",
-        remote_group_title: "Remote Product",
-        remote_endpoint: "https://remote.example",
-        remote_peer_id: "peer_remote",
-        trust_id: "ptrust_1",
-        access_level: "read",
-        recipient_identifier: "Remote Product (g_remote remote/read)",
-        token: "#Remote Product",
-      },
-    ]);
-    expect(refs.every(isGroupBridgeRouteMessageRef)).toBe(true);
   });
 });

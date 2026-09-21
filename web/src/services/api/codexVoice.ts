@@ -1,5 +1,46 @@
 import { apiJson, withAuthToken } from "./base";
 
+export type VoiceNotificationScope = "off" | "to_user" | "all_chat";
+export type VoicePreferences = {
+  revision: number;
+  groups: Record<string, VoiceNotificationScope>;
+  suppress_viewed: boolean;
+  verbosity: "concise" | "standard" | "detailed";
+  style: "natural" | "direct" | "patient";
+};
+export type VoiceMessageRef = { group_id: string; event_id: string };
+export type VoiceNotification = {
+  sequence: number;
+  source: VoiceMessageRef;
+  kind: "request_reply" | "background";
+  by: string;
+  handoff: { analyst_generation: string; accepted: boolean } | null;
+  processed: boolean;
+  attempted: boolean;
+  output_status: "processing" | "ready" | "unconfirmed" | "submitted" | "suppressed";
+  suppression_reason: "viewed" | "policy" | "source_unavailable" | null;
+};
+export type VoiceNotificationSnapshot = {
+  messages: VoiceNotification[];
+  pending_count: number;
+  unconfirmed_count: number;
+  suppressed_count: number;
+};
+export const fetchVoicePreferences = () =>
+  apiJson<{ preferences: VoicePreferences }>("/api/v1/codex_voice/preferences");
+export const saveVoicePreferences = (preferences: VoicePreferences) =>
+  apiJson<{ preferences: VoicePreferences }>("/api/v1/codex_voice/preferences", {
+    method: "PUT",
+    body: JSON.stringify({ preferences }),
+  });
+export const fetchVoiceNotifications = () =>
+  apiJson<VoiceNotificationSnapshot>("/api/v1/codex_voice/notifications");
+export const markVoiceMessagesViewed = (messages: VoiceMessageRef[]) =>
+  apiJson<{ observed: number }>("/api/v1/codex_voice/messages/viewed", {
+    method: "POST",
+    body: JSON.stringify({ messages }),
+  });
+
 export type CodexVoiceCallInfo = {
   generation: string;
   analyst_generation: string;
@@ -77,6 +118,17 @@ export async function stopCodexVoiceCall(generation: string) {
   );
 }
 
+export async function prepareCodexVoiceNotificationOutput(
+  generation: string,
+  resultId: string,
+  signal?: AbortSignal,
+) {
+  return apiJson<{ message: unknown | null }>(
+    `/api/v1/codex_voice/calls/${encodeURIComponent(generation)}/notification-output`,
+    { method: "POST", body: JSON.stringify({ result_id: resultId }), signal },
+  );
+}
+
 export async function resetCodexVoiceAnalyst(generation: string) {
   return apiJson<{ analyst: CodexVoiceAnalystInfo }>(
     `/api/v1/codex_voice/analysts/${encodeURIComponent(generation)}/reset`,
@@ -119,11 +171,13 @@ export async function updateCodexVoiceAnalystSettings(args: {
   environmentSet: Record<string, string>;
   environmentUnset: string[];
   environmentClear: boolean;
+  discardCurrentWork: boolean;
 }) {
   return apiJson<{
     analyst: CodexVoiceAnalystInfo | null;
     restarted: boolean;
     started_new_session: boolean;
+    discarded_work: boolean;
   }>("/api/v1/codex_voice/analyst-settings", {
     method: "PUT",
     body: JSON.stringify({
@@ -131,6 +185,7 @@ export async function updateCodexVoiceAnalystSettings(args: {
       environment_set: args.environmentSet,
       environment_unset: args.environmentUnset,
       environment_clear: args.environmentClear,
+      discard_current_work: args.discardCurrentWork,
     }),
   });
 }

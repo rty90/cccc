@@ -7,7 +7,8 @@ import { HumanRulingForm } from "./HumanRuling";
 import { VoteDetails } from "./VoteDetails";
 import { HelpTicketCard } from "./HelpTicketCard";
 import type { Actor } from "../../types";
-import { MeetingCard, ModeBadge, ROLE_TONE } from "./MeetingPanel";
+import { MeetingCard, ModeBadge } from "./MeetingPanel";
+import { ROLE_TONE } from "./roleTone";
 import { useMeetingStore, voteCounts, type Meeting, type Notice, type NoticeKind, type Vote } from "./meetingStore";
 
 /**

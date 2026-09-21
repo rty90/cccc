@@ -1,3 +1,7 @@
+use super::operation::{
+    Operation,
+    Policy::{Read, ResourceOwned, Write},
+};
 use cccc_contracts::{ActorRole, DaemonRequest, RunnerKind};
 use cccc_core::{GroupDoc, GroupStore, HomeLayout};
 use serde_json::{Value, json};
@@ -5,23 +9,28 @@ use serde_json::{Value, json};
 use crate::dispatch::{OpError, OpResult, bool_arg, object, required_arg, string_arg};
 use crate::ops::terminal_text;
 
+mod history_page;
 mod session_control;
 
 #[cfg(all(test, unix))]
 use session_control::write;
 
-pub fn handle(home: &HomeLayout, request: &DaemonRequest) -> Option<OpResult> {
+pub(super) fn resolve_operation(request: &DaemonRequest) -> Option<Operation> {
     Some(match request.op.as_str() {
-        "terminal_status" => session_control::status(request),
-        "term_attachment_status" => session_control::attachment_status(request),
-        "terminal_tail" => tail(home, request),
-        "terminal_snapshot" => snapshot(home, request),
-        "terminal_replay" => replay(home, request),
-        "terminal_history" => history(home, request),
-        "terminal_since" => since(home, request),
-        "terminal_write" => session_control::write(home, request),
-        "term_resize" | "terminal_resize" => session_control::resize(home, request),
-        "terminal_clear" => session_control::clear(home, request),
+        "terminal_status" => {
+            Operation::new(Read, |_home, request| session_control::status(request))
+        }
+        "term_attachment_status" => Operation::new(ResourceOwned, |_home, request| {
+            session_control::attachment_status(request)
+        }),
+        "terminal_tail" => Operation::new(Read, tail),
+        "terminal_snapshot" => Operation::new(Read, snapshot),
+        "terminal_replay" => Operation::new(Read, replay),
+        "terminal_history" => Operation::new(Read, history),
+        "terminal_since" => Operation::new(Read, since),
+        "terminal_write" => Operation::new(ResourceOwned, session_control::write),
+        "term_resize" | "terminal_resize" => Operation::new(Write, session_control::resize),
+        "terminal_clear" => Operation::new(Write, session_control::clear),
         _ => return None,
     })
 }
@@ -115,11 +124,11 @@ fn history(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
         _ => None,
     });
     let limit = integer(request, "limit_bytes", 64_000).clamp(1, 2_000_000);
-    let page = super::terminal_history_source::page(home, &group_id, &actor_id, before, limit)
-        .map_err(runtime_error)?;
+    let render_before = request.args.get("render_before").and_then(Value::as_u64);
+    let page = history_page::read(home, &group_id, &actor_id, before, limit, render_before)?;
     let strip_ansi = bool_arg(request, "strip_ansi", false);
     let text = if strip_ansi {
-        terminal_text::render(&page.data, bool_arg(request, "compact", false))
+        terminal_text::render_history(&page.data, bool_arg(request, "compact", false))
     } else {
         page.data.clone()
     };
@@ -154,11 +163,6 @@ fn since(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
     let page = super::terminal_history_source::since(home, &group_id, &actor_id, after, limit)
         .map_err(runtime_error)?;
     object(json!({"history": page}))
-}
-
-#[cfg(test)]
-fn is_interrupt_input(data: &str) -> bool {
-    data.as_bytes().contains(&0x03) || data == "\u{1b}"
 }
 
 fn authorize_transcript(
@@ -293,7 +297,3 @@ fn active_session_error(error: cccc_runtime::RuntimeError) -> OpError {
 #[cfg(all(test, unix))]
 #[path = "terminal_io_tests.rs"]
 mod io_tests;
-
-#[cfg(all(test, unix))]
-#[path = "terminal_hook_tests.rs"]
-mod hook_tests;

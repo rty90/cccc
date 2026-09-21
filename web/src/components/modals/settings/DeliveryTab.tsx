@@ -9,14 +9,12 @@ import {
   settingsWorkspaceBodyClass,
   settingsWorkspaceHeaderClass,
   settingsWorkspaceShellClass,
-  settingsWorkspaceSoftPanelClass,
+  settingsWorkspaceFieldsClass,
 } from "./types";
 
 interface DeliveryTabProps {
   isDark: boolean;
   busy: boolean;
-  minIntervalSeconds: number;
-  setMinIntervalSeconds: (v: number) => void;
   mailNoticeAfterSeconds: number;
   setMailNoticeAfterSeconds: (v: number) => void;
   replyNoticeAfterSeconds: number;
@@ -42,17 +40,8 @@ export function DeliveryTab(props: DeliveryTabProps) {
           </div>
         </div>
 
-        <div className={`${settingsWorkspaceBodyClass} grid grid-cols-1 gap-3 lg:grid-cols-3`}>
-          <div className={settingsWorkspaceSoftPanelClass(isDark)}>
-            <NumberInputRow
-              isDark={isDark}
-              label={t("delivery.minInterval")}
-              value={props.minIntervalSeconds}
-              onChange={props.setMinIntervalSeconds}
-              helperText={t("delivery.minIntervalHelp")}
-            />
-          </div>
-          <div className={settingsWorkspaceSoftPanelClass(isDark)}>
+        <div className={`${settingsWorkspaceBodyClass} grid grid-cols-1 gap-3 lg:grid-cols-2`}>
+          <div className={settingsWorkspaceFieldsClass}>
             <NumberInputRow
               isDark={isDark}
               label={t("delivery.mailNotice")}
@@ -61,7 +50,7 @@ export function DeliveryTab(props: DeliveryTabProps) {
               helperText={t("delivery.mailNoticeHelp")}
             />
           </div>
-          <div className={settingsWorkspaceSoftPanelClass(isDark)}>
+          <div className={settingsWorkspaceFieldsClass}>
             <NumberInputRow
               isDark={isDark}
               label={t("delivery.replyNotice")}

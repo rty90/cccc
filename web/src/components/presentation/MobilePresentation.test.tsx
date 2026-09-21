@@ -4,13 +4,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { GroupPresentation } from "../../types";
-import { MobilePresentationTrigger } from "./MobilePresentationTrigger";
+import { PresentationTrigger } from "./PresentationTrigger";
 import { MobilePresentationSurface } from "./MobilePresentationSurface";
 import { PresentationRail } from "./PresentationRail";
-import {
-  resolveMobilePresentationHighlight,
-  shouldShowMobilePresentationTrigger,
-} from "./mobilePresentationModel";
 
 vi.mock("react-i18next", () => ({
   initReactI18next: { type: "3rdParty", init: () => undefined },
@@ -55,28 +51,31 @@ describe("mobile presentation entry", () => {
     host.remove();
   });
 
-  it("stays discoverable on every selected mobile chat, including empty presentations", () => {
-    expect(
-      shouldShowMobilePresentationTrigger({
-        isSmallScreen: true,
-        hasChatWindow: false,
-        groupId: "g_demo",
-      }),
-    ).toBe(true);
-    expect(
-      shouldShowMobilePresentationTrigger({
-        isSmallScreen: false,
-        hasChatWindow: false,
-        groupId: "g_demo",
-      }),
-    ).toBe(false);
+  it("keeps the header entry usable for an empty presentation", async () => {
+    const onOpen = vi.fn();
+    await act(async () =>
+      root.render(
+        <PresentationTrigger
+          presentation={null}
+          attentionSlots={{}}
+          isDark={false}
+          onOpen={onOpen}
+        />,
+      ),
+    );
+    const button = host.querySelector("button");
+    expect(button?.getAttribute("aria-label")).toBe("Open presentation");
+    expect(button?.getAttribute("aria-expanded")).toBe("false");
+    await act(async () => button?.click());
+    expect(onOpen).toHaveBeenCalledTimes(1);
   });
 
-  it("shows the highlighted slot and remains pointer-interactive", async () => {
+  it("announces the highlighted slot and opens it from the header", async () => {
     const onOpen = vi.fn();
     await act(async () => {
       root.render(
-        <MobilePresentationTrigger
+        <PresentationTrigger
+          mobile
           presentation={presentation}
           attentionSlots={{ "slot-1": true }}
           isDark={false}
@@ -86,10 +85,9 @@ describe("mobile presentation entry", () => {
     });
 
     const button = host.querySelector("button");
-    expect(resolveMobilePresentationHighlight(presentation)?.slot_id).toBe("slot-1");
-    expect(button?.textContent).toContain("Presentation");
-    expect(button?.textContent).toContain("1");
-    expect(button?.className).toContain("pointer-events-auto");
+    expect(button?.getAttribute("aria-label")).toContain("Presentation");
+    expect(button?.getAttribute("aria-label")).toContain("slot 1: Mobile preview");
+    expect(button?.hasAttribute("data-group-presentation-trigger")).toBe(true);
     expect(button?.dataset.mobilePresentationTrigger).toBe("true");
 
     await act(async () => button?.click());
@@ -112,7 +110,7 @@ describe("mobile presentation surface", () => {
     host.remove();
   });
 
-  it("uses a safe-area full-screen portal and closes with Escape", async () => {
+  it("traps focus inside the full-screen portal and closes with Escape", async () => {
     const onClose = vi.fn();
     await act(async () => {
       root.render(
@@ -125,8 +123,6 @@ describe("mobile presentation surface", () => {
 
     const surface = document.querySelector<HTMLElement>("[data-mobile-presentation-surface]");
     expect(surface?.getAttribute("role")).toBe("dialog");
-    expect(surface?.className).toContain("fixed inset-0");
-    expect(surface?.className).toContain("safe-area-inset-top");
     expect(surface?.textContent).toContain("First");
 
     const buttons = surface?.querySelectorAll<HTMLButtonElement>("button") || [];
@@ -161,23 +157,24 @@ describe("mobile presentation surface", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("renders a clear back control and a one-column phone slot list", async () => {
+  it("closes the phone slot panel from its shared header", async () => {
+    const close = vi.fn();
     await act(async () => {
       root.render(
         <PresentationRail
-          mode="panel"
+          groupId="g1"
           presentation={presentation}
           isDark={false}
-          isOpen
           attentionSlots={{}}
-          onOpenChange={() => undefined}
+          onClose={close}
           onOpenSlot={() => undefined}
         />,
       );
     });
 
-    expect(host.querySelector("[data-mobile-presentation-close]")).not.toBeNull();
-    expect(host.querySelector(".grid")?.className).toContain("grid-cols-1");
-    expect(host.querySelector(".grid")?.className).toContain("min-[420px]:grid-cols-2");
+    await act(async () =>
+      host.querySelector<HTMLButtonElement>("[data-side-panel-header] button")!.click(),
+    );
+    expect(close).toHaveBeenCalledOnce();
   });
 });

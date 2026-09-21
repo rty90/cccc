@@ -1,8 +1,10 @@
+import { requestWorkspaceNavigation } from "../../stores/workspaceNavigation";
 import { useCallback } from "react";
 import type { TFunction } from "i18next";
 import { useGroupStore, useUIStore } from "../../stores";
 import {
   CHAT_SCROLL_SNAPSHOT_COORDINATE_VERSION,
+  groupMessagesVisible,
   type ChatScrollSnapshot,
 } from "../../stores/useUIStore";
 import type { Actor, GroupMeta, LedgerEvent } from "../../types";
@@ -116,15 +118,19 @@ export function useChatMessageActions(input: {
         );
         return;
       }
-      const url = new URL(window.location.href);
-      url.searchParams.set("group", groupId);
-      url.searchParams.set("event", eventId);
-      url.searchParams.set("tab", "chat");
-      window.history.replaceState({}, "", `${url.pathname}?${url.searchParams.toString()}`);
-      if (input.selectedGroupId === groupId) {
-        useUIStore.getState().setActiveTab("chat");
-        void input.openChatWindow(groupId, eventId);
-      } else useGroupStore.getState().setSelectedGroupId(groupId);
+      const navigate = () => {
+        const url = new URL(window.location.href);
+        url.searchParams.set("group", groupId);
+        url.searchParams.set("event", eventId);
+        url.searchParams.set("tab", "chat");
+        window.history.replaceState({}, "", `${url.pathname}?${url.searchParams.toString()}`);
+        if (input.selectedGroupId === groupId) {
+          useUIStore.getState().setActiveTab("chat");
+          void input.openChatWindow(groupId, eventId);
+        } else useGroupStore.getState().setSelectedGroupId(groupId);
+      };
+      if (input.selectedGroupId === groupId) navigate();
+      else requestWorkspaceNavigation(navigate);
     },
     [input],
   );
@@ -153,6 +159,7 @@ export function useChatMessageActions(input: {
 
   const handleScrollChange = useCallback(
     (isAtBottom: boolean) => {
+      if (!groupMessagesVisible(input.selectedGroupId, useUIStore.getState())) return;
       input.setChatAtBottom(isAtBottom);
       if (!input.selectedGroupId) return;
       input.setShowScrollButton(input.selectedGroupId, !isAtBottom);
@@ -165,7 +172,8 @@ export function useChatMessageActions(input: {
     (snapshot: ChatScrollSnapshot, overrideGroupId?: string) => {
       if (inChatWindow && !overrideGroupId) return;
       const groupId = String(overrideGroupId || selectedGroupId || "").trim();
-      if (groupId) setChatScrollSnapshot(groupId, snapshot);
+      if (groupId && groupMessagesVisible(groupId, useUIStore.getState()))
+        setChatScrollSnapshot(groupId, snapshot);
     },
     [inChatWindow, selectedGroupId, setChatScrollSnapshot],
   );

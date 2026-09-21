@@ -1,3 +1,9 @@
+import {
+  mergeConnectDelivery,
+  mergeObligationStatus,
+  mergeReadStatus,
+} from "../utils/mergeLedgerEvents";
+import { replyObligationActor } from "../utils/crossInstanceMessages";
 import type {
   Actor,
   ChatMessageData,
@@ -927,9 +933,15 @@ export function mergeLedgerEventStatuses(
       ...event,
       _read_status:
         (event.data as ChatMessageData | undefined)?.message_mode === "mail"
-          ? (patch.read_status ?? event._read_status)
+          ? mergeReadStatus(patch.read_status, event._read_status)
           : undefined,
-      _obligation_status: patch.obligation_status ?? event._obligation_status,
+      _obligation_status: mergeObligationStatus(patch.obligation_status, event._obligation_status),
+      _retired_bridge: patch.retired_bridge || event._retired_bridge,
+      _connect_delivery: mergeConnectDelivery(patch.connect_delivery, event._connect_delivery),
+      _connect_cancellation: mergeConnectDelivery(
+        patch.connect_cancellation,
+        event._connect_cancellation,
+      ),
       _web_model_delivery_status:
         patch.web_model_delivery_status ?? event._web_model_delivery_status,
     };
@@ -962,6 +974,7 @@ export function updateReadThroughIndex(messages: LedgerEvent[], endIndex: number
 }
 
 export type ObligationStatusPatch = {
+  reply?: LedgerEvent;
   actorId?: string;
   replied?: true;
   cancelled?: true;
@@ -983,7 +996,10 @@ export function updateObligationAtIndex(
       : null;
   if (!obligationStatus) return { next, changed: false };
 
-  const actorId = String(patch.actorId || "").trim();
+  const actorId = patch.reply
+    ? replyObligationActor(message, patch.reply)
+    : String(patch.actorId || "").trim();
+  if (patch.reply && !actorId) return { next, changed: false };
   const recipientIds = actorId ? [actorId] : Object.keys(obligationStatus);
   let changed = false;
   for (const recipientId of recipientIds) {
@@ -998,7 +1014,7 @@ export function updateObligationAtIndex(
     if (patch.deliveryState !== undefined && updated.delivery_state !== patch.deliveryState) {
       updated.delivery_state = patch.deliveryState;
     }
-    if (patch.replied && !updated.cancelled) updated.replied = true;
+    if ((patch.reply || patch.replied) && !updated.cancelled) updated.replied = true;
     if (patch.cancelled && !updated.replied) updated.cancelled = true;
     if (
       updated.delivery_state === previous.delivery_state &&

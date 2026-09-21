@@ -1,7 +1,6 @@
 use super::*;
 use std::collections::{BTreeMap, HashMap};
 use std::io;
-use std::sync::atomic::AtomicBool;
 
 impl AnalystSession {
     pub(super) async fn launch_grok(
@@ -11,7 +10,7 @@ impl AnalystSession {
         mut env: BTreeMap<String, String>,
         requested_session_id: Option<String>,
         purpose: SessionPurpose,
-        actor: Option<(&str, &str, cccc_contracts::RunnerKind)>,
+        actor: Option<(&str, &str)>,
     ) -> io::Result<Self> {
         let generation = uuid::Uuid::new_v4().simple().to_string();
         let cccc = super::super::codex_mcp::configure_actor_cli(&mut env).ok_or_else(|| {
@@ -25,7 +24,7 @@ impl AnalystSession {
             home.root().to_string_lossy().into_owned(),
         );
         let (group_id, actor_id, tool_profile) = actor
-            .map_or(("", "user", Some("full")), |(group_id, actor_id, _)| {
+            .map_or(("", "user", Some("full")), |(group_id, actor_id)| {
                 (group_id, actor_id, None)
             });
         env.insert("CCCC_GROUP_ID".into(), group_id.into());
@@ -33,10 +32,10 @@ impl AnalystSession {
         if let Some(profile) = tool_profile {
             env.insert("CCCC_MCP_TOOL_PROFILE".into(), profile.into());
         }
-        let mcp_server = acp_mcp_server(home, &cccc, group_id, actor_id, tool_profile);
         let session_command = command.clone();
         let prepared = grok::prepare(home, &command, &env, &generation)?;
-        let resume_session_id = if let Some((group_id, actor_id, _)) = actor {
+        cccc_core::runtime_mcp::ensure_grok(&binding.root, &env, &cccc, &prepared.executable)?;
+        let resume_session_id = if let Some((group_id, actor_id)) = actor {
             super::super::runtime_session::prepare_grok_managed_session(
                 home,
                 group_id,
@@ -55,10 +54,9 @@ impl AnalystSession {
             &generation,
             purpose,
             resume_session_id.as_deref(),
-            mcp_server,
         )
         .await?;
-        if let Some((group_id, actor_id, runner)) = actor
+        if let Some((group_id, actor_id)) = actor
             && let Err(error) = super::super::runtime_session::record_grok_managed_session(
                 home,
                 group_id,
@@ -68,7 +66,6 @@ impl AnalystSession {
                 &env,
                 &launched.session_id,
                 launched.resumed,
-                runner,
             )
         {
             tracing::warn!(%error, %group_id, %actor_id, "failed to persist Grok managed session");
@@ -87,7 +84,6 @@ impl AnalystSession {
             auxiliary_processes: launched.auxiliary_processes,
             native_tui_command: Some(launched.tui_command),
             cleanup_paths: launched.cleanup_paths,
-            thread_materialized: AtomicBool::new(true),
             thread_resumed: launched.resumed,
             delegations: tokio::sync::Mutex::new(HashMap::new()),
         })

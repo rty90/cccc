@@ -1,18 +1,16 @@
-// useGlobalEvents - Subscribe to global event stream for group/actor updates
-// Falls back to polling after consecutive SSE errors
+import { openEventStream, type EventStreamSource } from "../services/realtime/eventStream";
+// Global metadata subscription on the shared realtime connection.
+// Falls back to polling after consecutive connection errors.
 
 import { useEffect, useRef } from "react";
 import * as api from "../services/api";
 import { publishCapabilityChanged } from "../utils/capabilityEvents";
-import { publishGroupBridgePairingChanged } from "../utils/groupBridgePairingEvents";
 import { refreshGlobalEventsFallback } from "./globalEventFallback";
 import {
   shouldKeepGlobalEventsConnected,
   shouldRefreshActorsAfterGlobalEvent,
   shouldRefreshCapabilitiesAfterGlobalEvent,
   shouldRefreshCapabilitiesAfterGlobalEventsOpen,
-  shouldRefreshGroupBridgePairingAfterGlobalEvent,
-  shouldRefreshGroupBridgePairingAfterGlobalEventsOpen,
   shouldRefreshGroupsAfterGlobalEvent,
   shouldRefreshGroupsAfterGlobalEventsOpen,
 } from "./globalEventRefreshPolicy";
@@ -40,7 +38,7 @@ export function useGlobalEvents({
   selectedGroupId,
   refreshCapabilities,
 }: UseGlobalEventsOptions): void {
-  // Use ref to avoid recreating SSE connection when refreshGroups reference changes
+  // Use ref to avoid recreating realtime subscription when refreshGroups reference changes
   const refreshGroupsRef = useRef(refreshGroups);
   const refreshActorsRef = useRef(refreshActors);
   const refreshCapabilitiesRef = useRef(refreshCapabilities);
@@ -60,7 +58,7 @@ export function useGlobalEvents({
   }, [selectedGroupId]);
 
   useEffect(() => {
-    let es: EventSource | null = null;
+    let es: EventStreamSource | null = null;
     let fallbackTimer: number | null = null;
     let fallbackDelayMs = 10000;
     let errorCount = 0;
@@ -72,7 +70,7 @@ export function useGlobalEvents({
       }
     }
 
-    function closeSSE() {
+    function closeRealtime() {
       if (es) {
         es.close();
         es = null;
@@ -101,22 +99,16 @@ export function useGlobalEvents({
       publishCapabilityChanged(gid);
     }
 
-    function refreshSelectedGroupBridgePairing() {
-      const gid = String(selectedGroupIdRef.current || "").trim();
-      if (!gid) return;
-      publishGroupBridgePairingChanged(gid);
-    }
-
     function scheduleFallbackPoll() {
       if (fallbackTimer) return;
       fallbackTimer = window.setTimeout(() => {
         fallbackTimer = null;
         refreshGlobalEventsFallback(document.hidden, invalidateAndRefreshGroups);
         if (!document.hidden) {
-          // While in polling fallback, periodically attempt to restore SSE.
+          // While in polling fallback, periodically attempt to restore the subscription.
           // If reconnect succeeds, onopen() clears fallback polling.
           if (!es) {
-            connectSSE();
+            connectRealtime();
           }
         }
         fallbackDelayMs = Math.min(fallbackDelayMs * 2, 60000);
@@ -124,14 +116,14 @@ export function useGlobalEvents({
       }, fallbackDelayMs);
     }
 
-    function connectSSE() {
+    function connectRealtime() {
       if (!shouldKeepGlobalEventsConnected(document.hidden)) {
-        closeSSE();
+        closeRealtime();
         clearFallbackTimer();
         return;
       }
       if (es) return;
-      es = new EventSource(api.withAuthToken("/api/v1/events/stream"));
+      es = openEventStream(api.withAuthToken("/api/v1/events/stream"));
       es.addEventListener("event", (e) => {
         try {
           const ev = JSON.parse((e as MessageEvent).data || "{}");
@@ -144,11 +136,6 @@ export function useGlobalEvents({
           if (shouldRefreshCapabilitiesAfterGlobalEvent(ev, selectedGroupIdRef.current || "")) {
             refreshSelectedCapabilities();
           }
-          if (
-            shouldRefreshGroupBridgePairingAfterGlobalEvent(ev, selectedGroupIdRef.current || "")
-          ) {
-            refreshSelectedGroupBridgePairing();
-          }
         } catch {
           /* ignore parse errors */
         }
@@ -158,8 +145,6 @@ export function useGlobalEvents({
         const shouldRefreshCapabilities = shouldRefreshCapabilitiesAfterGlobalEventsOpen(
           hasConnectedOnceRef.current,
         );
-        const shouldRefreshGroupBridgePairing =
-          shouldRefreshGroupBridgePairingAfterGlobalEventsOpen(hasConnectedOnceRef.current);
         errorCount = 0; // Reset on successful connection
         fallbackDelayMs = 10000;
         clearFallbackTimer();
@@ -172,9 +157,6 @@ export function useGlobalEvents({
         }
         if (shouldRefreshCapabilities) {
           refreshSelectedCapabilities();
-        }
-        if (shouldRefreshGroupBridgePairing) {
-          refreshSelectedGroupBridgePairing();
         }
       };
       es.onerror = () => {
@@ -190,21 +172,21 @@ export function useGlobalEvents({
 
     function handleVisibilityChange() {
       if (!shouldKeepGlobalEventsConnected(document.hidden)) {
-        closeSSE();
+        closeRealtime();
         clearFallbackTimer();
         return;
       }
       errorCount = 0;
       fallbackDelayMs = 10000;
-      connectSSE();
+      connectRealtime();
     }
 
-    connectSSE();
+    connectRealtime();
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
-      closeSSE();
+      closeRealtime();
       clearFallbackTimer();
       hasConnectedOnceRef.current = false;
     };

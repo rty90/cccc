@@ -1,3 +1,7 @@
+import "./voice-secretary/voiceWorkspaceMobile.css";
+import { VoiceMobileMenu } from "./voice-secretary/VoiceMobileMenu";
+import { VoiceComposerStatus } from "./voice-secretary/VoiceComposerStatus";
+import { queueVoiceSocketError } from "./voice-secretary/voiceSocketError";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
@@ -13,6 +17,7 @@ import type {
 import { classNames } from "../../utils/classNames";
 import {
   ChevronDownIcon,
+  ChevronLeftIcon,
   CloseIcon,
   CopyIcon,
   MaximizeIcon,
@@ -35,7 +40,7 @@ import {
   fetchVoiceAssistantDocumentContent,
   fetchVoiceAssistantStatus,
   fetchVoiceAssistantWorkspace,
-  retryVoiceAssistantFinalRevision,
+  retryVoiceAssistantTranscriptPersistence,
   saveVoiceAssistantDocument,
   sendVoiceAssistantDocumentInstruction,
   updateVoiceAssistantRecordingLease,
@@ -60,7 +65,11 @@ import {
   useVoiceDocumentReferenceCleanup,
 } from "./voice-secretary/voiceDocumentReferenceLifecycle";
 import { useVoiceAudioLevelMeter } from "./voice-secretary/useVoiceAudioLevelMeter";
-import { shouldScheduleBrowserSpeechErrorRestart } from "./voice-secretary/browserSpeechRecoveryModel";
+import {
+  BrowserSpeechRecoveryBudget,
+  isQuietBrowserSpeechError,
+  shouldScheduleBrowserSpeechErrorRestart,
+} from "./voice-secretary/browserSpeechRecoveryModel";
 import {
   shouldCloseVoiceCaptureSocket,
   voiceCaptureStopAction,
@@ -204,6 +213,7 @@ export type VoiceSecretaryComposerControlProps = {
   composerContext?: Record<string, unknown>;
   onPromptDraft?: (text: string, opts?: { mode?: "replace" | "append" }) => void;
   initiallyOpen?: boolean;
+  statusPortalTarget?: HTMLElement | null;
 };
 export type VoiceSecretaryCaptureMode = "document" | "instruction" | "prompt";
 type VoiceActivityFeedItem =
@@ -218,14 +228,7 @@ const BROWSER_SPEECH_MIN_MAX_WINDOW_MS = 10_000;
 const BROWSER_SPEECH_RESTART_BASE_MS = 500;
 const BROWSER_SPEECH_RESTART_MAX_MS = 8000;
 const BROWSER_SPEECH_ERROR_RESTART_FALLBACK_MS = 900;
-const BROWSER_SPEECH_MAX_TRANSIENT_ERRORS = 8;
 const BROWSER_SPEECH_RECOVERABLE_ERRORS = new Set([
-  "no-speech",
-  "aborted",
-  "network",
-  "audio-capture",
-]);
-const BROWSER_SPEECH_QUIET_RECOVERABLE_ERRORS = new Set([
   "no-speech",
   "aborted",
   "network",
@@ -277,6 +280,7 @@ export function VoiceSecretaryComposerControl({
   buttonSizePx = 44,
   disabled,
   variant = "button",
+  statusPortalTarget,
   captureMode = "document",
   onCaptureModeChange,
   onQuoteDocument,
@@ -289,8 +293,12 @@ export function VoiceSecretaryComposerControl({
   const showError = useUIStore((state) => state.showError);
   const showNotice = useUIStore((state) => state.showNotice);
   const isSmallScreen = useUIStore((state) => state.isSmallScreen);
+  const [mobilePromptDetailsOpen, setMobilePromptDetailsOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const workspaceScrollRef = useRef<HTMLDivElement | null>(null);
+  const [documentRevealed, setDocumentRevealed] = useState(false);
+  const documentBackRef = useRef<HTMLButtonElement | null>(null);
+  const documentLinkPathRef = useRef("");
   const refreshSeq = useRef(0);
   const visibleLoadSeqRef = useRef(0);
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
@@ -310,6 +318,7 @@ export function VoiceSecretaryComposerControl({
   const serviceLatestPartialTranscriptRef = useRef("");
   const serviceCommittedTranscriptRef = useRef("");
   const serviceDocumentCommittedTranscriptRef = useRef("");
+  const serviceAsrBackendRef = useRef("assistant_service_local_asr");
   const serviceFinalAsrTextRef = useRef("");
   const serviceAudioDurationMsRef = useRef(0);
   const serviceCommittedEndMsRef = useRef(0);
@@ -341,7 +350,7 @@ export function VoiceSecretaryComposerControl({
   const browserSpeechRestartTimerRef = useRef<number | null>(null);
   const browserSpeechStopFinalizeTimerRef = useRef<number | null>(null);
   const browserSpeechMediaCleanupRef = useRef<(() => void) | null>(null);
-  const browserSpeechTransientErrorCountRef = useRef(0);
+  const browserSpeechRecoveryRef = useRef(new BrowserSpeechRecoveryBudget());
   const pendingPromptRequestIdRef = useRef("");
   const requestDispatchGateRef = useRef(createVoiceRequestDispatchGate());
   const pendingPromptGroupIdRef = useRef("");
@@ -438,6 +447,8 @@ export function VoiceSecretaryComposerControl({
   const [open, setOpen] = useState(false);
   const [showAssistantModeMenu, setShowAssistantModeMenu] = useState(false);
   const [showAssistantLanguageMenu, setShowAssistantLanguageMenu] = useState(false);
+  const assistantModeTriggerRef = useRef<HTMLButtonElement>(null);
+  const assistantLanguageTriggerRef = useRef<HTMLButtonElement>(null);
   const [loading, setLoading] = useState(false);
   const [actionBusy, setActionBusy] = useState<VoiceSecretaryAction>("");
   const [recognitionLanguageSaving, setRecognitionLanguageSaving] = useState(false);
@@ -763,6 +774,9 @@ export function VoiceSecretaryComposerControl({
   );
   const getAudioSupportIssueMessage = useCallback(
     (issue: BrowserAudioSupportIssue) => {
+      if (issue === "embedded_workspace") {
+        return t("voiceSecretaryOpenInstanceForMicrophone");
+      }
       if (issue === "secure_context") {
         return t("voiceSecretarySecureContextRequired", {
           defaultValue:
@@ -846,6 +860,12 @@ export function VoiceSecretaryComposerControl({
     [t],
   );
   const controlDisabled = disabled || !selectedGroupId || busy === "send";
+  const recognitionLanguageDisabled =
+    controlDisabled ||
+    !assistantEnabled ||
+    recording ||
+    recordingStarting ||
+    recognitionLanguageSaving;
   const isAssistantRow = variant === "assistantRow";
   const selectedAudioDeviceLabel = useMemo(() => {
     if (!selectedAudioDeviceId) return SERVICE_DEFAULT_MIC_LABEL;
@@ -1496,7 +1516,7 @@ export function VoiceSecretaryComposerControl({
       recognitionRef.current = null;
       abortBrowserSpeechRecognition(recognition);
       browserSpeechStopRequestedRef.current = true;
-      browserSpeechTransientErrorCountRef.current = 0;
+      browserSpeechRecoveryRef.current.reset();
       const recorder = mediaRecorderRef.current;
       mediaRecorderRef.current = null;
       if (recorder && recorder.state !== "inactive") {
@@ -1518,6 +1538,8 @@ export function VoiceSecretaryComposerControl({
     setOpen(false);
     setLoading(false);
     setActionBusy("");
+    setShowAssistantModeMenu(false);
+    setShowAssistantLanguageMenu(false);
     setRecognitionLanguageSaving(false);
     setAssistant(null);
     setDocuments([]);
@@ -1857,6 +1879,7 @@ export function VoiceSecretaryComposerControl({
   const flushServiceDocumentCheckpoint = useCallback(
     async (triggerKind = "max_window"): Promise<boolean> => {
       clearServiceDocumentCheckpointTimer();
+      if (serviceAsrBackendRef.current === "external_provider_asr") return true;
       if (
         voiceRecordingCaptureMode(voiceRecordingSessionScopeRef.current, captureMode) !== "document"
       )
@@ -1910,6 +1933,7 @@ export function VoiceSecretaryComposerControl({
   );
 
   const scheduleServiceDocumentCheckpoint = useCallback(() => {
+    if (serviceAsrBackendRef.current === "external_provider_asr") return;
     if (
       voiceRecordingCaptureMode(voiceRecordingSessionScopeRef.current, captureMode) !== "document"
     )
@@ -2267,7 +2291,7 @@ export function VoiceSecretaryComposerControl({
       if (!clean) return;
       if (!browserFinalTranscriptBufferRef.current && isLowValueBrowserSpeechFragment(clean))
         return;
-      browserSpeechTransientErrorCountRef.current = 0;
+      browserSpeechRecoveryRef.current.reset();
       browserSpeechReceivedFinalRef.current = true;
       browserSpeechHadErrorRef.current = false;
       setSpeechError("");
@@ -2406,7 +2430,7 @@ export function VoiceSecretaryComposerControl({
     recordingStoppingRef.current = true;
     setRecordingStartingFlag(false);
     browserSpeechStopRequestedRef.current = true;
-    browserSpeechTransientErrorCountRef.current = 0;
+    browserSpeechRecoveryRef.current.reset();
     clearBrowserSpeechRestartTimer();
     clearBrowserSpeechStopFinalizeTimer();
     if (voiceCaptureStopAction().releaseLocalMicrophoneNow) {
@@ -2514,6 +2538,35 @@ export function VoiceSecretaryComposerControl({
   const { modalRef } = useModalA11y(open, closePanel);
 
   useEffect(() => {
+    if (controlDisabled) {
+      setShowAssistantModeMenu(false);
+      setShowAssistantLanguageMenu(false);
+      return;
+    }
+    const triggers = [
+      {
+        element: assistantModeTriggerRef.current,
+        open: showAssistantModeMenu,
+        close: () => setShowAssistantModeMenu(false),
+      },
+      {
+        element: assistantLanguageTriggerRef.current,
+        open: showAssistantLanguageMenu,
+        close: () => setShowAssistantLanguageMenu(false),
+      },
+    ].filter((item) => item.open && item.element);
+    if (!triggers.length) return;
+    // Portals must close when responsive CSS hides their trigger.
+    const observer = new ResizeObserver(() => {
+      for (const item of triggers) {
+        if (!item.element?.getClientRects().length) item.close();
+      }
+    });
+    for (const item of triggers) observer.observe(item.element!);
+    return () => observer.disconnect();
+  }, [controlDisabled, showAssistantModeMenu, showAssistantLanguageMenu]);
+
+  useEffect(() => {
     if (!showAssistantModeMenu) return undefined;
     const handlePointerDown = (event: MouseEvent) => {
       const root = rootRef.current;
@@ -2537,7 +2590,7 @@ export function VoiceSecretaryComposerControl({
       recognitionRef.current = null;
       abortBrowserSpeechRecognition(recognition);
       browserSpeechStopRequestedRef.current = true;
-      browserSpeechTransientErrorCountRef.current = 0;
+      browserSpeechRecoveryRef.current.reset();
       clearBrowserSpeechRestartTimer();
       clearBrowserSpeechStopFinalizeTimer();
       clearTranscriptFlushTimer();
@@ -2659,7 +2712,7 @@ export function VoiceSecretaryComposerControl({
     browserSpeechReceivedFinalRef.current = false;
     browserSpeechHadErrorRef.current = false;
     browserSpeechStopRequestedRef.current = false;
-    browserSpeechTransientErrorCountRef.current = 0;
+    browserSpeechRecoveryRef.current.reset();
 
     let stream: MediaStream;
     try {
@@ -2776,6 +2829,8 @@ export function VoiceSecretaryComposerControl({
           return;
         }
 
+        browserSpeechRecoveryRef.current.beginCycle();
+        const cycleStartedAt = performance.now();
         const recognition = new SpeechRecognitionCtor();
         recognition.continuous = true;
         recognition.interimResults = true;
@@ -2806,7 +2861,7 @@ export function VoiceSecretaryComposerControl({
           const cleanInterimText = interimText.replace(/\s+/g, " ").trim();
           if (hasFinalText || cleanInterimText) {
             browserSpeechHadErrorRef.current = false;
-            browserSpeechTransientErrorCountRef.current = 0;
+            browserSpeechRecoveryRef.current.recordResult();
             clearTranscriptFlushTimer();
           }
           if (cleanInterimText) {
@@ -2827,13 +2882,9 @@ export function VoiceSecretaryComposerControl({
             // Edge can surface remote Web Speech service churn as "network"
             // while the recognition object is still alive. Let that path end
             // naturally so onend can restart without a forced abort gap.
-            const quietRecoverable = BROWSER_SPEECH_QUIET_RECOVERABLE_ERRORS.has(code);
-            const countsAsTransientFailure = !quietRecoverable;
-            if (countsAsTransientFailure) browserSpeechTransientErrorCountRef.current += 1;
-            if (
-              countsAsTransientFailure &&
-              browserSpeechTransientErrorCountRef.current >= BROWSER_SPEECH_MAX_TRANSIENT_ERRORS
-            ) {
+            const quietRecoverable = isQuietBrowserSpeechError(code);
+            browserSpeechRecoveryRef.current.recordError(code);
+            if (browserSpeechRecoveryRef.current.exhausted) {
               const message =
                 code === "audio-capture"
                   ? t("voiceSecretaryMicNotFound", {
@@ -2869,7 +2920,7 @@ export function VoiceSecretaryComposerControl({
             if (shouldScheduleBrowserSpeechErrorRestart(code)) {
               scheduleRecoverableSpeechRestart(
                 recognition,
-                browserSpeechRestartDelayMs(browserSpeechTransientErrorCountRef.current),
+                browserSpeechRestartDelayMs(browserSpeechRecoveryRef.current.failures),
               );
             }
             return;
@@ -2905,9 +2956,22 @@ export function VoiceSecretaryComposerControl({
           if (recognitionRef.current !== recognition) return;
           clearBrowserSpeechStopFinalizeTimer();
           const stoppedByUser = browserSpeechStopRequestedRef.current;
+          if (
+            !stoppedByUser &&
+            browserSpeechRecoveryRef.current.endCycle(performance.now() - cycleStartedAt)
+          ) {
+            stopAfterFatalSpeechFailure(
+              recognition,
+              t("voiceSecretaryBrowserAsrEndedWithoutTranscript", {
+                defaultValue:
+                  "Browser ASR stopped without returning transcript. Check the microphone connection, site permission, and system input device, then try again.",
+              }),
+            );
+            return;
+          }
           const shouldRestart = !stoppedByUser && browserSpeechReady;
           const restartDelay = browserSpeechHadErrorRef.current
-            ? browserSpeechRestartDelayMs(browserSpeechTransientErrorCountRef.current)
+            ? browserSpeechRestartDelayMs(browserSpeechRecoveryRef.current.failures)
             : 250;
           if (!stoppedByUser && !shouldRestart) {
             reportRecordingStopReason("browser_speech_ended", {
@@ -2954,7 +3018,7 @@ export function VoiceSecretaryComposerControl({
         } catch {
           if (recognitionRef.current === recognition) recognitionRef.current = null;
           browserSpeechHadErrorRef.current = true;
-          browserSpeechTransientErrorCountRef.current += 1;
+          browserSpeechRecoveryRef.current.recordError("start-failed");
           setSpeechError(
             t("voiceSecretarySpeechRecovering", {
               code: "start-failed",
@@ -2963,12 +3027,12 @@ export function VoiceSecretaryComposerControl({
             }),
           );
           if (
-            browserSpeechTransientErrorCountRef.current < BROWSER_SPEECH_MAX_TRANSIENT_ERRORS &&
+            !browserSpeechRecoveryRef.current.exhausted &&
             !browserSpeechStopRequestedRef.current &&
             browserSpeechReady
           ) {
             startRecognitionCycle(
-              browserSpeechRestartDelayMs(browserSpeechTransientErrorCountRef.current),
+              browserSpeechRestartDelayMs(browserSpeechRecoveryRef.current.failures),
             );
             return;
           }
@@ -3120,10 +3184,15 @@ export function VoiceSecretaryComposerControl({
     if (!latestReadiness.serviceAsrConfigured) {
       failStart();
       showError(
-        t("voiceSecretaryLocalAsrModelsNotReady", {
-          defaultValue:
-            "The local ASR models are not ready. Install or repair Local ASR in Settings > Assistants, or switch to Browser ASR.",
-        }),
+        t(
+          latestReadiness.recognitionBackend === "external_provider_asr"
+            ? "voiceSecretaryExternalAsrNotReady"
+            : "voiceSecretaryLocalAsrModelsNotReady",
+          {
+            defaultValue:
+              "The local ASR models are not ready. Install or repair Local ASR in Settings > Assistants, or switch to Browser ASR.",
+          },
+        ),
       );
       return;
     }
@@ -3152,7 +3221,7 @@ export function VoiceSecretaryComposerControl({
     try {
       const activeLease = await acquireDaemonVoiceRecordingLease(gid, {
         captureMode: captureTransportMode,
-        recognitionBackend: "assistant_service_local_asr",
+        recognitionBackend: latestReadiness.recognitionBackend,
         dispatchTarget: captureDispatchTarget,
       });
       if (!isActiveRecordingRun(runId)) return;
@@ -3180,6 +3249,7 @@ export function VoiceSecretaryComposerControl({
       );
       return;
     }
+    serviceAsrBackendRef.current = latestReadiness.recognitionBackend;
     let pendingStream: MediaStream | null = null;
     try {
       const audioConstraints: MediaTrackConstraints = {
@@ -3327,6 +3397,10 @@ export function VoiceSecretaryComposerControl({
             const payload = JSON.parse(String(event.data || "{}")) as Record<string, unknown>;
             const type = String(payload.type || "").trim();
             if (type === "ready") {
+              serviceAsrBackendRef.current =
+                payload.backend === "external_provider_asr"
+                  ? "external_provider_asr"
+                  : latestReadiness.recognitionBackend;
               if (isCurrentGroup(gid)) setSpeechError("");
               return;
             }
@@ -3387,14 +3461,38 @@ export function VoiceSecretaryComposerControl({
                         serviceFinalTranscriptRef.current,
                         finalText,
                       );
-                      const retry = await retryVoiceAssistantFinalRevision(gid, {
+                      const retry = await retryVoiceAssistantTranscriptPersistence(gid, {
                         sessionId: voiceRecordingSessionIdRef.current,
                         documentPath: effectiveCaptureTargetDocumentPath,
                         text: finalText,
                         language: effectiveRecognitionLanguage,
                         modelId: String(payload.model_id || "").trim(),
+                        recognitionBackend: String(payload.backend || ""),
+                        partial: payload.partial === true,
+                        pendingSegments: payload.transcript_pending_segments,
                       });
                       if (!retry.ok) {
+                        const pending = recordFromUnknown(
+                          retry.error.details,
+                        ).transcript_pending_segments;
+                        const recovered = Array.isArray(pending)
+                          ? pending
+                              .map((segment) =>
+                                String(recordFromUnknown(segment).text || "").trim(),
+                              )
+                              .filter(Boolean)
+                              .join("\n")
+                          : "";
+                        if (recovered) {
+                          // Recovery remains scoped to the recording's Group even
+                          // if the user navigated or started another recording.
+                          routeVoiceTextToComposerGroup({
+                            groupId: gid,
+                            text: recovered,
+                            mode: "append",
+                          });
+                          showNotice({ message: t("voiceSecretaryCheckpointRecoveryFilled") });
+                        }
                         if (isCurrentGroup(gid)) {
                           showError(
                             retry.error.message ||
@@ -3405,7 +3503,18 @@ export function VoiceSecretaryComposerControl({
                         }
                         return;
                       }
+                      if (!isActiveRecordingRun(runId)) return;
                       if (isCurrentGroup(gid)) applyTranscriptAppendResult(retry.result);
+                    }
+                    if (payload.partial === true) {
+                      finalizeLiveTranscriptPreview();
+                      if (isCurrentGroup(gid)) {
+                        await restoreLatestVoiceMeetingSession({
+                          replaceSession: true,
+                          sessionId: voiceRecordingSessionIdRef.current,
+                        });
+                      }
+                      return;
                     }
                     serviceFinalAsrTextRef.current = finalText;
                     serviceCommittedTranscriptRef.current = finalText;
@@ -3544,6 +3653,9 @@ export function VoiceSecretaryComposerControl({
               return;
             }
             if (type === "error" || payload.ok === false) {
+              const recovered = String(payload.recovered_text || "").trim();
+              if (recovered && captureDispatchTarget !== "document")
+                appendDirectDictationToComposer(recovered);
               const error = recordFromUnknown(payload.error);
               const message =
                 String(error.message || "") ||
@@ -3578,18 +3690,30 @@ export function VoiceSecretaryComposerControl({
           });
       };
       ws.onerror = () => {
-        if (!isActiveRecordingRun(runId)) return;
-        const message = t("voiceSecretaryLocalAsrConnectionFailed", {
-          defaultValue:
-            "The local ASR connection failed. Refresh the page to initialize the authenticated session, and confirm the updated Web backend is running.",
-        });
-        if (isCurrentGroup(gid)) {
-          setSpeechError(message);
-          showError(message);
-        }
-        serviceMessageQueue = serviceMessageQueue.then(() => {
-          cleanupServiceAudio(runId, { code: "local_asr_ws_error", detail: message, groupId: gid });
-        });
+        serviceMessageQueue = queueVoiceSocketError(
+          serviceMessageQueue,
+          () => !isActiveRecordingRun(runId) || serviceAudioExpectedCloseRunIdRef.current === runId,
+          () => {
+            const message = t(
+              serviceAsrBackendRef.current === "external_provider_asr"
+                ? "voiceSecretaryExternalAsrConnectionFailed"
+                : "voiceSecretaryLocalAsrConnectionFailed",
+              {
+                defaultValue:
+                  "The local ASR connection failed. Refresh the page to initialize the authenticated session, and confirm the updated Web backend is running.",
+              },
+            );
+            if (isCurrentGroup(gid)) {
+              setSpeechError(message);
+              showError(message);
+            }
+            cleanupServiceAudio(runId, {
+              code: "local_asr_ws_error",
+              detail: message,
+              groupId: gid,
+            });
+          },
+        );
       };
       ws.onclose = (event) => {
         serviceMessageQueue = serviceMessageQueue.then(() => {
@@ -4156,7 +4280,12 @@ export function VoiceSecretaryComposerControl({
     async (document: AssistantVoiceDocument) => {
       const nextPath = voiceDocumentPath(document);
       const currentPath = activeDocumentWritePath || viewedDocumentPath;
-      if (!nextPath || nextPath === currentPath) return;
+      if (!nextPath) return;
+      if (nextPath === currentPath) {
+        setVoiceWorkspaceView("document");
+        setDocumentRevealed(true);
+        return;
+      }
       if (documentHasUnsavedEdits) {
         const confirmed = window.confirm(
           t("voiceSecretarySwitchDocumentConfirm", {
@@ -4165,6 +4294,8 @@ export function VoiceSecretaryComposerControl({
         );
         if (!confirmed) return;
       }
+      setVoiceWorkspaceView("document");
+      setDocumentRevealed(true);
       setViewedDocumentPath(nextPath);
       let nextDocument = document;
       if (documentNeedsContentLoad(document)) {
@@ -4676,7 +4807,28 @@ export function VoiceSecretaryComposerControl({
   const assistantRowCurrentMode =
     assistantRowModeOptions.find((option) => option.key === captureMode) ||
     assistantRowModeOptions[0];
-  const workspaceVisibility = getVoiceSecretaryWorkspaceVisibility({ captureMode, isSmallScreen });
+  const workspaceVisibility = getVoiceSecretaryWorkspaceVisibility({
+    captureMode,
+    isSmallScreen,
+    documentRevealed,
+  });
+  useEffect(() => {
+    setDocumentRevealed(false);
+  }, [captureMode, selectedGroupId, open]);
+  useEffect(() => {
+    if (documentRevealed) documentBackRef.current?.focus();
+  }, [documentRevealed]);
+  const returnToActivity = () => {
+    setDocumentRevealed(false);
+    window.requestAnimationFrame(() => {
+      const links = workspaceScrollRef.current?.querySelectorAll<HTMLButtonElement>(
+        "[data-voice-document-link]",
+      );
+      Array.from(links || [])
+        .find((link) => link.dataset.voiceDocumentLink === documentLinkPathRef.current)
+        ?.focus();
+    });
+  };
   useEffect(() => {
     if (!open || !isSmallScreen) return undefined;
     const node = workspaceScrollRef.current;
@@ -4812,6 +4964,8 @@ export function VoiceSecretaryComposerControl({
               />
               <section
                 ref={modalRef}
+                data-voice-mobile-sheet
+                data-voice-sheet-mode={captureMode}
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="voice-secretary-sheet-title"
@@ -4832,12 +4986,16 @@ export function VoiceSecretaryComposerControl({
                   })}
                 </div>
                 <div
+                  data-voice-sheet-header
                   className={classNames(
                     "relative shrink-0 border-b px-4 pb-3 pt-2 sm:px-5 sm:pb-3 sm:pt-3",
                     isDark ? "border-white/10" : "border-black/10",
                   )}
                 >
-                  <div className="grid gap-3 pr-8 lg:grid-cols-[minmax(16rem,1fr)_auto_auto] lg:items-end">
+                  <div
+                    data-voice-header-grid
+                    className="grid gap-3 pr-8 lg:grid-cols-[minmax(16rem,1fr)_auto_auto] lg:items-end"
+                  >
                     <div className="min-w-0">
                       <div
                         className={classNames(
@@ -4848,6 +5006,7 @@ export function VoiceSecretaryComposerControl({
                         {t("voiceSecretaryTitle", { defaultValue: "Voice Secretary" })}
                       </div>
                       <div
+                        data-voice-mode-hint
                         className={classNames(
                           "mt-1 text-xs leading-5",
                           isDark ? "text-slate-400" : "text-gray-500",
@@ -4855,7 +5014,7 @@ export function VoiceSecretaryComposerControl({
                       >
                         {workspaceModeHint}
                       </div>
-                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <div data-voice-state-bar className="mt-3 flex flex-wrap items-center gap-2">
                         <button
                           type="button"
                           role="switch"
@@ -4926,6 +5085,12 @@ export function VoiceSecretaryComposerControl({
                             ? t("loadingContext", { defaultValue: "Loading context..." })
                             : statusLabel}
                         </span>
+                        {captureMode !== "document" && documentHasUnsavedEdits ? (
+                          <span className="text-xs text-amber-700 dark:text-amber-300">
+                            {t("voiceSecretaryModeDocument")}:{" "}
+                            {t("voiceSecretaryUnsavedEditsBadge")}
+                          </span>
+                        ) : null}
                         {recordingGroupNoticeText ? (
                           <span
                             className={classNames(
@@ -4941,6 +5106,7 @@ export function VoiceSecretaryComposerControl({
                     </div>
                     {onCaptureModeChange ? (
                       <div
+                        data-voice-mode-tabs
                         className={classNames(
                           "inline-flex min-h-[38px] w-full items-center rounded-full border p-0.5 sm:w-auto lg:justify-self-center",
                           isDark ? "border-white/10 bg-white/[0.04]" : "border-black/10 bg-white",
@@ -4977,10 +5143,17 @@ export function VoiceSecretaryComposerControl({
                         })}
                       </div>
                     ) : null}
-                    <div className="grid min-w-0 grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-start lg:justify-end">
+                    <div
+                      data-voice-device-row
+                      data-voice-has-refresh={serviceAsrReady}
+                      className="grid min-w-0 grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-start lg:justify-end"
+                    >
                       {assistantEnabled ? (
                         <>
-                          <label className="grid min-w-0 grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 text-[11px] font-semibold text-[var(--color-text-secondary)] sm:inline-flex">
+                          <label
+                            data-voice-setting="language"
+                            className="grid min-w-0 grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 text-[11px] font-semibold text-[var(--color-text-secondary)] sm:inline-flex"
+                          >
                             <span>{t("voiceSecretaryLanguage", { defaultValue: "Language" })}</span>
                             <GroupCombobox
                               items={voiceLanguageOptions.map((optionValue) => ({
@@ -5005,7 +5178,7 @@ export function VoiceSecretaryComposerControl({
                                   ? "border-white/10 bg-white/[0.06] text-slate-100 focus:border-white/30"
                                   : "border-black/10 bg-white text-gray-800 focus:border-black/25",
                               )}
-                              contentClassName="p-0"
+                              contentClassName="p-0 voice-workspace-device-options"
                               disabled={recording || recordingStarting || recognitionLanguageSaving}
                               searchable={false}
                               matchTriggerWidth
@@ -5013,6 +5186,7 @@ export function VoiceSecretaryComposerControl({
                           </label>
                           {browserSpeechReady ? (
                             <label
+                              data-voice-setting="browser-microphone"
                               className="inline-flex min-w-0 items-center gap-1.5 text-[11px] font-semibold text-[var(--color-text-secondary)]"
                               title={t("voiceSecretaryMicDefaultHint", {
                                 defaultValue:
@@ -5045,7 +5219,10 @@ export function VoiceSecretaryComposerControl({
                           ) : null}
                           {serviceAsrReady ? (
                             <>
-                              <label className="grid min-w-0 grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 text-[11px] font-semibold text-[var(--color-text-secondary)] sm:inline-flex">
+                              <label
+                                data-voice-setting="microphone"
+                                className="grid min-w-0 grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 text-[11px] font-semibold text-[var(--color-text-secondary)] sm:inline-flex"
+                              >
                                 <span className="hidden xl:inline">
                                   {t("voiceSecretaryMicDevice", { defaultValue: "Microphone" })}
                                 </span>
@@ -5085,11 +5262,13 @@ export function VoiceSecretaryComposerControl({
                                   ariaLabel={t("voiceSecretaryMicDevice", {
                                     defaultValue: "Microphone",
                                   })}
+                                  contentClassName="voice-workspace-device-options"
                                   placeholder={selectedAudioDeviceLabel}
                                   searchable
                                 />
                               </label>
                               <button
+                                data-voice-refresh
                                 type="button"
                                 className={classNames(
                                   "inline-flex h-[38px] w-[38px] items-center justify-center rounded-full border text-[var(--color-text-secondary)] transition-colors disabled:opacity-60",
@@ -5111,6 +5290,7 @@ export function VoiceSecretaryComposerControl({
                             </>
                           ) : null}
                           <button
+                            data-voice-record
                             type="button"
                             className={classNames(
                               "inline-flex min-h-[38px] items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold whitespace-nowrap transition-colors disabled:opacity-60",
@@ -5222,7 +5402,16 @@ export function VoiceSecretaryComposerControl({
                 <div
                   key={`${captureMode}-${isSmallScreen ? "mobile" : "desktop"}`}
                   ref={workspaceScrollRef}
-                  className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto overflow-x-hidden scrollbar-hide px-4 py-4 [overflow-anchor:none] sm:px-5 sm:py-5 lg:grid-cols-[15rem_minmax(0,1fr)_18rem] lg:overflow-hidden"
+                  data-voice-workspace-body
+                  data-voice-body-mode={
+                    workspaceVisibility.showWorkspace ? "document" : captureMode
+                  }
+                  className={classNames(
+                    "grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto overflow-x-hidden scrollbar-hide px-4 py-4 [overflow-anchor:none] sm:px-5 sm:py-5 lg:overflow-hidden",
+                    workspaceVisibility.showWorkspace
+                      ? "lg:grid-cols-[15rem_minmax(0,1fr)_18rem]"
+                      : "mx-auto w-full max-w-4xl",
+                  )}
                 >
                   {workspaceVisibility.showDocumentList ? (
                     <VoiceSecretaryDocumentListPanel
@@ -5252,6 +5441,20 @@ export function VoiceSecretaryComposerControl({
 
                   {workspaceVisibility.showWorkspace ? (
                     <VoiceSecretaryWorkspacePanel
+                      navigation={
+                        documentRevealed && captureMode !== "document" ? (
+                          <button
+                            ref={documentBackRef}
+                            type="button"
+                            data-voice-back-to-activity
+                            className="mb-2 inline-flex min-h-11 items-center gap-1 self-start rounded-lg px-2 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] focus-visible:outline-2 focus-visible:outline-[var(--color-border-focus)]"
+                            onClick={returnToActivity}
+                          >
+                            <ChevronLeftIcon size={16} aria-hidden="true" />
+                            {t("voiceSecretaryBackToActivity")}
+                          </button>
+                        ) : null
+                      }
                       activeDocumentPath={activeDocumentPath}
                       activeDocumentWritePath={activeDocumentWritePath}
                       actionBusy={actionBusy}
@@ -5296,21 +5499,20 @@ export function VoiceSecretaryComposerControl({
 
                   {workspaceVisibility.showRequestPanel ? (
                     <aside
-                      className={classNames(
-                        "flex min-h-0 flex-col gap-4 rounded-[26px] border p-3.5",
-                        isDark
-                          ? "border-white/10 bg-white/[0.035]"
-                          : "border-black/10 bg-[rgb(250,250,250)]",
-                      )}
+                      data-voice-request-panel
+                      data-voice-request-mode={captureMode}
+                      className={classNames("flex min-h-0 flex-col gap-4")}
                     >
                       {workspaceVisibility.showRequestCard ? (
                         <div
+                          data-voice-request-card={captureMode}
+                          data-voice-prompt-open={mobilePromptDetailsOpen}
                           className={classNames(
-                            "shrink-0 rounded-2xl border p-3",
-                            isDark ? "border-white/10 bg-white/[0.04]" : "border-black/10 bg-white",
+                            "shrink-0 rounded-xl border border-[var(--glass-panel-border)] bg-[var(--color-bg-primary)] p-3",
                           )}
                         >
                           <div
+                            data-voice-request-title
                             className={classNames(
                               "text-sm font-semibold",
                               isDark ? "text-slate-100" : "text-gray-900",
@@ -5319,18 +5521,61 @@ export function VoiceSecretaryComposerControl({
                             {panelRequestTitle}
                           </div>
                           {captureMode === "prompt" ? (
+                            <button
+                              type="button"
+                              className="voice-mobile-prompt-toggle"
+                              aria-expanded={mobilePromptDetailsOpen}
+                              aria-controls={`voice-prompt-help-${voiceCaptureOwnerIdRef.current}`}
+                              onClick={() => setMobilePromptDetailsOpen((value) => !value)}
+                            >
+                              <span>{panelRequestTitle}</span>
+                              <ChevronDownIcon size={14} aria-hidden="true" />
+                            </button>
+                          ) : null}
+                          {captureMode === "prompt" ? (
                             <div
+                              data-voice-prompt-description
+                              id={`voice-prompt-help-${voiceCaptureOwnerIdRef.current}`}
                               className={classNames(
-                                "mt-3 rounded-2xl border px-3 py-2 text-xs leading-5",
-                                isDark
-                                  ? "border-white/10 bg-white/[0.04] text-slate-300"
-                                  : "border-black/10 bg-white text-gray-700",
+                                "mt-3 text-sm leading-6 text-[var(--color-text-secondary)]",
                               )}
                             >
-                              {panelRequestPlaceholder}
+                              <p>{panelRequestPlaceholder}</p>
+                              {composerText.trim() ? (
+                                <div className="mt-3">
+                                  <p className="text-xs font-medium">
+                                    {t("voiceSecretaryCurrentPrompt", {
+                                      defaultValue: "Current composer prompt",
+                                    })}
+                                  </p>
+                                  <div className="mt-1 max-h-36 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-3 py-2">
+                                    {composerText}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    data-voice-workspace-optimize
+                                    className="mt-3 min-h-11 rounded-lg bg-[var(--primary)] px-4 py-2 text-sm font-medium text-[var(--primary-foreground)] disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-[var(--color-border-focus)]"
+                                    disabled={
+                                      controlDisabled ||
+                                      !!actionBusy ||
+                                      !assistantEnabled ||
+                                      !canOptimizeComposerPrompt
+                                    }
+                                    title={promptOptimizeTitle}
+                                    onClick={handlePromptOptimizeClick}
+                                  >
+                                    {t(
+                                      promptOptimizePending
+                                        ? "voiceSecretaryPromptOptimizingButton"
+                                        : "voiceSecretaryPromptOptimizeButton",
+                                    )}
+                                  </button>
+                                </div>
+                              ) : null}
                             </div>
                           ) : (
                             <textarea
+                              data-voice-instruction-input
                               value={documentInstruction}
                               onChange={(event) => setDocumentInstruction(event.target.value)}
                               placeholder={panelRequestPlaceholder}
@@ -5344,6 +5589,7 @@ export function VoiceSecretaryComposerControl({
                           )}
                           {captureMode !== "prompt" ? (
                             <button
+                              data-voice-instruction-send
                               type="button"
                               className={classNames(
                                 "mt-3 w-full rounded-2xl border px-3 py-2.5 text-xs font-semibold transition-colors disabled:opacity-60",
@@ -5362,9 +5608,9 @@ export function VoiceSecretaryComposerControl({
 
                       {workspaceVisibility.showActivityFeed ? (
                         <div
+                          data-voice-activity
                           className={classNames(
-                            "flex min-h-0 flex-col overflow-hidden rounded-2xl border p-3 lg:flex-1",
-                            isDark ? "border-white/10 bg-white/[0.04]" : "border-black/10 bg-white",
+                            "flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--glass-panel-border)] bg-[var(--color-bg-primary)] p-3 lg:flex-1",
                           )}
                         >
                           <div className="flex items-center justify-between gap-2">
@@ -5412,7 +5658,10 @@ export function VoiceSecretaryComposerControl({
                               ) : null}
                             </div>
                           </div>
-                          <div className="mt-2 min-h-0 max-h-[42dvh] space-y-2 overflow-y-auto scrollbar-subtle pr-1 [scrollbar-gutter:stable] lg:max-h-none lg:flex-1">
+                          <div
+                            data-voice-activity-scroll
+                            className="mt-2 min-h-0 max-h-[42dvh] space-y-2 overflow-y-auto scrollbar-subtle pr-1 [scrollbar-gutter:stable] lg:max-h-none lg:flex-1"
+                          >
                             {liveActivityStreamItem ? (
                               <VoiceActivityStreamCard
                                 item={liveActivityStreamItem}
@@ -5432,6 +5681,7 @@ export function VoiceSecretaryComposerControl({
                                 return (
                                   <div
                                     key={feedItem.id}
+                                    data-voice-activity-item={feedItem.id}
                                     className={classNames(
                                       "rounded-2xl border px-2.5 py-2",
                                       isDark
@@ -5529,6 +5779,7 @@ export function VoiceSecretaryComposerControl({
                               return (
                                 <div
                                   key={item.request_id}
+                                  data-voice-activity-item={item.request_id}
                                   className={classNames(
                                     "rounded-2xl border px-2.5 py-2",
                                     isDark
@@ -5607,10 +5858,12 @@ export function VoiceSecretaryComposerControl({
                                       {artifactItems.map(({ path, linkedDocument }) => (
                                         <button
                                           key={path}
+                                          data-voice-document-link={path}
                                           type="button"
                                           disabled={!linkedDocument}
                                           onClick={() => {
                                             if (!linkedDocument) return;
+                                            documentLinkPathRef.current = path;
                                             void selectDocument(linkedDocument);
                                           }}
                                           className={classNames(
@@ -5707,6 +5960,7 @@ export function VoiceSecretaryComposerControl({
                   ) : null}
                 </div>
                 <button
+                  data-voice-sheet-close
                   type="button"
                   onClick={closePanel}
                   className="absolute right-3 top-3 rounded-md p-1 text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]/45 sm:right-4 sm:top-4"
@@ -5858,357 +6112,391 @@ export function VoiceSecretaryComposerControl({
                 <MicrophoneIcon size={15} aria-hidden="true" />
               )}
             </button>
-            {assistantEnabled && onCaptureModeChange ? (
-              <Popover open={showAssistantModeMenu} onOpenChange={setShowAssistantModeMenu}>
-                <PopoverTrigger asChild>
-                  <button
-                    type="button"
-                    className={classNames(
-                      "inline-flex h-11 min-w-0 shrink items-center justify-center gap-1 rounded-md px-2 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:h-8 sm:shrink-0",
-                      isDark
-                        ? "text-[var(--color-text-secondary)] hover:bg-white/10 hover:text-[var(--color-text-primary)]"
-                        : "text-[var(--color-text-secondary)] hover:bg-black/5 hover:text-gray-900",
-                    )}
-                    disabled={controlDisabled || recording || recordingStarting}
-                    title={
-                      modeChangeDisabledReason ||
-                      `${t("voiceSecretaryModeSelector", { defaultValue: "Voice Secretary capture mode" })}: ${assistantRowCurrentMode.label}`
-                    }
-                    aria-label={t("voiceSecretaryModeSelector", {
-                      defaultValue: "Voice Secretary capture mode",
-                    })}
-                  >
-                    <span className="min-w-0 truncate">{assistantRowCurrentMode.label}</span>
-                    <ChevronDownIcon size={12} aria-hidden="true" />
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent align="start" sideOffset={6} className="w-56 rounded-2xl p-1.5">
-                  <div
-                    role="menu"
-                    aria-label={t("voiceSecretaryModeSelector", {
-                      defaultValue: "Voice Secretary capture mode",
-                    })}
-                  >
-                    {assistantRowModeOptions.map((option) => {
-                      const active = option.key === captureMode;
-                      return (
-                        <button
-                          key={option.key}
-                          type="button"
-                          className={classNames(
-                            "w-full rounded-xl px-3 py-2.5 text-left flex items-center gap-2.5 transition-colors",
-                            active
-                              ? isDark
-                                ? "bg-white/10"
-                                : "bg-black/5"
-                              : isDark
-                                ? "hover:bg-white/5"
-                                : "hover:bg-black/5",
-                          )}
-                          role="menuitemradio"
-                          aria-checked={active}
-                          disabled={recording || recordingStarting}
-                          title={modeChangeDisabledReason || option.description}
-                          onPointerDown={(event) => {
-                            event.preventDefault();
-                            handleAssistantRowModeChange(option.key);
-                          }}
-                        >
-                          <span
+            <VoiceMobileMenu
+              key={selectedGroupId}
+              disabled={controlDisabled}
+              settingsLocked={recording || recordingStarting}
+              assistantEnabled={assistantEnabled}
+              mode={captureMode}
+              modes={assistantRowModeOptions}
+              onModeChange={onCaptureModeChange ? handleAssistantRowModeChange : undefined}
+              language={configuredRecognitionLanguage}
+              languageDisabled={recognitionLanguageDisabled}
+              languages={voiceLanguageOptions.map((value) => ({
+                value,
+                label: voiceLanguageLabel(value),
+              }))}
+              onLanguageChange={(value) => {
+                void updateRecognitionLanguage(value);
+              }}
+              optimizeLabel={promptOptimizeTitle}
+              optimizeDisabled={controlDisabled || !!actionBusy || !canOptimizeComposerPrompt}
+              onOptimize={handlePromptOptimizeClick}
+              workspaceLabel={openButtonLabel}
+              onWorkspace={() => {
+                if (open) closePanel();
+                else setOpen(true);
+              }}
+            />
+            <div className="voice-desktop-controls">
+              {assistantEnabled && onCaptureModeChange ? (
+                <Popover open={showAssistantModeMenu} onOpenChange={setShowAssistantModeMenu}>
+                  <PopoverTrigger asChild>
+                    <button
+                      ref={assistantModeTriggerRef}
+                      type="button"
+                      className={classNames(
+                        "inline-flex h-11 min-w-0 shrink items-center justify-center gap-1 rounded-md px-2 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:h-8 sm:shrink-0",
+                        isDark
+                          ? "text-[var(--color-text-secondary)] hover:bg-white/10 hover:text-[var(--color-text-primary)]"
+                          : "text-[var(--color-text-secondary)] hover:bg-black/5 hover:text-gray-900",
+                      )}
+                      disabled={controlDisabled || recording || recordingStarting}
+                      title={
+                        modeChangeDisabledReason ||
+                        `${t("voiceSecretaryModeSelector", { defaultValue: "Voice Secretary capture mode" })}: ${assistantRowCurrentMode.label}`
+                      }
+                      aria-label={t("voiceSecretaryModeSelector", {
+                        defaultValue: "Voice Secretary capture mode",
+                      })}
+                    >
+                      <span className="min-w-0 truncate">{assistantRowCurrentMode.label}</span>
+                      <ChevronDownIcon size={12} aria-hidden="true" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" sideOffset={6} className="w-56 rounded-2xl p-1.5">
+                    <div
+                      role="menu"
+                      aria-label={t("voiceSecretaryModeSelector", {
+                        defaultValue: "Voice Secretary capture mode",
+                      })}
+                    >
+                      {assistantRowModeOptions.map((option) => {
+                        const active = option.key === captureMode;
+                        return (
+                          <button
+                            key={option.key}
+                            type="button"
                             className={classNames(
-                              "w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0",
-                              option.key === "document"
+                              "w-full rounded-xl px-3 py-2.5 text-left flex items-center gap-2.5 transition-colors",
+                              active
                                 ? isDark
-                                  ? "bg-slate-700 text-slate-200"
-                                  : "bg-gray-100 text-gray-700"
-                                : option.key === "instruction"
-                                  ? isDark
-                                    ? "bg-emerald-500/20 text-emerald-100"
-                                    : "bg-emerald-50 text-emerald-700"
-                                  : isDark
-                                    ? "bg-indigo-500/25 text-indigo-200"
-                                    : "bg-indigo-100 text-indigo-700",
+                                  ? "bg-white/10"
+                                  : "bg-black/5"
+                                : isDark
+                                  ? "hover:bg-white/5"
+                                  : "hover:bg-black/5",
                             )}
+                            role="menuitemradio"
+                            aria-checked={active}
+                            disabled={recording || recordingStarting}
+                            title={modeChangeDisabledReason || option.description}
+                            onPointerDown={(event) => {
+                              event.preventDefault();
+                              handleAssistantRowModeChange(option.key);
+                            }}
                           >
-                            {option.key === "document" ? (
-                              <MicrophoneIcon size={13} />
-                            ) : option.key === "instruction" ? (
-                              <span className="text-[12px] font-black leading-none">?</span>
-                            ) : (
-                              <span className="text-[11px] font-black italic leading-none">P</span>
-                            )}
-                          </span>
-                          <span className="min-w-0 flex-1">
                             <span
                               className={classNames(
-                                "block text-sm font-semibold",
+                                "w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0",
+                                option.key === "document"
+                                  ? isDark
+                                    ? "bg-slate-700 text-slate-200"
+                                    : "bg-gray-100 text-gray-700"
+                                  : option.key === "instruction"
+                                    ? isDark
+                                      ? "bg-emerald-500/20 text-emerald-100"
+                                      : "bg-emerald-50 text-emerald-700"
+                                    : isDark
+                                      ? "bg-indigo-500/25 text-indigo-200"
+                                      : "bg-indigo-100 text-indigo-700",
+                              )}
+                            >
+                              {option.key === "document" ? (
+                                <MicrophoneIcon size={13} />
+                              ) : option.key === "instruction" ? (
+                                <span className="text-[12px] font-black leading-none">?</span>
+                              ) : (
+                                <span className="text-[11px] font-black italic leading-none">
+                                  P
+                                </span>
+                              )}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span
+                                className={classNames(
+                                  "block text-sm font-semibold",
+                                  isDark ? "text-slate-100" : "text-gray-900",
+                                )}
+                              >
+                                {option.label}
+                              </span>
+                              <span
+                                className={classNames(
+                                  "block text-[11px]",
+                                  isDark ? "text-[var(--color-text-tertiary)]" : "text-gray-500",
+                                )}
+                              >
+                                {option.description}
+                              </span>
+                            </span>
+                            {active ? (
+                              <span
+                                className={classNames(
+                                  "text-xs font-semibold",
+                                  isDark ? "text-slate-200" : "text-[rgb(35,36,37)]",
+                                )}
+                              >
+                                ✓
+                              </span>
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              ) : !assistantEnabled ? (
+                <span className="inline-flex h-11 items-center px-2 text-[11px] font-semibold text-[var(--color-text-secondary)] sm:h-8">
+                  {directDictationLabel}
+                </span>
+              ) : null}
+              {assistantEnabled && captureMode === "prompt" ? (
+                <button
+                  type="button"
+                  className={classNames(
+                    "inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:h-8 sm:w-8",
+                    promptOptimizePending
+                      ? isDark
+                        ? "bg-amber-400/12 text-amber-100"
+                        : "bg-amber-50 text-amber-800"
+                      : isDark
+                        ? "text-[var(--color-text-secondary)] hover:bg-white/10 hover:text-[var(--color-text-primary)]"
+                        : "text-[var(--color-text-secondary)] hover:bg-black/5 hover:text-gray-900",
+                    !controlDisabled &&
+                      !actionBusy &&
+                      canOptimizeComposerPrompt &&
+                      "active:scale-[0.96]",
+                  )}
+                  onClick={(event) => handlePromptOptimizeClick(event)}
+                  disabled={
+                    controlDisabled ||
+                    !!actionBusy ||
+                    !assistantEnabled ||
+                    !canOptimizeComposerPrompt
+                  }
+                  aria-label={promptOptimizeTitle}
+                  title={promptOptimizeTitle}
+                >
+                  <SparklesIcon size={15} aria-hidden="true" />
+                </button>
+              ) : null}
+              {assistantEnabled ? (
+                <Popover
+                  open={showAssistantLanguageMenu}
+                  onOpenChange={setShowAssistantLanguageMenu}
+                >
+                  <PopoverTrigger asChild>
+                    <button
+                      ref={assistantLanguageTriggerRef}
+                      type="button"
+                      className={classNames(
+                        "inline-flex h-11 shrink-0 items-center justify-center rounded-md px-1.5 text-[10px] font-bold tracking-[0.08em] transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:h-8",
+                        isDark
+                          ? "text-[var(--color-text-secondary)] hover:bg-white/10 hover:text-[var(--color-text-primary)]"
+                          : "text-[var(--color-text-secondary)] hover:bg-black/5 hover:text-gray-900",
+                      )}
+                      disabled={recognitionLanguageDisabled}
+                      title={
+                        recording
+                          ? recordingSettingsLockedTitle
+                          : `${t("voiceSecretaryLanguage", { defaultValue: "Language" })}: ${configuredRecognitionLanguageLabel}`
+                      }
+                      aria-label={`${t("voiceSecretaryLanguage", { defaultValue: "Language" })}: ${configuredRecognitionLanguageLabel}`}
+                    >
+                      {configuredRecognitionLanguageShortLabel}
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" sideOffset={6} className="w-52 rounded-2xl p-1.5">
+                    <div
+                      role="menu"
+                      aria-label={t("voiceSecretaryLanguage", { defaultValue: "Language" })}
+                    >
+                      {voiceLanguageOptions.map((optionValue) => {
+                        const active = optionValue === configuredRecognitionLanguage;
+                        return (
+                          <button
+                            key={optionValue}
+                            type="button"
+                            className={classNames(
+                              "flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors",
+                              active
+                                ? isDark
+                                  ? "bg-white/10"
+                                  : "bg-black/5"
+                                : isDark
+                                  ? "hover:bg-white/5"
+                                  : "hover:bg-black/5",
+                            )}
+                            role="menuitemradio"
+                            aria-checked={active}
+                            onPointerDown={(event) => {
+                              event.preventDefault();
+                              setShowAssistantLanguageMenu(false);
+                              void updateRecognitionLanguage(optionValue);
+                            }}
+                          >
+                            <span
+                              className={classNames(
+                                "flex h-6 w-8 shrink-0 items-center justify-center rounded-md text-[10px] font-bold tracking-[0.08em]",
+                                isDark ? "bg-white/10 text-slate-200" : "bg-gray-100 text-gray-700",
+                              )}
+                            >
+                              {voiceLanguageShortLabel(optionValue)}
+                            </span>
+                            <span
+                              className={classNames(
+                                "min-w-0 flex-1 truncate text-sm font-semibold",
                                 isDark ? "text-slate-100" : "text-gray-900",
                               )}
                             >
-                              {option.label}
+                              {voiceLanguageLabel(optionValue)}
                             </span>
-                            <span
-                              className={classNames(
-                                "block text-[11px]",
-                                isDark ? "text-[var(--color-text-tertiary)]" : "text-gray-500",
-                              )}
-                            >
-                              {option.description}
-                            </span>
-                          </span>
-                          {active ? (
-                            <span
-                              className={classNames(
-                                "text-xs font-semibold",
-                                isDark ? "text-slate-200" : "text-[rgb(35,36,37)]",
-                              )}
-                            >
-                              ✓
-                            </span>
-                          ) : null}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </PopoverContent>
-              </Popover>
-            ) : !assistantEnabled ? (
-              <span className="inline-flex h-11 items-center px-2 text-[11px] font-semibold text-[var(--color-text-secondary)] sm:h-8">
-                {directDictationLabel}
-              </span>
-            ) : null}
-            {assistantEnabled && captureMode === "prompt" ? (
+                            {active ? (
+                              <span
+                                className={classNames(
+                                  "text-xs font-semibold",
+                                  isDark ? "text-slate-200" : "text-[rgb(35,36,37)]",
+                                )}
+                              >
+                                ✓
+                              </span>
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              ) : null}
               <button
                 type="button"
                 className={classNames(
                   "inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:h-8 sm:w-8",
-                  promptOptimizePending
+                  open
                     ? isDark
-                      ? "bg-amber-400/12 text-amber-100"
-                      : "bg-amber-50 text-amber-800"
+                      ? "bg-white/10 text-[var(--color-text-primary)]"
+                      : "bg-black/5 text-gray-900"
                     : isDark
                       ? "text-[var(--color-text-secondary)] hover:bg-white/10 hover:text-[var(--color-text-primary)]"
                       : "text-[var(--color-text-secondary)] hover:bg-black/5 hover:text-gray-900",
-                  !controlDisabled &&
-                    !actionBusy &&
-                    canOptimizeComposerPrompt &&
-                    "active:scale-[0.96]",
+                  !controlDisabled && "active:scale-[0.96]",
                 )}
-                onClick={(event) => handlePromptOptimizeClick(event)}
-                disabled={
-                  controlDisabled || !!actionBusy || !assistantEnabled || !canOptimizeComposerPrompt
-                }
-                aria-label={promptOptimizeTitle}
-                title={promptOptimizeTitle}
+                onClick={() => {
+                  if (open) closePanel();
+                  else setOpen(true);
+                }}
+                disabled={controlDisabled}
+                aria-pressed={open}
+                aria-label={openButtonLabel}
+                title={openButtonLabel}
               >
-                <SparklesIcon size={15} aria-hidden="true" />
+                <MaximizeIcon size={15} />
+              </button>
+            </div>
+          </div>
+          <VoiceComposerStatus target={statusPortalTarget}>
+            {recordingGroupNoticeText ? (
+              <div
+                className={classNames(
+                  "inline-flex max-w-[min(22rem,calc(100vw-10rem))] items-start rounded-full px-2.5 py-1 text-left text-[11px]",
+                  isDark ? "bg-rose-400/12 text-rose-100" : "bg-rose-50 text-rose-800",
+                )}
+                title={recordingSettingsLockedTitle}
+                aria-live="polite"
+              >
+                <span className="min-w-0 truncate font-semibold leading-4">
+                  {recordingGroupNoticeText}
+                </span>
+              </div>
+            ) : null}
+            {!pendingPromptInOtherGroup && (pendingPromptDraft || promptDraftWaiting) ? (
+              <div
+                className={classNames(
+                  "inline-flex max-w-[min(34rem,calc(100vw-12rem))] items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px]",
+                  pendingPromptDraft
+                    ? isDark
+                      ? "bg-emerald-400/12 text-emerald-100"
+                      : "bg-emerald-50 text-emerald-900"
+                    : isDark
+                      ? "bg-amber-400/12 text-amber-100"
+                      : "bg-amber-50 text-amber-900",
+                )}
+              >
+                <div
+                  className="min-w-0 whitespace-normal break-words font-semibold leading-4"
+                  style={TWO_LINE_STATUS_STYLE}
+                >
+                  {promptDraftWaiting ? (
+                    <AnimatedShinyText
+                      className={classNames(
+                        isDark
+                          ? "bg-[linear-gradient(110deg,rgba(254,243,199,0.82)_18%,rgba(255,255,255,0.98)_48%,rgba(251,191,36,0.94)_68%,rgba(254,243,199,0.82)_84%)]"
+                          : "bg-[linear-gradient(110deg,rgb(120,53,15)_18%,rgb(217,119,6)_42%,rgb(255,255,255)_52%,rgb(146,64,14)_66%,rgb(120,53,15)_84%)]",
+                      )}
+                    >
+                      {promptDraftWaitingTitle}
+                    </AnimatedShinyText>
+                  ) : (
+                    promptDraftReadyTitle
+                  )}
+                </div>
+              </div>
+            ) : null}
+            {pendingAskFeedback && pendingAskFeedbackSummaryText ? (
+              <button
+                type="button"
+                className={classNames(
+                  "inline-flex max-w-[min(34rem,calc(100vw-12rem))] items-start rounded-full px-2.5 py-1 text-left text-[11px] transition-opacity",
+                  askFeedbackStatusClassName(pendingAskFeedbackStatus),
+                  pendingAskFeedbackHasFinalReply
+                    ? "cursor-pointer hover:opacity-85"
+                    : "cursor-default",
+                )}
+                aria-live="polite"
+                onClick={() => openVoiceReplyBubble(pendingAskFeedback)}
+                disabled={!pendingAskFeedbackHasFinalReply}
+                title={
+                  pendingAskFeedbackHasFinalReply
+                    ? t("voiceSecretaryOpenReply", { defaultValue: "Open Voice Secretary reply" })
+                    : undefined
+                }
+              >
+                <span
+                  className="min-w-0 whitespace-normal break-words font-semibold leading-4"
+                  style={TWO_LINE_STATUS_STYLE}
+                >
+                  {pendingAskFeedbackSummaryText}
+                </span>
               </button>
             ) : null}
-            {assistantEnabled ? (
-              <Popover open={showAssistantLanguageMenu} onOpenChange={setShowAssistantLanguageMenu}>
-                <PopoverTrigger asChild>
-                  <button
-                    type="button"
-                    className={classNames(
-                      "inline-flex h-11 shrink-0 items-center justify-center rounded-md px-1.5 text-[10px] font-bold tracking-[0.08em] transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:h-8",
-                      isDark
-                        ? "text-[var(--color-text-secondary)] hover:bg-white/10 hover:text-[var(--color-text-primary)]"
-                        : "text-[var(--color-text-secondary)] hover:bg-black/5 hover:text-gray-900",
-                    )}
-                    disabled={
-                      controlDisabled ||
-                      !assistantEnabled ||
-                      recording ||
-                      recordingStarting ||
-                      recognitionLanguageSaving
-                    }
-                    title={
-                      recording
-                        ? recordingSettingsLockedTitle
-                        : `${t("voiceSecretaryLanguage", { defaultValue: "Language" })}: ${configuredRecognitionLanguageLabel}`
-                    }
-                    aria-label={`${t("voiceSecretaryLanguage", { defaultValue: "Language" })}: ${configuredRecognitionLanguageLabel}`}
-                  >
-                    {configuredRecognitionLanguageShortLabel}
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent align="start" sideOffset={6} className="w-52 rounded-2xl p-1.5">
-                  <div
-                    role="menu"
-                    aria-label={t("voiceSecretaryLanguage", { defaultValue: "Language" })}
-                  >
-                    {voiceLanguageOptions.map((optionValue) => {
-                      const active = optionValue === configuredRecognitionLanguage;
-                      return (
-                        <button
-                          key={optionValue}
-                          type="button"
-                          className={classNames(
-                            "flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors",
-                            active
-                              ? isDark
-                                ? "bg-white/10"
-                                : "bg-black/5"
-                              : isDark
-                                ? "hover:bg-white/5"
-                                : "hover:bg-black/5",
-                          )}
-                          role="menuitemradio"
-                          aria-checked={active}
-                          onPointerDown={(event) => {
-                            event.preventDefault();
-                            setShowAssistantLanguageMenu(false);
-                            void updateRecognitionLanguage(optionValue);
-                          }}
-                        >
-                          <span
-                            className={classNames(
-                              "flex h-6 w-8 shrink-0 items-center justify-center rounded-md text-[10px] font-bold tracking-[0.08em]",
-                              isDark ? "bg-white/10 text-slate-200" : "bg-gray-100 text-gray-700",
-                            )}
-                          >
-                            {voiceLanguageShortLabel(optionValue)}
-                          </span>
-                          <span
-                            className={classNames(
-                              "min-w-0 flex-1 truncate text-sm font-semibold",
-                              isDark ? "text-slate-100" : "text-gray-900",
-                            )}
-                          >
-                            {voiceLanguageLabel(optionValue)}
-                          </span>
-                          {active ? (
-                            <span
-                              className={classNames(
-                                "text-xs font-semibold",
-                                isDark ? "text-slate-200" : "text-[rgb(35,36,37)]",
-                              )}
-                            >
-                              ✓
-                            </span>
-                          ) : null}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </PopoverContent>
-              </Popover>
-            ) : null}
-            <button
-              type="button"
-              className={classNames(
-                "inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:h-8 sm:w-8",
-                open
-                  ? isDark
-                    ? "bg-white/10 text-[var(--color-text-primary)]"
-                    : "bg-black/5 text-gray-900"
-                  : isDark
-                    ? "text-[var(--color-text-secondary)] hover:bg-white/10 hover:text-[var(--color-text-primary)]"
-                    : "text-[var(--color-text-secondary)] hover:bg-black/5 hover:text-gray-900",
-                !controlDisabled && "active:scale-[0.96]",
-              )}
-              onClick={() => {
-                if (open) closePanel();
-                else setOpen(true);
-              }}
-              disabled={controlDisabled}
-              aria-pressed={open}
-              aria-label={openButtonLabel}
-              title={openButtonLabel}
-            >
-              <MaximizeIcon size={15} />
-            </button>
-          </div>
-          {recordingGroupNoticeText ? (
-            <div
-              className={classNames(
-                "inline-flex max-w-[min(22rem,calc(100vw-10rem))] items-start rounded-full px-2.5 py-1 text-left text-[11px]",
-                isDark ? "bg-rose-400/12 text-rose-100" : "bg-rose-50 text-rose-800",
-              )}
-              title={recordingSettingsLockedTitle}
-              aria-live="polite"
-            >
-              <span className="min-w-0 truncate font-semibold leading-4">
-                {recordingGroupNoticeText}
-              </span>
-            </div>
-          ) : null}
-          {!pendingPromptInOtherGroup && (pendingPromptDraft || promptDraftWaiting) ? (
-            <div
-              className={classNames(
-                "inline-flex max-w-[min(34rem,calc(100vw-12rem))] items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px]",
-                pendingPromptDraft
-                  ? isDark
-                    ? "bg-emerald-400/12 text-emerald-100"
-                    : "bg-emerald-50 text-emerald-900"
-                  : isDark
-                    ? "bg-amber-400/12 text-amber-100"
-                    : "bg-amber-50 text-amber-900",
-              )}
-            >
+            {showLiveTranscriptSummary && currentLiveTranscript ? (
               <div
-                className="min-w-0 whitespace-normal break-words font-semibold leading-4"
-                style={TWO_LINE_STATUS_STYLE}
-              >
-                {promptDraftWaiting ? (
-                  <AnimatedShinyText
-                    className={classNames(
-                      isDark
-                        ? "bg-[linear-gradient(110deg,rgba(254,243,199,0.82)_18%,rgba(255,255,255,0.98)_48%,rgba(251,191,36,0.94)_68%,rgba(254,243,199,0.82)_84%)]"
-                        : "bg-[linear-gradient(110deg,rgb(120,53,15)_18%,rgb(217,119,6)_42%,rgb(255,255,255)_52%,rgb(146,64,14)_66%,rgb(120,53,15)_84%)]",
-                    )}
-                  >
-                    {promptDraftWaitingTitle}
-                  </AnimatedShinyText>
-                ) : (
-                  promptDraftReadyTitle
+                className={classNames(
+                  "inline-flex max-w-[min(40rem,calc(100vw-10rem))] items-start rounded-full px-2.5 py-1 text-left text-[11px]",
+                  isDark ? "bg-cyan-400/12 text-cyan-100" : "bg-cyan-50 text-cyan-900",
                 )}
+                aria-live="polite"
+              >
+                <span
+                  className="min-w-0 whitespace-normal break-words font-semibold leading-4"
+                  style={TWO_LINE_STATUS_STYLE}
+                >
+                  {liveTranscriptSummaryText}
+                </span>
               </div>
-            </div>
-          ) : null}
-          {pendingAskFeedback && pendingAskFeedbackSummaryText ? (
-            <button
-              type="button"
-              className={classNames(
-                "inline-flex max-w-[min(34rem,calc(100vw-12rem))] items-start rounded-full px-2.5 py-1 text-left text-[11px] transition-opacity",
-                askFeedbackStatusClassName(pendingAskFeedbackStatus),
-                pendingAskFeedbackHasFinalReply
-                  ? "cursor-pointer hover:opacity-85"
-                  : "cursor-default",
-              )}
-              aria-live="polite"
-              onClick={() => openVoiceReplyBubble(pendingAskFeedback)}
-              disabled={!pendingAskFeedbackHasFinalReply}
-              title={
-                pendingAskFeedbackHasFinalReply
-                  ? t("voiceSecretaryOpenReply", { defaultValue: "Open Voice Secretary reply" })
-                  : undefined
-              }
-            >
-              <span
-                className="min-w-0 whitespace-normal break-words font-semibold leading-4"
-                style={TWO_LINE_STATUS_STYLE}
-              >
-                {pendingAskFeedbackSummaryText}
-              </span>
-            </button>
-          ) : null}
-          {showLiveTranscriptSummary && currentLiveTranscript ? (
-            <div
-              className={classNames(
-                "inline-flex max-w-[min(40rem,calc(100vw-10rem))] items-start rounded-full px-2.5 py-1 text-left text-[11px]",
-                isDark ? "bg-cyan-400/12 text-cyan-100" : "bg-cyan-50 text-cyan-900",
-              )}
-              aria-live="polite"
-            >
-              <span
-                className="min-w-0 whitespace-normal break-words font-semibold leading-4"
-                style={TWO_LINE_STATUS_STYLE}
-              >
-                {liveTranscriptSummaryText}
-              </span>
-            </div>
-          ) : null}
+            ) : null}
+          </VoiceComposerStatus>
         </div>
       ) : (
         <button

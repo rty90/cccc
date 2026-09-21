@@ -4,6 +4,7 @@ import { buildMessageAttachmentLinks } from "../../utils/messageAttachmentLinks"
 import { isImageAttachment, isSvgAttachment } from "../../utils/messageAttachments";
 import { FileIcon } from "../Icons";
 import { ImagePreview } from "./ImagePreview";
+import { AuthenticatedDownloadLink } from "../AuthenticatedDownloadLink";
 
 export function MessageAttachments({
   attachments,
@@ -84,11 +85,11 @@ export function MessageAttachments({
               fallbackLabel: "file",
             });
             return (
-              <a
+              <AuthenticatedDownloadLink
                 key={`file:${attachmentKeyPrefix}:${index}`}
                 href={links.downloadHref}
                 className={classNames(
-                  "inline-flex max-w-full items-center gap-2 rounded-full px-2.5 py-1.5 text-[11px] transition-colors",
+                  "inline-flex max-w-full items-center gap-2 rounded-full px-2.5 py-1.5 text-xs transition-colors",
                   "border border-[var(--glass-border-subtle)] bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--glass-tab-bg)]",
                 )}
                 title={downloadTitle(links.label)}
@@ -101,7 +102,7 @@ export function MessageAttachments({
                 >
                   {links.label}
                 </span>
-              </a>
+              </AuthenticatedDownloadLink>
             );
           })}
         </div>

@@ -140,7 +140,72 @@ describe("useUIStore sidebar width", () => {
     const mod = await import("../../src/stores/useUIStore");
     expect(mod.getChatSession("g-demo", mod.useUIStore.getState().chatSessions)).toMatchObject({
       presentationDockOpen: false,
-      presentationDisplayMode: "modal",
+      presentationDisplayMode: "split",
+      presentationCompact: true,
     });
+  });
+});
+
+describe("Group work view preferences", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    localStorageMock.clear();
+  });
+  it("restores independent views and pages after a browser reload", async () => {
+    let mod = await import("../../src/stores/useUIStore");
+    mod.useUIStore.getState().setGroupWorkView("g1", "terminals");
+    mod.useUIStore.getState().setGroupTerminalPage("g1", 2);
+    mod.useUIStore.getState().setGroupWorkView("g2", "messages");
+    mod.useUIStore.getState().setGroupTerminalPage("g2", 1);
+    vi.resetModules();
+    mod = await import("../../src/stores/useUIStore");
+    expect(mod.getChatSession("g1", mod.useUIStore.getState().chatSessions)).toMatchObject({
+      workView: "terminals",
+      terminalPage: 2,
+    });
+    expect(mod.getChatSession("g2", mod.useUIStore.getState().chatSessions)).toMatchObject({
+      workView: "messages",
+      terminalPage: 1,
+    });
+    expect(mod.groupMessagesVisible("g1", mod.useUIStore.getState())).toBe(false);
+    expect(mod.groupMessagesVisible("g2", mod.useUIStore.getState())).toBe(true);
+  });
+  it("ignores malformed preferences and never treats hidden messages as visible", async () => {
+    localStorageMock.setItem(
+      "cccc-chat-sessions",
+      JSON.stringify({
+        g1: { workView: {}, terminalPage: -8 },
+        g2: { workView: "terminals", terminalPage: 1.5 },
+      }),
+    );
+    const mod = await import("../../src/stores/useUIStore");
+    expect(mod.getChatSession("g1", mod.useUIStore.getState().chatSessions)).toMatchObject({
+      workView: "messages",
+      terminalPage: 0,
+    });
+    expect(mod.getChatSession("g2", mod.useUIStore.getState().chatSessions).terminalPage).toBe(0);
+    mod.useUIStore.getState().setSmallScreen(true);
+    mod.useUIStore.getState().setChatMobileSurface("g1", "presentation");
+    expect(mod.groupMessagesVisible("g1", mod.useUIStore.getState())).toBe(false);
+    mod.useUIStore.getState().setSmallScreen(false);
+    mod.useUIStore.getState().setActiveTab("actor-1");
+    expect(mod.groupMessagesVisible("g1", mod.useUIStore.getState())).toBe(false);
+  });
+});
+
+describe("workspace editor visibility", () => {
+  it("keeps a file tree compatible with visible chat, but excludes the covering file viewer", async () => {
+    const mod = await import("../../src/stores/useUIStore");
+    const store = mod.useUIStore;
+    store.getState().setActiveTab("chat");
+    store.getState().setSmallScreen(false);
+    store.getState().setGroupWorkView("files-group", "messages");
+    store.getState().setChatFilesPanelOpen("files-group", true);
+    expect(mod.groupMessagesVisible("files-group", store.getState())).toBe(true);
+    store.getState().setWorkspaceFileViewerGroupId("files-group");
+    expect(mod.groupMessagesVisible("files-group", store.getState())).toBe(false);
+    expect(mod.groupMessagesVisible("another-group", store.getState())).toBe(true);
+    store.getState().setWorkspaceFileViewerGroupId("");
+    expect(mod.groupMessagesVisible("files-group", store.getState())).toBe(true);
   });
 });

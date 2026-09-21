@@ -57,6 +57,7 @@ impl CodexVoiceCall {
         self.lease.heartbeat()
     }
 
+    #[cfg(test)]
     pub async fn begin_provider_event(
         &self,
         expected_generation: &str,
@@ -71,6 +72,40 @@ impl CodexVoiceCall {
             .map(Some)
     }
 
+    pub async fn route_provider_event(
+        &self,
+        expected_generation: &str,
+        event: &Value,
+    ) -> Result<Option<VoiceDelegationAdmission>> {
+        self.require_generation(expected_generation)?;
+        let Some(delegation) = parse_provider_delegation(event)? else {
+            return Ok(None);
+        };
+        validate_delegation(&delegation)?;
+        let admission = self
+            .analyst
+            .lifecycle
+            .admit_voice(&delegation.id, &delegation.text)
+            .await?;
+        if let VoiceDelegationAdmission::Turn(receipt) = &admission {
+            self.follow_analyst_turn(receipt).await;
+        }
+        Ok(Some(admission))
+    }
+
+    pub async fn reject_native_delegation(
+        &self,
+        expected_generation: &str,
+        delegation_id: &str,
+    ) -> Result<bool> {
+        self.require_generation(expected_generation)?;
+        self.analyst
+            .lifecycle
+            .reject_native_voice(delegation_id)
+            .await
+    }
+
+    #[cfg(test)]
     pub(super) async fn begin_delegation(
         &self,
         expected_generation: &str,
@@ -78,11 +113,25 @@ impl CodexVoiceCall {
     ) -> Result<TurnReceipt> {
         self.require_generation(expected_generation)?;
         validate_delegation(delegation)?;
-        let turn = self
+        let admission = self
             .analyst
             .lifecycle
-            .begin_voice(&delegation.id, &delegation.text)
+            .admit_voice(&delegation.id, &delegation.text)
             .await?;
+        let turn = match admission {
+            VoiceDelegationAdmission::Turn(turn) => turn,
+            VoiceDelegationAdmission::NativeInput { delegation_id, .. } => {
+                let _ = self
+                    .analyst
+                    .lifecycle
+                    .reject_native_voice(&delegation_id)
+                    .await?;
+                bail!("test caller cannot deliver a native Runtime Voice input")
+            }
+            VoiceDelegationAdmission::NativeInputPending => {
+                bail!("test caller cannot replay a pending native Runtime Voice input")
+            }
+        };
         self.follow_analyst_turn(&turn).await;
         Ok(turn)
     }
@@ -118,9 +167,17 @@ impl CodexVoiceCall {
         state
             .projections
             .entry(receipt.turn_id.clone())
-            .and_modify(|projection| projection.delegation_id = receipt.delegation_id.clone())
+            .and_modify(|projection| {
+                projection.delegation_id = receipt.delegation_id.clone();
+                if !projection.delegation_ids.contains(&receipt.delegation_id) {
+                    projection
+                        .delegation_ids
+                        .push(receipt.delegation_id.clone());
+                }
+            })
             .or_insert_with(|| CallProjection {
                 delegation_id: receipt.delegation_id.clone(),
+                delegation_ids: vec![receipt.delegation_id.clone()],
                 ..CallProjection::default()
             });
     }
@@ -171,7 +228,7 @@ impl CodexVoiceCall {
         let target = projection.delegation_id.clone();
         let had_progress = projection.progress.streamed();
         let remaining = projection.progress.finish(result);
-        let commands = if had_progress {
+        let commands = if had_progress || projection.delegation_ids.len() > 1 {
             remaining
                 .into_iter()
                 .flat_map(|chunk| session_context_commands(&chunk))
@@ -185,6 +242,7 @@ impl CodexVoiceCall {
         projection.projected = true;
         Ok(Some(FinalProjection {
             delegation_id: target,
+            delegation_ids: projection.delegation_ids.clone(),
             commands,
         }))
     }
@@ -203,6 +261,7 @@ impl CodexVoiceCall {
             return Ok(false);
         }
         projection.projected = true;
+        projection.progress = Default::default();
         Ok(true)
     }
 

@@ -4,31 +4,29 @@ mod events_migration;
 mod events_migration_tests;
 mod managed_reader;
 mod output;
-mod protocol;
 mod provider_cli;
 mod session;
 mod supervisor;
 #[cfg(test)]
 mod supervisor_managed_tests;
 
+#[cfg(test)]
+pub(crate) use managed_reader::verify_claude_reader_release;
+
 pub(crate) use events::{
     append as append_event, append_with_dedupe as append_event_with_dedupe,
     contains_dedupe as contains_event_dedupe,
 };
+pub(crate) use supervisor::registered_running;
 
-use cccc_contracts::ActorRuntime;
 use cccc_core::HomeLayout;
 use serde::Serialize;
-use serde_json::Value;
-use std::collections::HashMap;
 use std::future::Future;
-use std::process::{Child, ChildStdin};
-use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::sync::mpsc::{SyncSender, sync_channel};
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Mutex, OnceLock};
 
 pub use supervisor::{
-    restore, running, start, status, stop, stop_all, stop_group, submit, supports,
+    kill_all_requests, running, start, status, stop, stop_all, stop_group, submit_batch, supports,
 };
 
 pub(super) fn uses_managed_session(actor: &cccc_contracts::Actor) -> bool {
@@ -48,70 +46,21 @@ pub struct HeadlessStatus {
 }
 
 #[derive(Debug)]
-struct Turn {
-    text: String,
-    event_id: String,
-    control_kind: String,
-}
-
-#[derive(Debug)]
 struct ActiveTurn {
-    event_id: String,
     turn_id: String,
-    control_kind: String,
-    external: bool,
-    output_state: TurnOutputState,
-    pending_messages: Vec<Value>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TurnOutputState {
-    Buffering,
-    Draining,
-    Announced,
 }
 
 struct Session {
     home: HomeLayout,
     group_id: String,
     actor_id: String,
-    runtime: ActorRuntime,
-    transport: SessionTransport,
+    managed: std::sync::Arc<super::codex_voice_analyst::AnalystSession>,
+    has_terminal: AtomicBool,
     status: Mutex<HeadlessStatus>,
     stopped: AtomicBool,
-    next_request_id: AtomicU64,
-    pending: Mutex<HashMap<u64, SyncSender<Value>>>,
-    thread_id: Mutex<String>,
-    resumed_provider_session_id: Mutex<String>,
+    stop_lock: Mutex<()>,
     startup_prompt: Mutex<Option<String>>,
     active_turn: Mutex<Option<ActiveTurn>>,
-    completion: (Mutex<u64>, Condvar),
-    turns: SyncSender<Turn>,
-}
-
-impl Session {
-    fn is_managed(&self) -> bool {
-        matches!(&self.transport, SessionTransport::ManagedAgent { .. })
-    }
-
-    fn uses_structured_turn_protocol(&self) -> bool {
-        self.runtime == ActorRuntime::Codex || self.is_managed()
-    }
-}
-
-enum SessionTransport {
-    Process {
-        child: Mutex<Child>,
-        stdin: Mutex<ChildStdin>,
-    },
-    ManagedAgent {
-        session: std::sync::Arc<super::codex_voice_analyst::AnalystSession>,
-        has_terminal: AtomicBool,
-    },
-}
-
-fn turn_channel() -> (SyncSender<Turn>, std::sync::mpsc::Receiver<Turn>) {
-    sync_channel(256)
 }
 
 fn poisoned() -> std::io::Error {
@@ -128,6 +77,20 @@ fn managed_runtime() -> &'static tokio::runtime::Runtime {
             .build()
             .expect("build shared managed Agent runtime")
     })
+}
+
+fn run_managed_launch<F, T>(future: F) -> std::io::Result<T>
+where
+    F: Future<Output = std::io::Result<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    // Runtime::block_on polls its root future on the caller. Grok ACP binds
+    // itself to the spawning OS thread on Linux, so a restore/request thread
+    // must only wait here; the daemon-lifetime workers must perform the launch.
+    let task = managed_runtime().spawn(future);
+    block_on_managed(task).map_err(|error| {
+        std::io::Error::other(format!("managed Agent launch task failed: {error}"))
+    })?
 }
 
 fn block_on_managed<F>(future: F) -> F::Output

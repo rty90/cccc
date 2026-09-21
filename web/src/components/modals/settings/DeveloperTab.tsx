@@ -1,3 +1,8 @@
+import { Switch } from "../../ui/switch";
+import { useState } from "react";
+import { copyTextToClipboard } from "../../../utils/copy";
+import { buildMismatch, type RuntimeBuildInfo } from "../../../utils/runtimeBuildInfo";
+import { Button } from "../../ui/button";
 // DeveloperTab configures developer mode.
 import { useTranslation } from "react-i18next";
 import { SelectCombobox } from "../../SelectCombobox";
@@ -9,9 +14,8 @@ import {
   settingsWorkspaceActionBarClass,
   settingsWorkspaceBodyClass,
   settingsWorkspaceHeaderClass,
-  settingsWorkspacePanelClass,
   settingsWorkspaceShellClass,
-  settingsWorkspaceSoftPanelClass,
+  settingsWorkspaceSectionClass,
 } from "./types";
 import type { RuntimeVisibilityMode } from "../../../utils/runtimeVisibility";
 
@@ -19,6 +23,7 @@ interface DeveloperTabProps {
   isDark: boolean;
   groupId?: string;
   runtimeVersion: string;
+  runtimeBuildInfo?: RuntimeBuildInfo;
   daemonVersion: string;
   runtimeInfoErr: string;
   developerMode: boolean;
@@ -70,6 +75,7 @@ export function DeveloperTab({
   isDark: _isDark,
   groupId,
   runtimeVersion,
+  runtimeBuildInfo,
   daemonVersion,
   runtimeInfoErr,
   developerMode,
@@ -107,6 +113,7 @@ export function DeveloperTab({
   onReconcileRegistry,
 }: DeveloperTabProps) {
   const { t } = useTranslation("settings");
+  const [copyStatus, setCopyStatus] = useState<"" | "copied" | "copyFailed">("");
   const missing = Array.isArray(registryResult?.missing_group_ids)
     ? registryResult!.missing_group_ids
     : [];
@@ -117,7 +124,8 @@ export function DeveloperTab({
     ? registryResult!.removed_group_ids
     : [];
   const versionMismatch = Boolean(
-    runtimeVersion && daemonVersion && runtimeVersion !== daemonVersion,
+    (runtimeVersion && daemonVersion && runtimeVersion !== daemonVersion) ||
+    buildMismatch(runtimeBuildInfo),
   );
 
   return (
@@ -131,7 +139,7 @@ export function DeveloperTab({
             <p className="mt-1 text-xs text-[var(--color-text-muted)]">
               {t("developer.description")}
             </p>
-            <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/15 px-3 py-2 text-[11px] text-amber-600 dark:text-amber-400">
+            <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/15 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
               <div className="font-medium">{t("developer.warningTitle")}</div>
               <div className="mt-1">{t("developer.warningText")}</div>
             </div>
@@ -139,7 +147,7 @@ export function DeveloperTab({
         </div>
 
         <div className={settingsWorkspaceBodyClass}>
-          <div className={settingsWorkspacePanelClass(_isDark)}>
+          <div className={settingsWorkspaceSectionClass}>
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-[var(--color-text-primary)]">
@@ -150,7 +158,7 @@ export function DeveloperTab({
                 </div>
               </div>
               {versionMismatch ? (
-                <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2.5 py-1 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+                <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2.5 py-1 text-xs font-medium text-amber-700 dark:text-amber-300">
                   {t("developer.versionMismatchBadge")}
                 </span>
               ) : null}
@@ -161,16 +169,16 @@ export function DeveloperTab({
             ) : null}
 
             <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div className={settingsWorkspaceSoftPanelClass(_isDark)}>
-                <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--color-text-muted)]">
+              <div className="min-w-0">
+                <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-muted)]">
                   {t("developer.ccccVersion")}
                 </div>
                 <div className="mt-1 text-sm font-semibold text-[var(--color-text-primary)]">
                   {runtimeVersion || "—"}
                 </div>
               </div>
-              <div className={settingsWorkspaceSoftPanelClass(_isDark)}>
-                <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--color-text-muted)]">
+              <div className="min-w-0">
+                <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-muted)]">
                   {t("developer.daemonVersion")}
                 </div>
                 <div className="mt-1 text-sm font-semibold text-[var(--color-text-primary)]">
@@ -181,12 +189,60 @@ export function DeveloperTab({
 
             {versionMismatch ? (
               <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                {t("developer.versionMismatchHint")}
+                {t("developer.buildMismatchHint")}
               </div>
             ) : null}
+            {runtimeBuildInfo && (
+              <div className="mt-4 space-y-3">
+                <dl className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2">
+                  {(
+                    [
+                      "webSource",
+                      "daemonSource",
+                      "webAssets",
+                      "servedEntry",
+                      "loadedEntry",
+                    ] as const
+                  ).map((key) => (
+                    <div key={key} className="min-w-0">
+                      <dt className="text-[var(--color-text-muted)]">{t(`developer.${key}`)}</dt>
+                      <dd className="mt-1 break-all font-mono text-[var(--color-text-secondary)]">
+                        {runtimeBuildInfo[key] || "—"}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={async () => {
+                      const ok = await copyTextToClipboard(
+                        JSON.stringify(
+                          {
+                            web_version: runtimeVersion,
+                            daemon_version: daemonVersion,
+                            ...runtimeBuildInfo,
+                          },
+                          null,
+                          2,
+                        ),
+                      );
+                      setCopyStatus(ok ? "copied" : "copyFailed");
+                    }}
+                  >
+                    {t("developer.copyBuildInfo")}
+                  </Button>
+                  <span role="status" className="text-xs text-[var(--color-text-secondary)]">
+                    {copyStatus ? t(`developer.${copyStatus}`) : ""}
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
-          <div className={settingsWorkspacePanelClass(_isDark)}>
+          <div className={settingsWorkspaceSectionClass}>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-[var(--color-text-primary)]">
@@ -196,32 +252,15 @@ export function DeveloperTab({
                   {t("developer.enableHint")}
                 </div>
               </div>
-              <label className="inline-flex cursor-pointer items-center select-none">
-                <input
-                  type="checkbox"
-                  role="switch"
-                  className="sr-only"
-                  checked={developerMode}
-                  onChange={(e) => setDeveloperMode(e.target.checked)}
-                />
-                <div
-                  className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors duration-300 ease-spring ${
-                    developerMode
-                      ? "border-emerald-500 bg-emerald-500"
-                      : "border-[var(--glass-border-subtle)] bg-[var(--color-bg-secondary)]"
-                  }`}
-                >
-                  <div
-                    className={`absolute left-0.5 h-6 w-6 rounded-full bg-white shadow-[0_2px_4px_rgba(0,0,0,0.08),0_1px_1px_rgba(0,0,0,0.04)] transition-transform duration-300 ease-spring ${
-                      developerMode ? "translate-x-5" : "translate-x-0"
-                    }`}
-                  />
-                </div>
-              </label>
+              <Switch
+                aria-label={t("developer.enableDeveloperMode")}
+                checked={developerMode}
+                onChange={(e) => setDeveloperMode(e.target.checked)}
+              />
             </div>
 
             <div className="mt-4 space-y-4">
-              <div className={settingsWorkspaceSoftPanelClass(_isDark)}>
+              <div className="min-w-0">
                 <label className={labelClass()}>{t("developer.logLevel")}</label>
                 <SelectCombobox
                   items={[
@@ -244,7 +283,7 @@ export function DeveloperTab({
                 </div>
 
                 <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <div className={settingsWorkspaceSoftPanelClass(_isDark)}>
+                  <div className="min-w-0">
                     <label className={labelClass()}>{t("developer.peerRuntime")}</label>
                     <SelectCombobox
                       items={[
@@ -258,12 +297,12 @@ export function DeveloperTab({
                       ariaLabel={t("developer.peerRuntime")}
                       className={inputClass()}
                     />
-                    <div className="mt-1 text-[11px] text-[var(--color-text-muted)]">
+                    <div className="mt-1 text-xs text-[var(--color-text-muted)]">
                       {t("developer.peerRuntimeHint")}
                     </div>
                   </div>
 
-                  <div className={settingsWorkspaceSoftPanelClass(_isDark)}>
+                  <div className="min-w-0">
                     <label className={labelClass()}>{t("developer.assistantRuntime")}</label>
                     <SelectCombobox
                       items={[
@@ -277,7 +316,7 @@ export function DeveloperTab({
                       ariaLabel={t("developer.assistantRuntime")}
                       className={inputClass()}
                     />
-                    <div className="mt-1 text-[11px] text-[var(--color-text-muted)]">
+                    <div className="mt-1 text-xs text-[var(--color-text-muted)]">
                       {t("developer.assistantRuntimeHint")}
                     </div>
                   </div>
@@ -293,7 +332,7 @@ export function DeveloperTab({
                 </div>
 
                 <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <div className={settingsWorkspaceSoftPanelClass(_isDark)}>
+                  <div className="min-w-0">
                     <label className={labelClass()}>{t("developer.ptyBacklog")}</label>
                     <input
                       type="number"
@@ -303,11 +342,11 @@ export function DeveloperTab({
                       onChange={(e) => setTerminalBacklogMiB(Number(e.target.value || 10))}
                       className={inputClass()}
                     />
-                    <div className="mt-1 text-[11px] text-[var(--color-text-muted)]">
+                    <div className="mt-1 text-xs text-[var(--color-text-muted)]">
                       {t("developer.ptyBacklogHint")}
                     </div>
                   </div>
-                  <div className={settingsWorkspaceSoftPanelClass(_isDark)}>
+                  <div className="min-w-0">
                     <label className={labelClass()}>{t("developer.webScrollback")}</label>
                     <input
                       type="number"
@@ -317,7 +356,7 @@ export function DeveloperTab({
                       onChange={(e) => setTerminalScrollbackLines(Number(e.target.value || 8000))}
                       className={inputClass()}
                     />
-                    <div className="mt-1 text-[11px] text-[var(--color-text-muted)]">
+                    <div className="mt-1 text-xs text-[var(--color-text-muted)]">
                       {t("developer.webScrollbackHint")}
                     </div>
                   </div>
@@ -340,7 +379,7 @@ export function DeveloperTab({
       {/* Registry maintenance */}
       <div className={settingsWorkspaceShellClass(_isDark)}>
         <div className={settingsWorkspaceHeaderClass(_isDark)}>
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex w-full flex-wrap items-center justify-between gap-3">
             <div>
               <div className="text-sm font-semibold text-[var(--color-text-primary)]">
                 {t("developer.registryTitle")}
@@ -349,7 +388,7 @@ export function DeveloperTab({
                 {t("developer.registryDescription")}
               </div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <button
                 onClick={onPreviewRegistry}
                 disabled={registryBusy}
@@ -412,7 +451,7 @@ export function DeveloperTab({
       {/* Debug Snapshot */}
       <div className={settingsWorkspaceShellClass(_isDark)}>
         <div className={settingsWorkspaceHeaderClass(_isDark)}>
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex w-full flex-wrap items-center justify-between gap-3">
             <div>
               <div className="text-sm font-semibold text-[var(--color-text-primary)]">
                 {t("developer.debugSnapshot")}
@@ -421,7 +460,7 @@ export function DeveloperTab({
                 {t("developer.debugSnapshotHint")}
               </div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <button
                 onClick={onLoadDebugSnapshot}
                 disabled={!developerMode || !groupId || debugSnapshotBusy}
@@ -460,7 +499,7 @@ export function DeveloperTab({
       {/* Log Tail */}
       <div className={settingsWorkspaceShellClass(_isDark)}>
         <div className={settingsWorkspaceHeaderClass(_isDark)}>
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex w-full flex-wrap items-center justify-between gap-3">
             <div>
               <div className="text-sm font-semibold text-[var(--color-text-primary)]">
                 {t("developer.logTail")}
@@ -469,7 +508,7 @@ export function DeveloperTab({
                 {t("developer.logTailHint")}
               </div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <button
                 onClick={onLoadLogTail}
                 disabled={!developerMode || logBusy}
@@ -490,7 +529,7 @@ export function DeveloperTab({
 
         <div className={settingsWorkspaceBodyClass}>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div className={settingsWorkspaceSoftPanelClass(_isDark)}>
+            <div className="min-w-0">
               <label className={labelClass()}>{t("developer.component")}</label>
               <SelectCombobox
                 items={[
@@ -506,7 +545,7 @@ export function DeveloperTab({
                 className={inputClass()}
               />
             </div>
-            <div className={settingsWorkspaceSoftPanelClass(_isDark)}>
+            <div className="min-w-0">
               <label className={labelClass()}>{t("developer.lines")}</label>
               <input
                 type="number"

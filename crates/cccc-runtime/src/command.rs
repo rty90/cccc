@@ -127,43 +127,6 @@ pub fn deepseek_bootstrap_preflight(env: &BTreeMap<String, String>) -> Result<()
     Ok(())
 }
 
-const DEEPSEEK_NODE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// `node --version`, bounded: a wedged Node (seen with a stalled NODE_OPTIONS resolver) must fail the preflight
-/// instead of hanging the actor start forever.
-fn bounded_node_version(mut command: Command) -> Option<String> {
-    let mut child = command
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    let mut stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut buf = String::new();
-        std::io::Read::read_to_string(&mut stdout, &mut buf).ok();
-        buf
-    });
-    let started = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let out = reader.join().unwrap_or_default();
-                return status.success().then(|| out.trim().to_owned());
-            }
-            Ok(None) if started.elapsed() < DEEPSEEK_NODE_PROBE_TIMEOUT => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
-}
-
 fn deepseek_node_preflight(env: &BTreeMap<String, String>) -> Result<(), String> {
     let mut node_command = Command::new("node");
     for (key, value) in env {
@@ -171,7 +134,18 @@ fn deepseek_node_preflight(env: &BTreeMap<String, String>) -> Result<(), String>
             node_command.env(key, value);
         }
     }
-    let node = bounded_node_version(node_command).unwrap_or_default();
+    let output = crate::capture_command_blocking(
+        node_command.arg("--version"),
+        None,
+        std::time::Duration::from_secs(5),
+        32_768,
+    )
+    .map_err(|error| format!("could not determine Node version: {error}"))?;
+    let node = if output.status.success() && !output.stdout_truncated {
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    } else {
+        String::new()
+    };
     if !node_supported(&node) {
         return Err(format!(
             "DeepSeek Harness requires Node {DEEPSEEK_NODE_RANGE} (found {})",
@@ -476,7 +450,7 @@ const fn display_name(runtime: ActorRuntime) -> &'static str {
         ActorRuntime::Droid => "Factory Droid",
         ActorRuntime::Grok => "Grok",
         ActorRuntime::Hermes => "Hermes",
-        ActorRuntime::Kimi => "Kimi CLI",
+        ActorRuntime::Kimi => "Kimi Code",
         ActorRuntime::Opencode => "OpenCode",
         ActorRuntime::WebModel => "Web Model",
         ActorRuntime::Custom => "Custom",
@@ -512,7 +486,9 @@ pub fn is_canonical_deepseek_profile_manifest(manifest: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{deepseek_home, deepseek_preflight, default_command, detect_runtimes};
+    #[cfg(unix)]
+    use super::deepseek_preflight;
+    use super::{deepseek_home, default_command, detect_runtimes};
     use cccc_contracts::ActorRuntime;
     use std::collections::BTreeMap;
 

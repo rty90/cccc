@@ -1,24 +1,15 @@
-import { useCallback, useState } from "react";
-import {
-  FloatingPortal,
-  autoUpdate,
-  flip,
-  offset,
-  shift,
-  useDismiss,
-  useFloating,
-  useInteractions,
-  useRole,
-} from "@floating-ui/react";
+import { Archive, ArchiveRestore, Link2 } from "lucide-react";
+import { GroupConnectionBadge } from "../../features/connect/GroupConnectionBadge";
+import type { GroupConnectionCount } from "../../features/connect/protocol";
+import { useCallback } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { GroupMeta } from "../../types";
 import { classNames } from "../../utils/classNames";
 import { getGroupStatusFromSource } from "../../utils/groupStatus";
-import { GripIcon, MoreIcon } from "../Icons";
-import { IconButton } from "../ui/icon-button";
-import { GroupMenuAction } from "./GroupMenuAction";
+import { useGroupMenu, type GroupMenuActionItem } from "./useGroupMenu";
 import { GroupStatusIndicator } from "./GroupStatusIndicator";
+import { GroupItemMenuTrigger } from "./GroupItemMenuTrigger";
 
 interface SortableGroupItemProps {
   group: GroupMeta;
@@ -29,8 +20,16 @@ interface SortableGroupItemProps {
   dragDisabled?: boolean;
   menuActionLabel?: string;
   menuAriaLabel?: string;
-  dragHandleLabel: string;
   onMenuAction?: () => void;
+  /** Launch/pause/stop entries for this group; listed before the other actions. */
+  runActions?: GroupMenuActionItem[];
+  /** Destructive entries for this group; listed after the other actions. */
+  trailingActions?: GroupMenuActionItem[];
+  connectionsLabel?: string;
+  connection?: GroupConnectionCount;
+  onOpenConnections?: () => void;
+  /** Move this group one place up (-1) or down (1) in its section. */
+  onMoveBy?: (delta: -1 | 1) => void;
   onSelect: () => void;
   onWarm?: () => void;
 }
@@ -44,13 +43,33 @@ export function SortableGroupItem({
   dragDisabled = false,
   menuActionLabel,
   menuAriaLabel,
-  dragHandleLabel,
   onMenuAction,
+  runActions,
+  trailingActions,
+  connectionsLabel,
+  connection,
+  onOpenConnections,
+  onMoveBy,
   onSelect,
   onWarm,
 }: SortableGroupItemProps) {
   const gid = String(group.group_id || "");
-  const [menuOpen, setMenuOpen] = useState(false);
+  const menu = useGroupMenu(menuAriaLabel || menuActionLabel || "", [
+    ...(runActions ?? []),
+    ...(onOpenConnections && connectionsLabel
+      ? [{ label: connectionsLabel, icon: <Link2 size={15} />, onClick: onOpenConnections }]
+      : []),
+    ...(onMenuAction && menuActionLabel
+      ? [
+          {
+            label: menuActionLabel,
+            icon: isArchived ? <ArchiveRestore size={15} /> : <Archive size={15} />,
+            onClick: onMenuAction,
+          },
+        ]
+      : []),
+    ...(trailingActions ?? []),
+  ]);
 
   const {
     attributes,
@@ -63,73 +82,29 @@ export function SortableGroupItem({
   } = useSortable({ id: gid, disabled: dragDisabled });
   const style = { transform: CSS.Transform.toString(transform), transition };
   const status = getGroupStatusFromSource(group);
-  const { refs, floatingStyles, context } = useFloating({
-    open: menuOpen,
-    onOpenChange: setMenuOpen,
-    placement: "bottom-end",
-    middleware: [offset(8), flip({ padding: 12 }), shift({ padding: 12 })],
-    whileElementsMounted: autoUpdate,
-    strategy: "fixed",
-  });
-  const dismiss = useDismiss(context);
-  const role = useRole(context, { role: "menu" });
-  const { getFloatingProps } = useInteractions([dismiss, role]);
   const setItemActivatorRef = useCallback(
     (node: HTMLElement | null) => {
       setActivatorNodeRef(node);
-      refs.setReference(node);
     },
-    [refs, setActivatorNodeRef],
+    [setActivatorNodeRef],
   );
-  const setFloating = useCallback((node: HTMLElement | null) => refs.setFloating(node), [refs]);
-
-  const handleContextMenu = (event: React.MouseEvent<HTMLElement>) => {
-    if (!onMenuAction || !menuActionLabel) return;
-    event.preventDefault();
-    refs.setPositionReference({
-      getBoundingClientRect: () => new DOMRect(event.clientX, event.clientY, 0, 0),
-    });
-    setMenuOpen(true);
-  };
-
+  // The row overrides dnd-kit's keyboard listener so Enter and Space keep
+  // selecting the group. Reordering from the keyboard therefore needs its own
+  // entry: Alt with an arrow moves the row one place without a pick-up phase.
+  const keyboardReorder = !!onMoveBy && !dragDisabled;
   const handleItemKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     if (event.target !== event.currentTarget) return;
-    if (
-      onMenuAction &&
-      menuActionLabel &&
-      (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
-    ) {
+    if (keyboardReorder && event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
       event.preventDefault();
-      refs.setPositionReference(event.currentTarget);
-      setMenuOpen(true);
+      onMoveBy(event.key === "ArrowUp" ? -1 : 1);
       return;
     }
+    if (menu.onKeyDown(event)) return;
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       onSelect();
     }
   };
-
-  const actionMenu = onMenuAction && menuActionLabel && (
-    <FloatingPortal>
-      {menuOpen && (
-        <div
-          ref={setFloating}
-          style={floatingStyles}
-          {...getFloatingProps({ "aria-label": menuAriaLabel || menuActionLabel })}
-          className="z-max min-w-[160px] rounded-xl p-1.5 shadow-2xl glass-panel"
-        >
-          <GroupMenuAction
-            label={menuActionLabel}
-            onClick={() => {
-              setMenuOpen(false);
-              onMenuAction();
-            }}
-          />
-        </div>
-      )}
-    </FloatingPortal>
-  );
 
   if (isCollapsed) {
     const initial = (group.title || gid).charAt(0).toUpperCase();
@@ -146,8 +121,9 @@ export function SortableGroupItem({
             isActive ? "glass-group-item-active" : "glass-group-item hover:scale-105",
           )}
           onClick={onSelect}
-          onContextMenu={handleContextMenu}
+          onContextMenu={menu.onContextMenu}
           onKeyDown={handleItemKeyDown}
+          aria-keyshortcuts={keyboardReorder ? "Alt+ArrowUp Alt+ArrowDown" : undefined}
           onMouseEnter={onWarm}
           onFocus={onWarm}
           title={group.title || gid}
@@ -167,7 +143,7 @@ export function SortableGroupItem({
             className="absolute -bottom-0.5 -right-0.5 ring-2 ring-[var(--color-bg-primary)]"
           />
         </button>
-        {actionMenu}
+        {menu.menu}
       </div>
     );
   }
@@ -179,8 +155,26 @@ export function SortableGroupItem({
       className={classNames("group/item relative", isDragging && "z-50")}
     >
       <div
+        // The row itself is the drag activator. The explicit role, tabIndex
+        // and onKeyDown below deliberately override what dnd-kit spreads
+        // here: Enter/Space keep selecting the group, and Alt+Arrow moves it.
+        // dnd-kit's own aria-roledescription and aria-describedby survive the
+        // override, so the row still announces itself as sortable.
+        ref={setItemActivatorRef}
+        {...attributes}
+        {...listeners}
         className={classNames(
           "w-full px-3 py-3 rounded-xl transition-all min-h-[48px] flex items-center gap-2 relative",
+          // The removed grip carried select-none; the row now hosts the touch
+          // long press instead, so it needs the same protection. Without it a
+          // hold over the group title starts the browser's own text selection
+          // or iOS callout, which competes with the drag it is meant to begin.
+          "select-none [-webkit-touch-callout:none]",
+          // Without a handle, the cursor is the only affordance left that
+          // tells a mouse user the row can be dragged. `.glass-group-item`
+          // sets `cursor: pointer` from an unlayered rule, which outranks a
+          // plain utility no matter the order, so this has to be important.
+          !dragDisabled && "!cursor-grab active:!cursor-grabbing",
           isDragging && "opacity-70 shadow-lg ring-2 ring-[rgb(143,163,187)]/24",
           isActive ? "glass-group-item-active" : "glass-group-item",
           isArchived && !isActive && "opacity-90",
@@ -188,8 +182,9 @@ export function SortableGroupItem({
         role="button"
         tabIndex={0}
         onClick={onSelect}
-        onContextMenu={handleContextMenu}
+        onContextMenu={menu.onContextMenu}
         onKeyDown={handleItemKeyDown}
+        aria-keyshortcuts={keyboardReorder ? "Alt+ArrowUp Alt+ArrowDown" : undefined}
       >
         <div
           className="flex-1 min-w-0 flex items-center justify-between gap-2 text-left"
@@ -210,47 +205,17 @@ export function SortableGroupItem({
             </span>
           </div>
         </div>
-        {!dragDisabled && (
-          <IconButton
-            ref={setItemActivatorRef}
-            type="button"
-            variant="ghost"
-            size="sm"
-            label={dragHandleLabel}
-            style={{ touchAction: "none" }}
-            className="shrink-0 touch-none cursor-grab select-none text-[var(--color-text-tertiary)] opacity-70 active:cursor-grabbing md:opacity-0 md:group-hover/item:opacity-70 md:focus-visible:opacity-100"
-            {...attributes}
-            {...listeners}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <GripIcon size={16} />
-          </IconButton>
-        )}
-        {onMenuAction && menuActionLabel && (
-          <IconButton
-            type="button"
-            variant="ghost"
-            size="sm"
-            label={menuAriaLabel || menuActionLabel}
-            className={classNames(
-              "shrink-0 text-[var(--color-text-tertiary)] opacity-70 hover:opacity-100 focus-visible:opacity-100 md:pointer-fine:hidden",
-              menuOpen &&
-                "bg-[var(--glass-tab-bg)] text-[var(--color-text-primary)] opacity-100 shadow-sm",
-            )}
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={(event) => {
-              event.stopPropagation();
-              refs.setPositionReference(event.currentTarget);
-              setMenuOpen((current) => !current);
-            }}
-          >
-            <MoreIcon size={16} />
-          </IconButton>
+        <GroupConnectionBadge connection={connection} onClick={onOpenConnections} />
+        {menu.available && (
+          <GroupItemMenuTrigger
+            isActive={isActive}
+            label={menuAriaLabel || menuActionLabel || connectionsLabel || ""}
+            open={menu.open}
+            onToggle={menu.toggle}
+          />
         )}
       </div>
-      {actionMenu}
+      {menu.menu}
     </div>
   );
 }

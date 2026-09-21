@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { withAuthToken } from "../../services/api";
 import { getTerminalSignalFromChunk } from "../../utils/terminalWorkingState";
@@ -46,6 +46,7 @@ export function useAgentTerminalConnection(args: AgentTerminalConnectionArgs) {
     actorId,
     actorRuntime,
     canControl,
+    isVisible = true,
     termEpoch,
     reconnectTrigger,
     terminalRef,
@@ -56,6 +57,7 @@ export function useAgentTerminalConnection(args: AgentTerminalConnectionArgs) {
     setReconnectTrigger,
     buildCustomWebSocketUrl,
     inspectActorTail = true,
+    takeoverOnAttach = true,
   } = args;
 
   const [connectionStatus, setConnectionStatus] =
@@ -72,10 +74,15 @@ export function useAgentTerminalConnection(args: AgentTerminalConnectionArgs) {
   const terminalAttachNoRetryRef = useRef(false);
   const terminalAttachStartupRaceRef = useRef(false);
   const lastTermEpochRef = useRef(termEpoch);
+  const takeoverRequestedRef = useRef(false);
 
   const isRunningRef = useRef(isRunning);
   const runtimeRef = useRef(actorRuntime);
   const canControlRef = useRef(canControl);
+  const visibleRef = useRef(isVisible);
+  useLayoutEffect(() => {
+    visibleRef.current = isVisible;
+  }, [isVisible]);
   const onStatusChangeRef = useRef(onStatusChange);
   const setTerminalSignalRef = useRef(setTerminalSignal);
   const clearTerminalSignalRef = useRef(clearTerminalSignal);
@@ -83,6 +90,14 @@ export function useAgentTerminalConnection(args: AgentTerminalConnectionArgs) {
     terminalWritableRef.current = writable;
     setTerminalWritable(writable);
   }, []);
+  const canSendInput = useCallback(
+    () =>
+      canControlRef.current &&
+      visibleRef.current &&
+      terminalWritableRef.current &&
+      wsRef.current?.readyState === WebSocket.OPEN,
+    [],
+  );
 
   useEffect(() => {
     isRunningRef.current = isRunning;
@@ -124,11 +139,17 @@ export function useAgentTerminalConnection(args: AgentTerminalConnectionArgs) {
   }, [setReconnectTrigger]);
 
   const sendInterrupt = useCallback(() => {
-    if (!canControlRef.current) return;
+    if (!visibleRef.current || !canControlRef.current || !terminalWritableRef.current) return;
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(encodeTerminalInputFrame("\x03"));
   }, []);
+
+  const requestTakeover = useCallback(() => {
+    if (!visibleRef.current) return;
+    takeoverRequestedRef.current = true;
+    requestReconnect();
+  }, [requestReconnect]);
 
   const terminalConnectionKey = buildTerminalConnectionKey({
     activated,
@@ -201,12 +222,14 @@ export function useAgentTerminalConnection(args: AgentTerminalConnectionArgs) {
           actorId,
           since: isFirstAttach ? null : cursors.deliveredCursor,
           mode: canControlRef.current ? "control" : "viewer",
-          takeover: canControlRef.current,
+          takeover: canControlRef.current && (takeoverOnAttach || takeoverRequestedRef.current),
           outputFlowControl: "ack_v1",
           bootstrap: "snapshot_v1",
-          cols: canControlRef.current ? fittedTerm?.cols : undefined,
-          rows: canControlRef.current ? fittedTerm?.rows : undefined,
+          cols: canControlRef.current && visibleRef.current ? fittedTerm?.cols : undefined,
+          rows: canControlRef.current && visibleRef.current ? fittedTerm?.rows : undefined,
         });
+        // An explicit takeover authorizes one attempt, not every future reconnect.
+        takeoverRequestedRef.current = false;
         const wsUrl = resolveTerminalConnectionUrl(standardWsUrl, buildCustomWebSocketUrl);
 
         const ws = new WebSocket(withAuthToken(wsUrl));
@@ -244,13 +267,6 @@ export function useAgentTerminalConnection(args: AgentTerminalConnectionArgs) {
               setSignal: (signal) => setTerminalSignalRef.current(groupId, actorId, signal),
               clearSignal: () => clearTerminalSignalRef.current(groupId, actorId),
             });
-          }
-
-          if (canControlRef.current) {
-            const term = terminalRef.current;
-            if (term && term.cols >= 10 && term.rows >= 2) {
-              ws.send(encodeTerminalResizeFrame(term.cols, term.rows));
-            }
           }
         };
 
@@ -310,7 +326,22 @@ export function useAgentTerminalConnection(args: AgentTerminalConnectionArgs) {
           isCurrentGeneration: () => generation === connectionGeneration,
           canControl: () => canControlRef.current,
           onDecoded: handleDecoded,
-          setWritable: updateTerminalWritable,
+          setWritable: (writable) => {
+            const gainedControl = writable && !terminalWritableRef.current;
+            updateTerminalWritable(writable);
+            const term = terminalRef.current;
+            if (
+              gainedControl &&
+              visibleRef.current &&
+              canControlRef.current &&
+              term &&
+              ws.readyState === WebSocket.OPEN
+            ) {
+              fitBeforeAttach?.();
+              if (term.cols >= 10 && term.rows >= 2)
+                ws.send(encodeTerminalResizeFrame(term.cols, term.rows));
+            }
+          },
           setServerResponseOwnership: (owned) => {
             serverOwnsTerminalResponses = owned;
           },
@@ -322,7 +353,9 @@ export function useAgentTerminalConnection(args: AgentTerminalConnectionArgs) {
             setTerminalReady(false);
           },
           scheduleReady: scheduleTerminalReady,
-          fitAfterSnapshot: fitBeforeAttach,
+          fitAfterSnapshot: () => {
+            if (visibleRef.current) fitBeforeAttach?.();
+          },
         });
 
         ws.onmessage = (event) => {
@@ -415,7 +448,12 @@ export function useAgentTerminalConnection(args: AgentTerminalConnectionArgs) {
         const term = terminalRef.current;
         if (term && canControlRef.current) {
           disposable = term.onData((data) => {
-            if (ws.readyState !== WebSocket.OPEN || !terminalWritableRef.current) return;
+            if (
+              !visibleRef.current ||
+              ws.readyState !== WebSocket.OPEN ||
+              !terminalWritableRef.current
+            )
+              return;
             const runtime = runtimeRef.current;
             const input = filterTerminalInputForRuntime(data, runtime, {
               replaying: replayWriteGuard.isReplaying(),
@@ -432,16 +470,22 @@ export function useAgentTerminalConnection(args: AgentTerminalConnectionArgs) {
           });
 
           resizeDisposable = term.onResize(({ cols, rows }) => {
-            if (ws.readyState === WebSocket.OPEN && cols >= 10 && rows >= 2) {
+            if (
+              ws.readyState === WebSocket.OPEN &&
+              visibleRef.current &&
+              terminalWritableRef.current &&
+              cols >= 10 &&
+              rows >= 2
+            ) {
               ws.send(encodeTerminalResizeFrame(cols, rows));
             }
           });
         }
       };
 
-      // Fit once so the initial resize frame (sent on open) matches the visible
-      // size and the resize SIGWINCH prompts the runtime to repaint correctly.
-      fitBeforeAttach?.();
+      // Measure before attaching; only a confirmed writer sends the resize that
+      // prompts the runtime to repaint for the visible terminal.
+      if (visibleRef.current) fitBeforeAttach?.();
       openWebSocket(cursors.deliveredCursor === null);
     };
 
@@ -480,9 +524,34 @@ export function useAgentTerminalConnection(args: AgentTerminalConnectionArgs) {
     fitBeforeAttach,
     buildCustomWebSocketUrl,
     inspectActorTail,
+    takeoverOnAttach,
     terminalConnectionKey,
     terminalRef,
     updateTerminalWritable,
+  ]);
+
+  useEffect(() => {
+    if (!isVisible || !activated || isHeadless || !isRunning || !canControl || !canSendInput())
+      return;
+    const term = terminalRef.current;
+    const ws = wsRef.current;
+    if (!term || !ws) return;
+    const { cols, rows } = term;
+    fitBeforeAttach?.();
+    // A retained writer may regain control while hidden, after another window
+    // resized the PTY. An unchanged fit emits no onResize event, so sync it here.
+    // A changed fit already sent its dimensions through the resize listener.
+    if (term.cols === cols && term.rows === rows && cols >= 10 && rows >= 2)
+      ws.send(encodeTerminalResizeFrame(cols, rows));
+  }, [
+    activated,
+    canControl,
+    canSendInput,
+    fitBeforeAttach,
+    isHeadless,
+    isRunning,
+    isVisible,
+    terminalRef,
   ]);
 
   useEffect(() => {
@@ -497,7 +566,9 @@ export function useAgentTerminalConnection(args: AgentTerminalConnectionArgs) {
     connectionFailed,
     terminalReady,
     terminalWritable,
+    canSendInput,
     requestReconnect,
+    requestTakeover,
     sendInterrupt,
   };
 }

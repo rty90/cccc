@@ -1,3 +1,6 @@
+import { Switch } from "../../ui/switch";
+import { ExternalAsrSettings } from "./ExternalAsrSettings";
+import type { VoiceAsrProvider } from "../../../services/api/voiceAsrProviders";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -21,7 +24,7 @@ import {
   settingsWorkspaceHeaderClass,
   settingsWorkspacePanelClass,
   settingsWorkspaceShellClass,
-  settingsWorkspaceSoftPanelClass,
+  settingsWorkspaceSectionClass,
 } from "./types";
 
 interface AssistantsTabProps {
@@ -32,7 +35,7 @@ interface AssistantsTabProps {
 }
 
 const VOICE_BACKENDS = ["browser_asr", "assistant_service_local_asr", "external_provider_asr"];
-const VOICE_AVAILABLE_BACKENDS = new Set(["browser_asr", "assistant_service_local_asr"]);
+const VOICE_AVAILABLE_BACKENDS = new Set(VOICE_BACKENDS);
 
 const VOICE_RECOMMENDED_MAX_WINDOW_SECONDS = 300;
 const VOICE_MIN_MAX_WINDOW_SECONDS = 10;
@@ -170,7 +173,7 @@ function StatusPill({
         : "border border-black/10 bg-[rgb(245,245,245)] text-[rgb(35,36,37)] dark:border-white/12 dark:bg-white/[0.08] dark:text-white";
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] ${classes}`}
+      className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] ${classes}`}
     >
       {children}
     </span>
@@ -227,39 +230,21 @@ function AssistantSwitch({
           {label}
         </span>
         {hint ? (
-          <span className="mt-1 block text-[11px] leading-5 text-[var(--color-text-muted)]">
+          <span className="mt-1 block text-xs leading-5 text-[var(--color-text-muted)]">
             {hint}
           </span>
         ) : null}
       </span>
-      <input
-        type="checkbox"
-        role="switch"
+      <Switch
         checked={checked}
         disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}
-        className="sr-only"
       />
-      <span
-        aria-hidden="true"
-        className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors duration-300 ease-spring ${
-          checked
-            ? "border-emerald-500 bg-emerald-500"
-            : "border-[var(--glass-border-subtle)] bg-[var(--color-bg-secondary)]"
-        } ${disabled ? "opacity-50" : ""}`}
-      >
-        <span
-          className={`absolute left-0.5 h-6 w-6 rounded-full bg-white shadow-[0_2px_4px_rgba(0,0,0,0.08),0_1px_1px_rgba(0,0,0,0.04)] transition-transform duration-300 ease-spring ${
-            checked ? "translate-x-5" : "translate-x-0"
-          }`}
-        />
-      </span>
     </label>
   );
 }
 
 function SettingsBlock({
-  isDark,
   title,
   hint,
   children,
@@ -270,11 +255,11 @@ function SettingsBlock({
   children: React.ReactNode;
 }) {
   return (
-    <section className={settingsWorkspacePanelClass(isDark)}>
+    <section className={settingsWorkspaceSectionClass}>
       <div>
         <div className="text-sm font-semibold text-[var(--color-text-primary)]">{title}</div>
         {hint ? (
-          <p className="mt-1 text-[11px] leading-5 text-[var(--color-text-muted)]">{hint}</p>
+          <p className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">{hint}</p>
         ) : null}
       </div>
       <div className="mt-4">{children}</div>
@@ -338,9 +323,9 @@ function AssistantPromptEditor({
       >
         <div className="min-w-0">
           <div className="text-sm font-medium text-[var(--color-text-primary)]">{title}</div>
-          <p className="mt-1 text-[11px] leading-5 text-[var(--color-text-muted)]">{hint}</p>
+          <p className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">{hint}</p>
           {path ? (
-            <p className="mt-2 break-all font-mono text-[11px] leading-5 text-[var(--color-text-muted)]">
+            <p className="mt-2 break-all font-mono text-xs leading-5 text-[var(--color-text-muted)]">
               {path}
             </p>
           ) : null}
@@ -381,17 +366,13 @@ function AssistantPromptEditor({
           </div>
         ) : null}
 
-        <div
-          className={`${settingsWorkspaceSoftPanelClass(isDark)} ${
-            expanded ? "min-h-0 flex flex-1 flex-col" : ""
-          }`}
-        >
+        <div className={`min-w-0 ${expanded ? "min-h-0 flex flex-1 flex-col" : ""}`}>
           <textarea
             value={value}
             onChange={(event) => onChange(event.target.value)}
             disabled={busy}
             placeholder={placeholder}
-            className={`${inputClass(isDark)} resize-y font-mono text-[12px] leading-6 ${
+            className={`${inputClass(isDark)} resize-y font-mono text-xs leading-6 ${
               expanded ? "min-h-[560px] flex-1" : "min-h-[28rem] lg:min-h-[32rem]"
             }`}
             spellCheck={false}
@@ -447,6 +428,7 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
 
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [recognitionBackend, setRecognitionBackend] = useState("browser_asr");
+  const [externalProvider, setExternalProvider] = useState<VoiceAsrProvider>("bailian");
   const [voiceDocumentAutoUpdateEnabled, setVoiceDocumentAutoUpdateEnabled] = useState(true);
   const [voiceMaxWindowSeconds, setVoiceMaxWindowSeconds] = useState(
     VOICE_RECOMMENDED_MAX_WINDOW_SECONDS,
@@ -479,6 +461,11 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
     setVoiceEnabled(Boolean(voice?.enabled));
     if (!voiceBackendDraftDirtyRef.current) {
       setRecognitionBackend(backend || "browser_asr");
+      setExternalProvider(
+        readStringConfig(voice, "external_asr_provider", "bailian") === "volcengine"
+          ? "volcengine"
+          : "bailian",
+      );
     }
     const rawMaxWindow = voice?.config?.auto_document_max_window_seconds;
     const documentAutoUpdateEnabled = rawMaxWindow !== null;
@@ -606,6 +593,7 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
   const saveVoiceSettings = async (overrides?: {
     enabled?: boolean;
     backend?: string;
+    provider?: VoiceAsrProvider;
     documentAutoUpdateEnabled?: boolean;
     maxWindowSeconds?: number;
   }) => {
@@ -633,10 +621,11 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
         VOICE_MAX_MAX_WINDOW_SECONDS,
       );
       const resp = await api.updateAssistantSettings(gid, "voice_secretary", {
-        enabled: nextEnabled,
+        ...(typeof overrides?.enabled === "boolean" ? { enabled: nextEnabled } : {}),
         config: {
-          capture_mode: nextBackend === "assistant_service_local_asr" ? "service" : "browser",
+          capture_mode: nextBackend === "browser_asr" ? "browser" : "service",
           recognition_backend: nextBackend,
+          external_asr_provider: overrides?.provider ?? externalProvider,
           recognition_language: nextRecognitionLanguage,
           auto_document_enabled: true,
           auto_document_max_window_seconds: nextDocumentAutoUpdateEnabled
@@ -650,12 +639,15 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
       });
       if (!isCurrentGroup(gid)) return false;
       if (!resp.ok) {
+        voiceBackendDraftDirtyRef.current = false;
+        syncVoiceDraft(assistantState);
         setError(resp.error?.message || t("assistants.saveFailed"));
         return false;
       }
       setVoiceEnabled(nextEnabled);
       voiceBackendDraftDirtyRef.current = false;
       setRecognitionBackend(nextBackend);
+      setExternalProvider(overrides?.provider ?? externalProvider);
       setVoiceDocumentAutoUpdateEnabled(nextDocumentAutoUpdateEnabled);
       setVoiceMaxWindowSeconds(maxWindowSeconds);
       setNotice(t("assistants.voiceSaved"));
@@ -663,6 +655,8 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
       return true;
     } catch {
       if (!isCurrentGroup(gid)) return false;
+      voiceBackendDraftDirtyRef.current = false;
+      syncVoiceDraft(assistantState);
       setError(t("assistants.saveFailed"));
       return false;
     } finally {
@@ -1216,8 +1210,7 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
     activeAssistantHelpPrompt !== null,
     resolveVoiceSecretaryGuidanceDraft(""),
   );
-  const showDocumentUpdateControls =
-    recognitionBackend === "browser_asr" || recognitionBackend === "assistant_service_local_asr";
+  const showDocumentUpdateControls = VOICE_AVAILABLE_BACKENDS.has(recognitionBackend);
 
   const renderVoiceGuidanceEditor = (expanded = false) => (
     <AssistantPromptEditor
@@ -1318,10 +1311,12 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
                       </label>
                       <GroupCombobox
                         items={backendComboboxItems}
+                        disabled={busy || loadBusy || voiceSaveBusy}
                         value={recognitionBackend}
                         onChange={(value) => {
                           voiceBackendDraftDirtyRef.current = true;
                           setRecognitionBackend(value);
+                          void saveVoiceSettings({ backend: value });
                         }}
                         placeholder={t("assistants.recognitionBackend")}
                         searchPlaceholder={t("assistants.recognitionBackend")}
@@ -1333,18 +1328,33 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
                         matchTriggerWidth
                       />
                       {currentBackendUnavailable ? (
-                        <p className="mt-1 text-[11px] leading-5 text-amber-700 dark:text-amber-300">
+                        <p className="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-300">
                           {t("assistants.recognitionBackendUnavailable")}
                         </p>
                       ) : null}
-                      <p className="mt-1 text-[11px] leading-5 text-[var(--color-text-muted)]">
+                      <p className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
                         {t("assistants.recognitionBackendHint")}
                       </p>
                     </div>
                   </div>
 
+                  {recognitionBackend === "external_provider_asr" ? (
+                    <ExternalAsrSettings
+                      provider={externalProvider}
+                      disabled={busy || voiceSaveBusy}
+                      onProviderChange={(provider) => {
+                        voiceBackendDraftDirtyRef.current = true;
+                        setExternalProvider(provider);
+                        void saveVoiceSettings({ provider });
+                      }}
+                      onConfigured={() => {
+                        void loadAssistants({ quiet: true });
+                      }}
+                    />
+                  ) : null}
+
                   {showServiceModelControls ? (
-                    <div className={`mt-4 space-y-4 ${settingsWorkspaceSoftPanelClass(isDark)}`}>
+                    <div className={"mt-4 min-w-0 space-y-4"}>
                       <div className={localVoicePanelClass()}>
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div className="min-w-0">
@@ -1359,7 +1369,7 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
                                 <StatusPill tone="info">{localAsrDiskUsage}</StatusPill>
                               ) : null}
                             </div>
-                            <p className="mt-1 max-w-2xl text-[11px] leading-5 text-[var(--color-text-muted)]">
+                            <p className="mt-1 max-w-2xl text-xs leading-5 text-[var(--color-text-muted)]">
                               {t("assistants.localAsrHint", {
                                 defaultValue:
                                   "Download the local speech models used for private transcription on this device. The sherpa-onnx engine is built into CCCC.",
@@ -1402,7 +1412,7 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
                         <div className="mt-4 grid gap-2 lg:grid-cols-3">
                           <div className={localVoiceModelCardClass()}>
                             <div className="flex flex-wrap items-center gap-2">
-                              <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-text-muted)]">
+                              <span className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--color-text-muted)]">
                                 {t("assistants.localAsrEngineLabel", { defaultValue: "Engine" })}
                               </span>
                               <StatusPill
@@ -1420,13 +1430,13 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
                                 })}
                               </StatusPill>
                             </div>
-                            <p className="mt-1 text-[11px] leading-5 text-[var(--color-text-muted)]">
+                            <p className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
                               {t("assistants.localAsrEngineHint", {
                                 defaultValue: "Built into the CCCC executable.",
                               })}
                             </p>
                             {streamingRuntimeInstalledVersion ? (
-                              <p className="mt-1 text-[11px] leading-5 text-[var(--color-text-muted)]">
+                              <p className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
                                 {t("assistants.localAsrEngineInstalledVersion", {
                                   version: streamingRuntimeInstalledVersion,
                                   defaultValue: "Version {{version}}",
@@ -1436,7 +1446,7 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
                           </div>
                           <div className={localVoiceModelCardClass()}>
                             <div className="flex flex-wrap items-center gap-2">
-                              <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-text-muted)]">
+                              <span className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--color-text-muted)]">
                                 {t("assistants.liveAsrModelLabel", { defaultValue: "Live ASR" })}
                               </span>
                               <StatusPill
@@ -1465,7 +1475,7 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
                                 <StatusPill tone="info">{liveServiceAsrModelSize}</StatusPill>
                               ) : null}
                             </div>
-                            <p className="mt-1 break-words text-[11px] leading-5 text-[var(--color-text-muted)]">
+                            <p className="mt-1 break-words text-xs leading-5 text-[var(--color-text-muted)]">
                               {liveServiceAsrModel?.title ||
                                 liveServiceAsrModelId ||
                                 t("assistants.streamingAsrModelMissing", {
@@ -1475,7 +1485,7 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
                           </div>
                           <div className={localVoiceModelCardClass()}>
                             <div className="flex flex-wrap items-center gap-2">
-                              <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-text-muted)]">
+                              <span className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--color-text-muted)]">
                                 {t("assistants.finalAsrModelLabel", { defaultValue: "Final ASR" })}
                               </span>
                               <StatusPill
@@ -1504,7 +1514,7 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
                                 <StatusPill tone="info">{finalServiceAsrModelSize}</StatusPill>
                               ) : null}
                             </div>
-                            <p className="mt-1 break-words text-[11px] leading-5 text-[var(--color-text-muted)]">
+                            <p className="mt-1 break-words text-xs leading-5 text-[var(--color-text-muted)]">
                               {finalServiceAsrModel?.title ||
                                 finalServiceAsrModelId ||
                                 t("assistants.finalAsrModelMissing", {
@@ -1516,7 +1526,7 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
                         {streamingRuntime?.error?.message ||
                         liveServiceAsrModel?.error?.message ||
                         finalServiceAsrModel?.error?.message ? (
-                          <p className="mt-3 text-[11px] leading-5 text-rose-700 dark:text-rose-300">
+                          <p className="mt-3 text-xs leading-5 text-rose-700 dark:text-rose-300">
                             {t("assistants.serviceRuntimeError", {
                               message: String(
                                 streamingRuntime?.error?.message ||
@@ -1564,14 +1574,14 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
                               <StatusPill tone="info">{diarizationModelSize}</StatusPill>
                             ) : null}
                           </div>
-                          <p className="mt-1 text-[11px] leading-5 text-[var(--color-text-muted)]">
+                          <p className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
                             {t("assistants.speakerLabelsHint", {
                               defaultValue:
                                 "Adds anonymous Speaker 1 / Speaker 2 turns after local ASR recordings. Local transcription works without this model.",
                             })}
                           </p>
                           {diarizationModel?.error?.message ? (
-                            <p className="mt-1 text-[11px] leading-5 text-rose-700 dark:text-rose-300">
+                            <p className="mt-1 text-xs leading-5 text-rose-700 dark:text-rose-300">
                               {t("assistants.serviceRuntimeError", {
                                 message: String(diarizationModel.error.message || ""),
                               })}
@@ -1614,7 +1624,7 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
                           })}
                         </summary>
                         <div className="mt-3 rounded-xl border border-black/5 bg-white/35 p-3 dark:border-white/10 dark:bg-white/[0.04]">
-                          <div className="grid gap-2 text-[11px] leading-5 text-[var(--color-text-muted)] md:grid-cols-2">
+                          <div className="grid gap-2 text-xs leading-5 text-[var(--color-text-muted)] md:grid-cols-2">
                             <div>
                               <span className="font-semibold text-[var(--color-text-secondary)]">
                                 {t("assistants.localAsrCacheLabel", {
@@ -1767,13 +1777,13 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
                   ) : null}
 
                   {showDocumentUpdateControls ? (
-                    <div className={`mt-4 ${settingsWorkspaceSoftPanelClass(isDark)}`}>
+                    <div className={`mt-4 ${settingsWorkspaceSectionClass}`}>
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="text-xs font-semibold text-[var(--color-text-primary)]">
                             {t("assistants.documentUpdateIntervalTitle")}
                           </div>
-                          <p className="mt-1 text-[11px] leading-5 text-[var(--color-text-muted)]">
+                          <p className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
                             {t("assistants.documentUpdateIntervalHint")}
                           </p>
                         </div>
@@ -1782,7 +1792,10 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
                             checked={voiceDocumentAutoUpdateEnabled}
                             disabled={busy || voiceSaveBusy}
                             label={t("assistants.documentAutoUpdateSwitch")}
-                            onChange={(checked) => setVoiceDocumentAutoUpdateEnabled(checked)}
+                            onChange={(checked) => {
+                              setVoiceDocumentAutoUpdateEnabled(checked);
+                              void saveVoiceSettings({ documentAutoUpdateEnabled: checked });
+                            }}
                           />
                           <button
                             type="button"
@@ -1806,7 +1819,13 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
                               max={VOICE_MAX_MAX_WINDOW_SECONDS}
                               step={1}
                               value={voiceMaxWindowSeconds}
-                              disabled={!voiceDocumentAutoUpdateEnabled}
+                              disabled={busy || voiceSaveBusy || !voiceDocumentAutoUpdateEnabled}
+                              onBlur={() =>
+                                void saveVoiceSettings({ maxWindowSeconds: voiceMaxWindowSeconds })
+                              }
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") event.currentTarget.blur();
+                              }}
                               onChange={(event) => {
                                 const value = Number(event.target.value);
                                 if (Number.isFinite(value)) setVoiceMaxWindowSeconds(value);
@@ -1817,7 +1836,7 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
                               {t("assistants.secondsUnit")}
                             </span>
                           </div>
-                          <p className="mt-1 text-[11px] leading-5 text-[var(--color-text-muted)]">
+                          <p className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
                             {voiceDocumentAutoUpdateEnabled
                               ? t("assistants.documentUpdateIntervalEnabledHint")
                               : t("assistants.documentUpdateIntervalDisabledHint")}
@@ -1856,17 +1875,6 @@ export function AssistantsTab({ isDark, groupId, isActive, busy }: AssistantsTab
                       ) : null}
                     </div>
                   ) : null}
-
-                  <div className="mt-4 flex justify-end">
-                    <button
-                      type="button"
-                      onClick={() => void saveVoiceSettings()}
-                      disabled={busy || voiceSaveBusy}
-                      className={primaryButtonClass(voiceSaveBusy)}
-                    >
-                      {voiceSaveBusy ? t("common:saving") : t("assistants.saveVoiceRecognition")}
-                    </button>
-                  </div>
                 </SettingsBlock>
 
                 {renderVoiceGuidanceEditor()}

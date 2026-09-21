@@ -10,6 +10,10 @@ pub fn daemon_call(
     normalize_recipients(&mut args);
     let op = match name {
         "cccc_inbox_read" => "inbox_read",
+        "cccc_connect" => {
+            normalize_message_author(&mut args);
+            "connect_catalog"
+        }
         "cccc_message_history" => "message_history",
         "cccc_message_send" => {
             alias(&mut args, "event_id", "reply_to");
@@ -19,6 +23,9 @@ pub fn daemon_call(
                 .and_then(|value| value.as_str().map(str::to_owned))
                 .unwrap_or_else(|| "mail".into());
             args.insert("message_mode".into(), Value::String(mode));
+            if connect_destination(&mut args)? {
+                return Ok(("connect_send".into(), args));
+            }
             if args
                 .get("dst_group_id")
                 .and_then(Value::as_str)
@@ -42,6 +49,7 @@ pub fn daemon_call(
         }
         "cccc_message_reply" => {
             alias(&mut args, "event_id", "reply_to");
+            alias(&mut args, "idempotency_key", "client_id");
             normalize_message_author(&mut args);
             let mode = args
                 .remove("mode")
@@ -91,7 +99,7 @@ pub fn daemon_call(
         "cccc_headless" => return action(args, actions::headless),
         "cccc_terminal" => return action(args, actions::terminal),
         "cccc_debug" => return action(args, actions::debug),
-        "cccc_im_bind" => return action(args, actions::im),
+        "cccc_im_bind" => "im_bind_chat",
         "cccc_runtime_wait_next_turn" => "runtime_wait_next_turn",
         "cccc_runtime_complete_turn" => "runtime_complete_turn",
         "cccc_voice_secretary_document" => return voice_document(args),
@@ -187,9 +195,22 @@ fn context_action(
     if action_name == "get" || action_name == "list" {
         return Ok(("context_get".into(), args));
     }
+    if namespace == "coordination" {
+        match action_name.as_str() {
+            "add_decision" => {
+                args.insert("kind".into(), Value::String("decision".into()));
+            }
+            "add_handoff" => {
+                args.insert("kind".into(), Value::String("handoff".into()));
+            }
+            _ => {}
+        }
+    }
     let op_name = match (namespace, action_name.as_str()) {
         ("coordination", "update_brief" | "brief") => "coordination.brief.update",
-        ("coordination", "add_note" | "note") => "coordination.note.add",
+        ("coordination", "add_decision" | "add_handoff" | "add_note" | "note") => {
+            "coordination.note.add"
+        }
         ("agent_state", "update" | "clear") => {
             if action_name == "update" {
                 "agent_state.update"
@@ -334,11 +355,98 @@ fn retain_fields(args: &mut Map<String, Value>, allowed: &[&str]) {
     args.retain(|key, _| allowed.contains(&key.as_str()));
 }
 
+/// Qualified remote routes are selected before any legacy/local Group lookup.
+pub(crate) fn connect_destination(args: &mut Map<String, Value>) -> Result<bool, String> {
+    let Some(instance) = args.remove("dst_instance_id") else {
+        return Ok(false);
+    };
+    let instance = instance
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or("dst_instance_id must be a nonempty instance ID")?;
+    let target = args
+        .remove("dst_group_id")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("dst_group_id is required with dst_instance_id")?;
+    args.insert("instance_id".into(), Value::String(instance.into()));
+    args.insert("target_group_id".into(), Value::String(target));
+    if let Some(key) = args.remove("idempotency_key") {
+        args.entry("client_id").or_insert(key);
+    }
+    args.entry("client_id")
+        .or_insert_with(|| Value::String(uuid::Uuid::new_v4().to_string()));
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::daemon_call;
     use crate::argument_normalization::normalize_message_author;
     use serde_json::{Map, json};
+
+    #[test]
+    fn connect_destination_is_qualified_even_when_group_ids_match() {
+        let args=serde_json::json!({"group_id":"g_same","actor_id":"worker","dst_instance_id":"i_other","dst_group_id":"g_same","text":"hello","mode":"send","idempotency_key":"stable"}).as_object().expect("args").clone();
+        let (op, args) = daemon_call("cccc_message_send", args).expect("mapping");
+        assert_eq!(op, "connect_send");
+        assert_eq!(args["by"], "worker");
+        assert_eq!(args["group_id"], "g_same");
+        assert_eq!(args["target_group_id"], "g_same");
+        assert_eq!(args["instance_id"], "i_other");
+        assert_eq!(args["client_id"], "stable");
+        assert!(
+            !args.contains_key("dst_group_id"),
+            "must not escalate to a global dispatcher write"
+        );
+        assert!(!args.contains_key("dst_instance_id"));
+    }
+
+    #[test]
+    fn connect_directory_and_missing_destination_do_not_fall_back_to_local_send() {
+        let (op,args)=daemon_call("cccc_connect",serde_json::json!({"group_id":"g","actor_id":"worker","instance_id":"remote","after":"cursor","limit":2}).as_object().expect("args").clone()).expect("directory");
+        assert_eq!(op, "connect_catalog");
+        assert_eq!(args["after"], "cursor");
+        for destination in [
+            serde_json::json!({"dst_instance_id":"remote"}),
+            serde_json::json!({"dst_instance_id":"","dst_group_id":"g"}),
+        ] {
+            assert!(
+                daemon_call(
+                    "cccc_message_send",
+                    destination.as_object().expect("args").clone()
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn advertised_daemon_tool_actions_have_executable_mappings() {
+        let mut failures = Vec::new();
+        for tool in crate::tools::catalog() {
+            let Some(name) = tool["name"].as_str() else {
+                continue;
+            };
+            let Some(actions) = tool["inputSchema"]["properties"]["action"]["enum"].as_array()
+            else {
+                continue;
+            };
+            for action in actions {
+                let args = json!({"action":action,"group_id":"g_fixture","by":"lead","task_id":"T001", "title":"fixture", "summary":"fixture"}).as_object().cloned().expect("args");
+                if let Err(error) = daemon_call(name, args) {
+                    if !error.starts_with("tool is not a daemon operation:") {
+                        failures.push(format!("{name} {action}: {error}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "unmapped advertised actions: {failures:#?}"
+        );
+    }
 
     #[test]
     fn terminal_resize_maps_to_standard_daemon_operation() {

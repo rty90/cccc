@@ -71,12 +71,47 @@ npm -C web run check
 
 The native product embeds `web/dist`. `npm -C web run build` is sufficient before
 rebuilding the Rust executable; `scripts/build_web.sh` and
-`scripts/build_web.ps1` are convenience wrappers. `CCCC_WEB_DIST` remains the
-explicit test override.
+`scripts/build_web.ps1` are convenience wrappers. `./scripts/build_package.sh`
+builds both the frontend and the native archive. Restart the running CCCC process
+with the resulting executable to load the new embedded UI.
+
+The Web build script tracks inputs and exports its asset directory relative to
+the current Rust package. This also applies when checkouts share a Cargo target
+directory. `tests/test_web_build_paths.py` runs real Cargo builds across two
+checkouts, including frontend-only updates and packaged assets. For release
+verification, compare the new executable's HTTP-served `/ui/index.html` and
+`/ui/assets/` files with the intended `web/dist`; a successful frontend build
+alone does not prove which assets the executable contains.
 
 CI pins Node 24.19.0. `npm run check` runs Vite+ Oxfmt/Oxlint followed by the
 independent TypeScript 5.9 `tsc --noEmit` check. Type-aware Vite+ checks remain
 disabled until their diagnostics and supported scope match this project.
+
+## Connect Browser Acceptance
+
+For changes to account linkage, embedded workbenches or Group connections, run:
+
+```bash
+python3 scripts/check_connect_browser.py
+```
+
+Check out `cccc-homepage` beside this repository and install its account
+fixture dependencies (`npm ci --prefix ../cccc-homepage/account`) as well as
+`web` dependencies first. The Linux runner requires Rust, Node/npm, Python 3.11+,
+OpenSSL and Google Chrome. It builds current Web/CLI/test artifacts and exercises
+both the native workbench and cross-member Group connection journeys. Its output
+records both Git revisions, dirty-worktree status and the CLI digest.
+`--journey workbench` or `--journey groups` runs only the selected journey.
+The workbench journey observes the native shared event WebSocket: all three
+subscriptions, headless snapshots, live ledger delivery and frame-bound resource
+URLs. It also verifies that revocation closes independent event and terminal
+sockets, rather than relying only on the UI to unmount them.
+
+This is an explicit cross-repository acceptance gate, not part of every fast
+check. It uses temporary Homes, local account databases, fixture Actors and a
+separate browser. It does not use the production account service or paid
+Providers. Passing it does not establish Cloudflare, WAN or native Windows/macOS
+acceptance; those remain deployment/release checks.
 
 ## Pull-Request Jobs
 
@@ -123,6 +158,16 @@ The release workflow packages the same native executable bytes into standalone
 archives and dependency-free platform wheels. It does not build an sdist,
 universal wheel, importable CCCC Python package, fallback engine, or second Rust
 registry distribution.
+
+The Pages build uses its workflow token to resolve complete stable/RC releases,
+then publishes `releases.json` alongside the stable-pinned installers. It must
+fail before deployment if resolution fails or VitePress does not preserve that
+index. For the first rollout, deploy Pages and verify
+`https://chesterra.github.io/cccc/releases.json` before distributing the CLI that
+uses it. Subsequent successful release workflows refresh Pages automatically;
+`Deploy Docs` can also be rerun manually. Older clients blocked by API rate
+limits can upgrade through the original installation command after the fixed
+release is published. Installation and checksum verification remain unchanged.
 
 ## Design Boundary
 

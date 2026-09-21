@@ -1,4 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
+import { useUIStore } from "../stores";
+import { groupMessagesVisible } from "../stores/useUIStore";
 import type { Actor } from "../types";
 
 export function isChatViewportAtBottom(
@@ -29,30 +31,8 @@ type UseAppTabStateResult = {
   chatAtBottomRef: React.MutableRefObject<boolean>;
   actorsRef: React.MutableRefObject<Actor[]>;
   allTabs: string[];
-  renderedActorIds: string[];
-  resetMountedActorIds: () => void;
   handleTabChange: (newTab: string) => void;
 };
-
-export function getRenderedActorIds({
-  mountedActorIds,
-  activeTab,
-  runtimeActors,
-}: {
-  mountedActorIds: string[];
-  activeTab: string;
-  runtimeActors: Actor[];
-}): string[] {
-  const live = new Set(
-    runtimeActors.map((actor) => String(actor.id || "").trim()).filter((id) => id),
-  );
-  const mountedLiveIds = mountedActorIds.filter((id) => live.has(id));
-  if (activeTab === "chat") return mountedLiveIds;
-  if (mountedLiveIds.includes(activeTab)) return mountedLiveIds;
-  if (mountedActorIds.includes(activeTab) || live.has(activeTab))
-    return [...mountedLiveIds, activeTab];
-  return mountedLiveIds;
-}
 
 export function useAppTabState({
   activeTab,
@@ -70,15 +50,13 @@ export function useAppTabState({
   const activeTabRef = useRef<string>("chat");
   const chatAtBottomRef = useRef<boolean>(true);
   const actorsRef = useRef<Actor[]>([]);
-  const [mountedActorIds, setMountedActorIds] = useState<string[]>([]);
+
+  const messagesVisible = useUIStore((state) => groupMessagesVisible(selectedGroupId, state));
 
   const allTabs = useMemo(() => ["chat"], []);
 
   const handleTabChange = React.useCallback(
     (newTab: string) => {
-      if (newTab !== "chat") {
-        setMountedActorIds((prev) => (prev.includes(newTab) ? prev : [...prev, newTab]));
-      }
       setActiveTab(newTab);
     },
     [setActiveTab],
@@ -86,7 +64,7 @@ export function useAppTabState({
 
   useEffect(() => {
     activeTabRef.current = activeTab;
-    if (activeTab !== "chat") return;
+    if (!messagesVisible) return;
     if (!selectedGroupId) return;
     const el = eventContainerRef.current;
     if (!el) return;
@@ -95,25 +73,17 @@ export function useAppTabState({
     chatAtBottomRef.current = atBottom;
     setShowScrollButton(selectedGroupId, !atBottom);
     if (atBottom) setChatUnreadCount(selectedGroupId, 0);
-  }, [activeTab, selectedGroupId, setChatUnreadCount, setShowScrollButton]);
+  }, [activeTab, messagesVisible, selectedGroupId, setChatUnreadCount, setShowScrollButton]);
 
   useEffect(() => {
-    if (activeTab !== "chat") return;
+    if (!messagesVisible) return;
     if (isSmallScreen) return;
     requestAnimationFrame(() => composerRef.current?.focus());
-  }, [activeTab, isSmallScreen]);
+  }, [activeTab, messagesVisible, isSmallScreen]);
 
   useEffect(() => {
     actorsRef.current = runtimeActors;
   }, [runtimeActors]);
-
-  const renderedActorIds = useMemo(() => {
-    return getRenderedActorIds({ mountedActorIds, activeTab, runtimeActors });
-  }, [mountedActorIds, activeTab, runtimeActors]);
-
-  const resetMountedActorIds = React.useCallback(() => {
-    setMountedActorIds([]);
-  }, []);
 
   return {
     composerRef,
@@ -124,8 +94,6 @@ export function useAppTabState({
     chatAtBottomRef,
     actorsRef,
     allTabs,
-    renderedActorIds,
-    resetMountedActorIds,
     handleTabChange,
   };
 }

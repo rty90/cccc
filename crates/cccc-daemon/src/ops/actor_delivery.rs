@@ -1,4 +1,4 @@
-use cccc_contracts::{Actor, ActorRuntime, Event, GroupState};
+use cccc_contracts::{Actor, ActorRuntime, ActorSubmit, Event, GroupState};
 use cccc_core::{GroupDoc, HomeLayout, inbox};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -16,10 +16,75 @@ pub use lifecycle::{shutdown_actor, shutdown_all, shutdown_group};
 const QUEUE_CAPACITY: usize = 256;
 const COMPLETION_CAPACITY: usize = 4096;
 const BATCH_CAPACITY: usize = 64;
-const BATCH_WINDOW: std::time::Duration = std::time::Duration::from_millis(250);
 const DEFERRED_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(4);
+const TERMINAL_SUBMIT_DELAY: std::time::Duration = std::time::Duration::from_millis(1_500);
+const TERMINAL_REPEAT_SUBMIT_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
 
 type Key = (String, String);
+
+/// Deliver text to the Runtime's native terminal. A successful return means
+/// the payload and submit keys were written to that terminal; whether the
+/// Runtime steers the active turn or queues the input remains its own policy.
+pub(super) fn submit_terminal_text(
+    group_id: &str,
+    actor: &Actor,
+    text: &str,
+    cancelled: &AtomicBool,
+) -> bool {
+    let raw = text.trim_end_matches(['\r', '\n']);
+    if raw.is_empty() {
+        return false;
+    }
+    if super::local_headless::supports(actor)
+        && !cccc_runtime::wait_for_input_ready(
+            group_id,
+            &actor.id,
+            std::time::Duration::from_secs(15),
+            cancelled,
+        )
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let bracketed = raw.contains(['\r', '\n'])
+        && cccc_runtime::bracketed_paste_enabled(group_id, &actor.id).unwrap_or(false);
+    let payload = if bracketed {
+        format!("\u{1b}[200~{raw}\u{1b}[201~")
+    } else if raw.contains(['\r', '\n']) {
+        raw.lines().collect::<Vec<_>>().join(" ")
+    } else {
+        raw.to_owned()
+    };
+    let submits = terminal_submit_sequence(actor);
+    let delay = if submits.is_empty() {
+        std::time::Duration::ZERO
+    } else {
+        TERMINAL_SUBMIT_DELAY
+    };
+    cccc_runtime::submit_sequence_interruptible(
+        group_id,
+        &actor.id,
+        payload.as_bytes(),
+        submits,
+        delay,
+        TERMINAL_REPEAT_SUBMIT_DELAY,
+        cancelled,
+    )
+    .unwrap_or(false)
+}
+
+pub(super) fn terminal_submit_sequence(actor: &Actor) -> &'static [&'static [u8]] {
+    match actor.submit {
+        ActorSubmit::Enter
+            if matches!(actor.runtime, ActorRuntime::Codex | ActorRuntime::Copilot) =>
+        {
+            &[b"\r", b"\r"]
+        }
+        ActorSubmit::Enter => &[b"\r"],
+        ActorSubmit::Newline => &[b"\n"],
+        ActorSubmit::None => &[],
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DispatchReport {
@@ -466,17 +531,6 @@ fn report(targeted: usize, online: usize, queued: usize) -> DispatchReport {
     }
 }
 
-pub(super) fn delivery_setting<'a>(
-    group: &'a GroupDoc,
-    key: &str,
-) -> Option<&'a serde_json::Value> {
-    group
-        .extra
-        .get("delivery")
-        .and_then(|value| value.get(key))
-        .or_else(|| group.extra.get("settings").and_then(|value| value.get(key)))
-}
-
 fn enqueue(job: DeliveryJob) -> bool {
     let key = (job.group.group_id.clone(), job.actor.id.clone());
     let delivery_key = (key.0.clone(), key.1.clone(), job.event.id.clone());
@@ -532,7 +586,6 @@ fn spawn_worker(key: &Key) -> DeliveryWorker {
     let thread_cancelled = Arc::clone(&cancelled);
     let thread = std::thread::Builder::new().name(name).spawn(move || {
         let mut preamble_session = String::new();
-        let mut last_delivery = None;
         let mut deferred = Vec::new();
         let mut deferred_failures: u32 = 0;
         while !thread_cancelled.load(Ordering::Acquire) {
@@ -541,6 +594,16 @@ fn spawn_worker(key: &Key) -> DeliveryWorker {
                     break;
                 };
                 vec![job]
+            } else if deferred.len() >= BATCH_CAPACITY {
+                // Failed startup or paused delivery must not grow this batch
+                // beyond its limit by draining the bounded channel on retries.
+                if !actor_delivery_worker::interruptible_sleep(
+                    deferred_retry_delay(deferred_failures),
+                    &thread_cancelled,
+                ) {
+                    break;
+                }
+                std::mem::take(&mut deferred)
             } else {
                 match receiver.recv_timeout(deferred_retry_delay(deferred_failures)) {
                     Ok(job) => {
@@ -552,27 +615,10 @@ fn spawn_worker(key: &Key) -> DeliveryWorker {
                     Err(RecvTimeoutError::Disconnected) => break,
                 }
             };
-            if !actor_delivery_worker::wait_for_delivery_slot(
-                &batch[0],
-                &last_delivery,
-                &thread_cancelled,
-            ) {
-                if thread_cancelled.load(Ordering::Acquire) {
-                    fail_jobs(&batch, "delivery worker stopped before runtime acceptance");
-                    break;
-                }
-                deferred = batch;
-                deferred_failures = deferred_failures.saturating_add(1);
-                continue;
-            }
             if batch[0].actor.runtime != ActorRuntime::Custom
                 && batch[0].actor.runtime != ActorRuntime::Deepseek
                 && !crate::ops::local_headless::supports(&batch[0].actor)
             {
-                if !actor_delivery_worker::interruptible_sleep(BATCH_WINDOW, &thread_cancelled) {
-                    fail_jobs(&batch, "delivery worker stopped before runtime acceptance");
-                    break;
-                }
                 while batch.len() < BATCH_CAPACITY {
                     match receiver.try_recv() {
                         Ok(job) => batch.push(job),
@@ -586,7 +632,6 @@ fn spawn_worker(key: &Key) -> DeliveryWorker {
                 if actor_delivery_worker::process_batch(
                     &batch,
                     &mut preamble_session,
-                    &mut last_delivery,
                     &thread_cancelled,
                 ) {
                     delivered = true;
@@ -644,28 +689,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn delivery_settings_prefer_canonical_section_and_read_legacy_flat_value() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let home = HomeLayout::from_path(temp.path()).expect("home");
-        let store = GroupStore::new(home).expect("store");
-        let mut group = store.create("delivery settings", "").expect("group");
-        group
-            .extra
-            .insert("settings".into(), json!({"min_interval_seconds":2}));
-        assert_eq!(
-            delivery_setting(&group, "min_interval_seconds").and_then(|value| value.as_u64()),
-            Some(2)
-        );
-        group
-            .extra
-            .insert("delivery".into(), json!({"min_interval_seconds":7}));
-        assert_eq!(
-            delivery_setting(&group, "min_interval_seconds").and_then(|value| value.as_u64()),
-            Some(7)
-        );
-    }
-
-    #[test]
     fn mail_is_stored_without_runtime_queueing() {
         let temp = tempfile::tempdir().expect("tempdir");
         let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
@@ -683,7 +706,13 @@ mod tests {
         let report = dispatch(&home, &group, &event);
         assert_eq!(report.state, "mail");
         assert_eq!(report.queued, 0);
-        assert!(in_flight().lock().expect("in flight").is_empty());
+        assert!(
+            !in_flight()
+                .lock()
+                .expect("in flight")
+                .iter()
+                .any(|item| item.0 == group.group_id)
+        );
     }
 
     #[test]
@@ -714,6 +743,61 @@ mod tests {
             std::time::Duration::from_millis(250)
         );
         assert_eq!(deferred_retry_delay(u32::MAX), DEFERRED_RETRY_MAX);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn worker_shutdown_cancels_blocked_terminal_submission_before_runtime_stop() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let group_id = format!("g_blocked_delivery_{}", std::process::id());
+        let mut actor = Actor::new("peer");
+        actor.runtime = ActorRuntime::Custom;
+        actor.submit = ActorSubmit::None;
+        cccc_runtime::start(cccc_runtime::LaunchSpec {
+            group_id: group_id.clone(),
+            actor_id: actor.id.clone(),
+            runner: cccc_contracts::RunnerKind::Pty,
+            command: vec![
+                "sh".into(),
+                "-c".into(),
+                "stty raw -echo; touch ready; sleep 30".into(),
+            ],
+            cwd: temp.path().into(),
+            env: Default::default(),
+            cols: 80,
+            rows: 24,
+        })
+        .expect("terminal");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !temp.path().join("ready").exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::clone(&cancelled);
+        let group = group_id.clone();
+        let (result_tx, result_rx) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let result = submit_terminal_text(&group, &actor, &"x".repeat(1024 * 1024), &cancel);
+            result_tx.send(result).expect("result receiver");
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let blocked = !thread.is_finished();
+        let worker = DeliveryWorker {
+            sender: None,
+            cancelled,
+            thread: Some(thread),
+        };
+        let (done_tx, done_rx) = mpsc::channel();
+        let shutdown = std::thread::spawn(move || {
+            worker.shutdown();
+            done_tx.send(()).expect("shutdown receiver");
+        });
+        let stopped = done_rx.recv_timeout(std::time::Duration::from_secs(1));
+        cccc_runtime::stop(&group_id, "peer").expect("cleanup");
+        shutdown.join().expect("shutdown thread");
+        assert!(blocked, "fixture must block input before shutdown");
+        stopped.expect("delivery shutdown must finish before stopping the runtime");
+        assert!(!result_rx.recv().expect("cancelled submission"));
     }
 
     #[test]
@@ -769,6 +853,12 @@ mod tests {
             .0,
             "failed"
         );
-        assert!(in_flight().lock().expect("in flight").is_empty());
+        assert!(
+            !in_flight()
+                .lock()
+                .expect("in flight")
+                .iter()
+                .any(|item| item.0 == group.group_id)
+        );
     }
 }

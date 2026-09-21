@@ -1,11 +1,12 @@
-import type { GroupBridgeRouteMessageRef, GroupMeta } from "../types";
-import { formatRecipientIdentifier } from "../utils/recipientIdentifier";
+import type { GroupMeta } from "../types";
+import type { ConnectMentionGroup } from "./useConnectMentionGroups";
 
 export interface ComposerGroupMentionToken {
   groupId: string;
   token: string;
   start: number;
   end: number;
+  remote?: ConnectMentionGroup;
 }
 
 export interface ComposerAgentMentionToken {
@@ -38,10 +39,12 @@ export function createComposerGroupMentionToken({
   groupId,
   token,
   start,
+  remote,
 }: {
   groupId: string;
   token: string;
   start: number;
+  remote?: ConnectMentionGroup;
 }): ComposerGroupMentionToken | null {
   const cleanGroupId = String(groupId || "").trim();
   const cleanToken = cleanTokenText(token);
@@ -52,6 +55,7 @@ export function createComposerGroupMentionToken({
     token: cleanToken,
     start: safeStart,
     end: safeStart + cleanToken.length,
+    ...(remote ? { remote } : {}),
   };
 }
 
@@ -79,15 +83,18 @@ export function createComposerAgentMentionToken({
   };
 }
 
-export function pruneComposerGroupMentionTokens({
-  text,
-  tokens,
-}: {
-  text: string;
-  tokens: ComposerGroupMentionToken[];
-}): ComposerGroupMentionToken[] {
+// Drop tokens whose text range no longer matches the composer text.
+//
+// Returns the input array itself when nothing was dropped: callers feed the
+// result straight into React state, and a fresh array on every keystroke
+// would re-render the whole chat tab for a change that is not one.
+function keepLiveMentionTokens<T extends { start: number; end: number; token: string }>(
+  text: string,
+  tokens: T[],
+): T[] {
   const source = String(text || "");
-  return (tokens || []).filter((token) => {
+  const input = tokens || [];
+  const live = input.filter((token) => {
     const start = Number.isFinite(token.start) ? Math.max(0, Math.floor(token.start)) : -1;
     const end = Number.isFinite(token.end) ? Math.max(start, Math.floor(token.end)) : -1;
     if (start < 0 || end <= start || end > source.length) return false;
@@ -97,6 +104,17 @@ export function pruneComposerGroupMentionTokens({
       isTokenBoundary(source[end] || "")
     );
   });
+  return live.length === input.length ? input : live;
+}
+
+export function pruneComposerGroupMentionTokens({
+  text,
+  tokens,
+}: {
+  text: string;
+  tokens: ComposerGroupMentionToken[];
+}): ComposerGroupMentionToken[] {
+  return keepLiveMentionTokens(text, tokens);
 }
 
 export function pruneComposerAgentMentionTokens({
@@ -106,17 +124,7 @@ export function pruneComposerAgentMentionTokens({
   text: string;
   tokens: ComposerAgentMentionToken[];
 }): ComposerAgentMentionToken[] {
-  const source = String(text || "");
-  return (tokens || []).filter((token) => {
-    const start = Number.isFinite(token.start) ? Math.max(0, Math.floor(token.start)) : -1;
-    const end = Number.isFinite(token.end) ? Math.max(start, Math.floor(token.end)) : -1;
-    if (start < 0 || end <= start || end > source.length) return false;
-    return (
-      source.slice(start, end) === token.token &&
-      isTokenBoundary(source[start - 1] || "") &&
-      isTokenBoundary(source[end] || "")
-    );
-  });
+  return keepLiveMentionTokens(text, tokens);
 }
 
 export function resolveSelectedComposerGroupMention({
@@ -134,6 +142,7 @@ export function resolveSelectedComposerGroupMention({
   const liveTokens = pruneComposerGroupMentionTokens({ text, tokens });
   let best: ComposerGroupMentionToken | null = null;
   for (const token of liveTokens) {
+    if (token.remote) continue;
     if (!token.groupId || token.groupId === selected) continue;
     const group = (groups || []).find(
       (item) => String(item.group_id || "").trim() === token.groupId,
@@ -167,6 +176,7 @@ export function resolveSelectedComposerGroupMentionTargets({
   }
 
   for (const token of [...liveTokens].sort((a, b) => a.start - b.start)) {
+    if (token.remote) continue;
     const groupId = String(token.groupId || "").trim();
     if (!groupId || groupId === selected || seen.has(groupId)) continue;
     const group = groupsById.get(groupId);
@@ -178,49 +188,6 @@ export function resolveSelectedComposerGroupMentionTargets({
   return out;
 }
 
-export function buildComposerGroupBridgeRouteRefs({
-  text,
-  tokens,
-  groups,
-}: {
-  text: string;
-  tokens: ComposerGroupMentionToken[];
-  groups: GroupMeta[];
-}): GroupBridgeRouteMessageRef[] {
-  const liveTokens = pruneComposerGroupMentionTokens({ text, tokens });
-  const refs: GroupBridgeRouteMessageRef[] = [];
-  const seen = new Set<string>();
-
-  for (const token of liveTokens) {
-    const groupId = String(token.groupId || "").trim();
-    if (!groupId || seen.has(groupId)) continue;
-    const group = (groups || []).find((item) => String(item.group_id || "").trim() === groupId);
-    if (!group?.group_bridge_remote) continue;
-    const label = String(group.title || "").trim() || String(group.topic || "").trim() || groupId;
-    const accessLevel = String(group.group_bridge_access_level || "").trim() || "unknown";
-    seen.add(groupId);
-    refs.push({
-      kind: "group_bridge_route",
-      local_group_id: String(group.group_bridge_local_group_id || "").trim() || undefined,
-      remote_group_id: groupId,
-      remote_group_title: label,
-      remote_endpoint: String(group.group_bridge_remote_endpoint || "").trim(),
-      remote_peer_id: String(group.group_bridge_remote_peer_id || "").trim(),
-      trust_id: String(group.group_bridge_trust_id || "").trim(),
-      access_level: accessLevel,
-      recipient_identifier: formatRecipientIdentifier({
-        kind: "remote_group",
-        label,
-        id: groupId,
-        accessLevel,
-      }),
-      token: token.token,
-    });
-  }
-
-  return refs;
-}
-
 export function resolveControlledComposerMentionContext({
   text,
   atIndex,
@@ -229,7 +196,11 @@ export function resolveControlledComposerMentionContext({
   text: string;
   atIndex: number;
   tokens: ComposerGroupMentionToken[];
-}): { scope: "selected" | "destination"; mentionTargetGroupId: string } {
+}): {
+  scope: "selected" | "destination";
+  mentionTargetGroupId: string;
+  remote?: ConnectMentionGroup;
+} {
   const source = String(text || "");
   const safeAt = Number.isFinite(atIndex) ? Math.max(0, Math.floor(atIndex)) : 0;
   const segStartNl = source.lastIndexOf("\n", Math.max(0, safeAt - 1));
@@ -239,5 +210,6 @@ export function resolveControlledComposerMentionContext({
     .filter((token) => token.start >= segStart && token.end <= safeAt)
     .sort((a, b) => b.start - a.start)[0];
   if (!best) return { scope: "selected", mentionTargetGroupId: "" };
+  if (best.remote) return { scope: "destination", mentionTargetGroupId: "", remote: best.remote };
   return { scope: "destination", mentionTargetGroupId: best.groupId };
 }

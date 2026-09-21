@@ -1,24 +1,29 @@
 use cccc_contracts::DaemonRequest;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
-use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
-
-mod operation_access;
-use operation_access::{
-    is_global_write, is_group_lock_independent_read, is_read_only, uses_runtime_lock_only,
+use tokio::sync::{
+    Mutex as AsyncMutex, OwnedMutexGuard, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock,
 };
+
+use crate::ops::operation::Policy;
 
 #[derive(Clone, Default)]
 pub struct DispatchLocks {
     global: Arc<RwLock<()>>,
+    remote_access: Arc<AsyncMutex<()>>,
     groups: Arc<Mutex<HashMap<String, Weak<RwLock<()>>>>>,
 }
 
 pub enum DispatchPermit {
+    ResourceOwned,
+    RemoteAccess {
+        _guard: OwnedMutexGuard<()>,
+    },
     GlobalRead {
         _guard: OwnedRwLockReadGuard<()>,
     },
     GlobalWrite {
+        _remote: OwnedMutexGuard<()>,
         _guard: OwnedRwLockWriteGuard<()>,
     },
     GroupRead {
@@ -34,10 +39,17 @@ pub enum DispatchPermit {
 impl DispatchLocks {
     pub async fn acquire(&self, request: &DaemonRequest) -> DispatchPermit {
         match access(request) {
+            Access::ResourceOwned => DispatchPermit::ResourceOwned,
             Access::GlobalRead => DispatchPermit::GlobalRead {
                 _guard: self.global.clone().read_owned().await,
             },
+            Access::Remote => DispatchPermit::RemoteAccess {
+                _guard: self.remote_access.clone().lock_owned().await,
+            },
+            // Acquire remote ownership first. A queued global mutation must not
+            // queue a global writer while it waits for account network I/O.
             Access::GlobalWrite => DispatchPermit::GlobalWrite {
+                _remote: self.remote_access.clone().lock_owned().await,
                 _guard: self.global.clone().write_owned().await,
             },
             Access::GroupRead(group_id) => {
@@ -63,6 +75,20 @@ impl DispatchLocks {
         DispatchPermit::GlobalRead {
             _guard: self.global.clone().read_owned().await,
         }
+    }
+
+    // Background reconciliation must not queue a writer behind Actor startup:
+    // startup can need another read permit for its own MCP discovery.
+    pub(crate) fn try_global_write(&self) -> Option<DispatchPermit> {
+        let remote = self.remote_access.clone().try_lock_owned().ok()?;
+        self.global
+            .clone()
+            .try_write_owned()
+            .ok()
+            .map(|guard| DispatchPermit::GlobalWrite {
+                _remote: remote,
+                _guard: guard,
+            })
     }
 
     pub async fn group_write(&self, group_id: &str) -> DispatchPermit {
@@ -100,6 +126,8 @@ impl DispatchLocks {
 }
 
 enum Access {
+    ResourceOwned,
+    Remote,
     GlobalRead,
     GlobalWrite,
     GroupRead(String),
@@ -107,17 +135,13 @@ enum Access {
 }
 
 fn access(request: &DaemonRequest) -> Access {
-    if uses_runtime_lock_only(&request.op) {
-        // These calls synchronize through session_runtime's own mutex. A group
-        // lock would deadlock a reply waiting for its matching poll/complete.
-        return Access::GlobalRead;
-    }
-    if is_group_lock_independent_read(request) {
-        // Managed runtimes enumerate their CCCC MCP tools while actor_start is
-        // still materializing the provider. capability_state reads atomic
-        // Group snapshots and synchronizes its own CapabilityStore mutations,
-        // so taking the outer Group lock here would deadlock that handshake.
-        return Access::GlobalRead;
+    let policy = crate::dispatch::resolve_operation(request)
+        .map_or(Policy::Write, |operation| operation.policy);
+    match policy {
+        Policy::ResourceOwned => return Access::ResourceOwned,
+        Policy::RemoteAccess => return Access::Remote,
+        Policy::GlobalWrite => return Access::GlobalWrite,
+        Policy::Read | Policy::Write => {}
     }
     let group_id = request
         .args
@@ -126,10 +150,10 @@ fn access(request: &DaemonRequest) -> Access {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    if is_global_write(request) {
+    if request.args.contains_key("dst_group_id") {
         return Access::GlobalWrite;
     }
-    match (group_id, is_read_only(&request.op)) {
+    match (group_id, matches!(policy, Policy::Read)) {
         (Some(group_id), true) => Access::GroupRead(group_id),
         (Some(group_id), false) => Access::GroupWrite(group_id),
         (None, true) => Access::GlobalRead,
@@ -148,6 +172,50 @@ mod tests {
             op: op.into(),
             args: args.as_object().cloned().unwrap_or_else(Map::new),
         }
+    }
+
+    #[tokio::test]
+    async fn account_waits_do_not_block_group_work_even_with_a_global_mutation_queued() {
+        use std::future::{Future, poll_fn};
+        use std::task::Poll;
+        let locks = DispatchLocks::default();
+        let status = locks
+            .acquire(&request("membership_status", json!({})))
+            .await;
+        for op in [
+            "membership_logout",
+            "membership_login_poll",
+            "connect_rename",
+            "remote_access_configure",
+            "settings_update",
+        ] {
+            let mutation = request(op, json!({}));
+            let waiting = locks.acquire(&mutation);
+            tokio::pin!(waiting);
+            poll_fn(|cx| {
+                assert!(
+                    waiting.as_mut().poll(cx).is_pending(),
+                    "{op} must serialize with status"
+                );
+                Poll::Ready(())
+            })
+            .await;
+            for group_op in ["ledger_tail", "send"] {
+                let permit = tokio::time::timeout(
+                    std::time::Duration::from_millis(250),
+                    locks.acquire(&request(group_op, json!({"group_id":"g_other"}))),
+                )
+                .await
+                .expect("account I/O must not hold or queue a global permit");
+                drop(permit);
+            }
+            assert!(
+                locks.try_global_write().is_none(),
+                "restore must wait for membership ownership"
+            );
+        }
+        drop(status);
+        assert!(locks.try_global_write().is_some());
     }
 
     #[test]
@@ -182,14 +250,14 @@ mod tests {
                 "capability_state",
                 json!({"group_id":"g_one","actor_id":"peer1","view":"mcp_catalog"})
             )),
-            Access::GlobalRead
+            Access::ResourceOwned
         ));
         assert!(matches!(
             access(&request(
                 "term_attachment_status",
                 json!({"group_id":"g_one","actor_id":"peer1","attachment_id":1})
             )),
-            Access::GlobalRead
+            Access::ResourceOwned
         ));
         assert!(matches!(
             access(&request("send", json!({"group_id":"g_one"}))),
@@ -206,23 +274,7 @@ mod tests {
             )),
             Access::GlobalWrite
         ));
-        for op in [
-            "group_bridge_session_open",
-            "group_bridge_session_poll",
-            "group_bridge_session_complete",
-            "group_bridge_session_close",
-            "group_bridge_session_ready",
-            "group_bridge_session_deliver",
-        ] {
-            assert!(
-                matches!(
-                    access(&request(op, json!({"group_id":"g_one"}))),
-                    Access::GlobalRead
-                ),
-                "{op} must use only the session runtime lock"
-            );
-        }
-        for op in ["capability_install", "capability_install_target"] {
+        for op in ["capability_enable", "capability_install_target"] {
             assert!(
                 matches!(
                     access(&request(op, json!({"group_id":"g_one"}))),
@@ -248,6 +300,23 @@ mod tests {
     }
 
     #[test]
+    fn profile_secret_key_aliases_share_the_read_policy() {
+        for op in [
+            "actor_profile_env_private_keys",
+            "actor_profile_secret_keys",
+        ] {
+            assert!(matches!(
+                access(&request(op, json!({}))),
+                Access::GlobalRead
+            ));
+            assert!(matches!(
+                access(&request(op, json!({"group_id":"g_one"}))),
+                Access::GroupRead(group_id) if group_id == "g_one"
+            ));
+        }
+    }
+
+    #[test]
     fn mutation_names_that_look_like_reads_still_take_write_locks() {
         for op in [
             "group_set_state",
@@ -267,6 +336,104 @@ mod tests {
                 "{op} must be serialized as a group write"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn status_polling_during_actor_start_does_not_block_nested_mcp_discovery() {
+        use std::future::{Future, poll_fn};
+        use std::task::Poll;
+
+        for op in [
+            "voice_preferences_get",
+            "voice_notifications_get",
+            "runtime_hermes_status",
+            "group_space_provider_credential_status",
+        ] {
+            let locks = DispatchLocks::default();
+            let _startup = locks
+                .acquire(&request("actor_start", json!({"group_id":"g_one"})))
+                .await;
+            let poll_request = request(op, json!({}));
+            let polling = locks.acquire(&poll_request);
+            tokio::pin!(polling);
+            let mut poll_permit = None;
+            // Poll once before discovery: a misclassified GET queues a writer,
+            // which prevents the startup's nested read from making progress.
+            poll_fn(|cx| {
+                if let Poll::Ready(permit) = polling.as_mut().poll(cx) {
+                    poll_permit = Some(permit);
+                }
+                Poll::Ready(())
+            })
+            .await;
+            tokio::time::timeout(
+                std::time::Duration::from_millis(250),
+                locks.acquire(&request(
+                    "capability_state",
+                    json!({
+                        "group_id":"g_one", "actor_id":"worker", "view":"mcp_catalog"
+                    }),
+                )),
+            )
+            .await
+            .expect("Status polling must not create an actor-start/MCP lock cycle");
+            assert!(matches!(
+                poll_permit,
+                Some(DispatchPermit::GlobalRead { .. })
+            ));
+        }
+        for op in ["voice_preferences_set", "voice_messages_viewed"] {
+            assert!(matches!(
+                access(&request(op, json!({}))),
+                Access::GlobalWrite
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_catalog_discovery_can_finish_with_a_global_writer_queued() {
+        use std::future::{Future, poll_fn};
+        use std::task::Poll;
+
+        let locks = DispatchLocks::default();
+        let startup = locks.group_write("g_one").await;
+        let update = request("settings_update", json!({}));
+        let writer = locks.acquire(&update);
+        tokio::pin!(writer);
+        poll_fn(|cx| {
+            assert!(writer.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+
+        for op in [
+            "capability_state",
+            "term_attachment_status",
+            "terminal_write",
+        ] {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(250),
+                locks.acquire(&request(
+                    op,
+                    json!({"group_id":"g_one","actor_id":"peer","view":"mcp_catalog"}),
+                )),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                panic!("{op} must not queue behind a writer waiting for its caller")
+            });
+        }
+        // Discovery is independent; the actual mutation still waits for the
+        // lifecycle operation to complete.
+        poll_fn(|cx| {
+            assert!(writer.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(startup);
+        tokio::time::timeout(std::time::Duration::from_millis(250), writer)
+            .await
+            .expect("global mutation proceeds after startup releases its permit");
     }
 
     #[tokio::test]

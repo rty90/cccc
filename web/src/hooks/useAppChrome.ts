@@ -20,6 +20,7 @@ type UseAppChromeResult = {
   canManageGroups: boolean;
   ccccHome: string;
   fetchDirSuggestions: () => Promise<void>;
+  refreshWebAccessSession: () => Promise<boolean | null>;
 };
 
 export function useAppChrome({
@@ -39,14 +40,23 @@ export function useAppChrome({
   const refreshWebAccessSession = useCallback(async () => {
     try {
       const resp = await api.fetchWebAccessSession();
+      if (
+        !resp.ok &&
+        !["unauthorized", "auth_required", "permission_denied"].includes(resp.error.code)
+      ) {
+        setCanAccessGlobalSettings(null);
+        return null;
+      }
       const session = resp.ok ? (resp.result?.web_access_session ?? null) : null;
-      const allowed = Boolean(
-        session?.can_access_global_settings ?? !(session?.login_active ?? false),
-      );
+      const allowed =
+        Boolean(session) &&
+        Boolean(session?.can_access_global_settings ?? !(session?.login_active ?? false));
       setCanAccessGlobalSettings(allowed);
       useObservabilityStore.getState().setRuntimeVisibilityFromSession(session);
+      return Boolean(session?.is_admin);
     } catch {
       setCanAccessGlobalSettings(null);
+      return null;
     }
   }, []);
 
@@ -134,5 +144,10 @@ export function useAppChrome({
     void ensureRuntimesLoaded();
   }, [addActorOpen, editingActor, ensureRuntimesLoaded]);
 
-  return { canManageGroups: canAccessGlobalSettings === true, ccccHome, fetchDirSuggestions };
+  return {
+    canManageGroups: canAccessGlobalSettings === true,
+    ccccHome,
+    fetchDirSuggestions,
+    refreshWebAccessSession,
+  };
 }

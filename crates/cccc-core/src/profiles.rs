@@ -145,8 +145,8 @@ impl ProfileStore {
         let Some(profile) = self.get_ref(profile_id, scope, owner_id)? else {
             return Ok(None);
         };
-        let runtime = parse_profile_field(&profile, "runtime", ActorRuntime::default())?;
-        let runner = parse_profile_field(&profile, "runner", RunnerKind::default())?;
+        let runtime = parse_profile_runtime(&profile)?;
+        let runner = runtime.runner();
         let submit = parse_profile_field(&profile, "submit", ActorSubmit::default())?;
         let command = parse_profile_command(&profile)?;
         let environment = self.secret_values_ref(profile_id, scope, owner_id)?;
@@ -219,7 +219,11 @@ impl ProfileStore {
         profile.insert("scope".into(), json!(scope));
         profile.insert("owner_id".into(), json!(owner_id));
         profile.entry("runtime").or_insert_with(|| json!("codex"));
-        profile.entry("runner").or_insert_with(|| json!("pty"));
+        let runtime = parse_profile_runtime(&Value::Object(profile.clone()))?;
+        profile.insert(
+            "runner".into(),
+            serde_json::to_value(runtime.runner()).map_err(io::Error::other)?,
+        );
         let command = parse_profile_command_value(profile.get("command"))?;
         profile.insert(
             "command".into(),
@@ -532,6 +536,14 @@ impl ProfileStore {
                 }
                 let mut extracted = Vec::new();
                 for profile in profiles.profiles.values_mut() {
+                    if let Ok(runtime) = parse_profile_runtime(profile) {
+                        let runner =
+                            serde_json::to_value(runtime.runner()).map_err(io::Error::other)?;
+                        if profile.get("runner") != Some(&runner) {
+                            profile["runner"] = runner;
+                            changed = true;
+                        }
+                    }
                     let Some(env) = profile.get("env").and_then(Value::as_object).cloned() else {
                         continue;
                     };
@@ -663,6 +675,10 @@ fn python_string(value: &Value) -> String {
         Value::String(value) => value.clone(),
         Value::Array(_) | Value::Object(_) => python_repr(value),
     }
+}
+
+pub(crate) fn parse_profile_runtime(profile: &Value) -> io::Result<ActorRuntime> {
+    parse_profile_field(profile, "runtime", ActorRuntime::default())
 }
 
 fn parse_profile_field<T>(profile: &Value, field: &str, default: T) -> io::Result<T>

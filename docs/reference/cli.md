@@ -136,7 +136,6 @@ cccc actor add <actor_id> --runtime custom --command "my-agent"
 Options:
 - `--runtime`: Agent runtime (claude, codex, web_model, droid, etc.)
 - `--command`: Custom command (for custom runtime)
-- `--runner`: Runner type (pty or headless; web_model is headless-only)
 - `--title`: Display title
 
 For the ChatGPT Web Model actor, create and start the actor from the target CCCC Web group, then finish ChatGPT sign-in, MCP URL, and chat binding in `Settings > Global > ChatGPT Web Model`.
@@ -258,6 +257,7 @@ Manage IM Bridge.
 cccc im set telegram --token-env TELEGRAM_BOT_TOKEN
 cccc im set slack --bot-token-env SLACK_BOT_TOKEN --app-token-env SLACK_APP_TOKEN
 cccc im set discord --token-env DISCORD_BOT_TOKEN
+cccc im set mattermost --mattermost-url https://mattermost.example.com --bot-token-env MATTERMOST_BOT_TOKEN
 cccc im set feishu --app-key-env FEISHU_APP_ID --app-secret-env FEISHU_APP_SECRET
 cccc im set dingtalk --app-key-env DINGTALK_APP_KEY --app-secret-env DINGTALK_APP_SECRET --robot-code-env DINGTALK_ROBOT_CODE
 
@@ -346,17 +346,17 @@ The former `ccccd` executable is also retired. Scripts should use
 
 ### `cccc setup`
 
-Configure MCP for an agent runtime.
+Prepare or report the MCP integration for an agent runtime.
 
 ```bash
 cccc setup                         # Configure every supported runtime; unavailable CLIs are reported
-cccc setup --runtime claude        # Auto-configure for Claude Code
+cccc setup --runtime claude        # Report CCCC-owned per-session MCP for Claude Code
 cccc setup --runtime codex         # Auto-configure for Codex
 cccc setup --runtime copilot       # Auto-configure for GitHub Copilot CLI
 cccc setup --runtime cursor        # Show prompt-assisted setup contract for Cursor CLI
 cccc setup --runtime devin         # Auto-configure for Devin CLI
 cccc setup --runtime kiro          # Auto-configure for Kiro CLI
-cccc setup --runtime kimi          # Auto-configure for Kimi CLI
+cccc setup --runtime kimi          # Auto-configure for Kimi Code
 cccc setup --runtime kilo          # Show prompt-assisted setup contract for Kilo Code CLI
 cccc setup --runtime antigravity   # Show prompt-assisted setup contract for Antigravity CLI
 ```
@@ -371,17 +371,50 @@ Upgrade a website-installer-owned CCCC executable.
 
 ```bash
 cccc update                        # Upgrade from stable GitHub Releases
-cccc update --check                # Show the standalone install and channel
+cccc update --check                # Query latest release, ownership, and platform requirements
+cccc update --check --offline      # Inspect local details without a network request
 cccc update --channel stable       # Force the stable GitHub Release channel
 cccc update --channel rc           # Force the prerelease GitHub Release channel
 ```
 
 Notes:
 - A stable build defaults to `stable`; a prerelease build defaults to `rc`.
+- `--check` is read-only for standalone, pip-owned, and unmanaged installations.
+  It reports the exact executable, ownership, build platform requirements,
+  current version, latest channel version, and the appropriate next step. It
+  does not replace files, run pip, stop services, or grant standalone ownership.
+- A failed online check returns a nonzero exit code and retains local details
+  with an explicit unknown update status. `--offline` requires `--check`, makes
+  no network request, and labels the latest version as not checked. It does not
+  imply that the installed version is current.
 - Website-installer installations reuse the GitHub Pages installer and preserve
   their current install directory.
+- Update discovery reads `https://chesterra.github.io/cccc/releases.json`, a small
+  static file published with the installers, rather than querying the GitHub
+  Releases API on each user's machine. No GitHub token is required. Archives
+  still come from GitHub Releases and retain the installer's checksum checks.
+- The Pages workflow selects only published releases with the complete installer
+  asset set. Its versioned document has the shape
+  `{"schema_version":1,"repository":"ChesterRa/cccc","channels":{"stable":"0.4.37","rc":null}}`.
+  `rc` contains the latest complete prerelease, or `null` when none exists. The
+  installer default and `stable` are generated from the same release snapshot;
+  a discovery/build failure must not replace the live Pages deployment.
+- Version selection follows release precedence, with CCCC's `alphaN`, `betaN`,
+  and `rcN` suffixes compared numerically (for example, `rc10` follows `rc2`).
+  A same-version update is a no-op. Ordinary updates never install an older
+  version, including when Pages is briefly stale. An explicit switch to the
+  other channel, such as `--channel stable` from an RC build, may install an
+  older release of that channel. Missing channels and invalid metadata fail
+  before invoking the installer; there is no fallback to the rate-limited API.
+- Fork distributors using `CCCC_GITHUB_REPOSITORY` must also set
+  `CCCC_RELEASE_INDEX_URL` to their HTTPS static index. The index's `repository`
+  must match the configured repository. The standard installation needs neither
+  setting; these values never carry credentials.
+- Older installed versions still use their old discovery code. Once a fixed
+  release is published, rerun the original installation command to upgrade an
+  installation whose old `cccc update` is blocked by API rate limits.
 - Pip-owned, source-tree, and other markerless executables are not updated by
-  this command. Pip users run
+  this command; they can still use `--check`. Pip users run
   `python -m pip install -U "cccc-pair>=0.4.36"`; the wheel contains the same
   native executable and no Python runtime or fallback. Run `cccc daemon stop`
   and close foreground CCCC processes before asking pip to replace it.

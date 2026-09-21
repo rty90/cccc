@@ -4,10 +4,6 @@ import { ActorProfile, ActorProfileUsage, RUNTIME_INFO, SUPPORTED_RUNTIMES } fro
 import * as api from "../../../services/api";
 import { parsePrivateEnvSetText, parsePrivateEnvUnsetText } from "../../../utils/privateEnvInput";
 import { formatCapabilityIdInput, parseCapabilityIdInput } from "../../../utils/capabilityAutoload";
-import {
-  normalizeActorRunner,
-  supportsStandardWebHeadlessRuntime,
-} from "../../../utils/headlessRuntimeSupport";
 import { useGroupStore } from "../../../stores";
 import {
   inputClass,
@@ -20,8 +16,8 @@ import {
   settingsWorkspaceBodyClass,
   settingsWorkspaceHeaderClass,
   settingsWorkspacePanelClass,
+  settingsWorkspaceSectionClass,
   settingsWorkspaceShellClass,
-  settingsWorkspaceSoftPanelClass,
 } from "./types";
 import { CapabilityPicker } from "../../CapabilityPicker";
 import { SelectCombobox } from "../../SelectCombobox";
@@ -39,7 +35,6 @@ type EditorState = {
   revision: number;
   name: string;
   runtime: string;
-  runner: "pty" | "headless";
   command: string;
   useDefaultCommand: boolean;
   submit: "enter" | "newline" | "none";
@@ -80,23 +75,8 @@ function supportsRuntimeDefaultCommand(runtime: string): boolean {
   return String(runtime || "").trim() !== "custom";
 }
 
-function modeButtonClass(selected: boolean): string {
-  return [
-    "px-3 py-2.5 rounded-xl border text-sm min-h-[44px] font-medium transition-all ease-spring duration-300",
-    selected
-      ? "border-[var(--color-text-primary)] bg-[var(--color-text-primary)] text-[var(--color-bg-primary)] hover:bg-[var(--color-text-primary)] hover:text-[var(--color-bg-primary)] hover:opacity-90"
-      : "border-[var(--glass-border-subtle)] bg-[var(--glass-panel-bg)] text-[var(--color-text-secondary)] hover:bg-[var(--glass-tab-bg-hover)]",
-  ].join(" ");
-}
-
 function buildEditor(profile?: ActorProfile | null): EditorState {
   const runtime = String(profile?.runtime || "codex");
-  const runner =
-    runtime === "web_model"
-      ? "headless"
-      : supportsStandardWebHeadlessRuntime(runtime)
-        ? normalizeActorRunner(profile?.runner)
-        : "pty";
   const command = formatRuntimeCommand(profile?.command);
   const defaultCommand = defaultCommandForRuntime(runtime);
   const useDefaultCommand =
@@ -107,7 +87,6 @@ function buildEditor(profile?: ActorProfile | null): EditorState {
     revision: Number(profile?.revision || 0),
     name: String(profile?.name || ""),
     runtime,
-    runner,
     command,
     useDefaultCommand,
     submit: String(profile?.submit || "enter") as "enter" | "newline" | "none",
@@ -180,10 +159,6 @@ export function ActorProfilesTab({ isDark, isActive, scope }: ActorProfilesTabPr
     () => supportsRuntimeDefaultCommand(editor.runtime),
     [editor.runtime],
   );
-  const editorSupportsHeadlessRunner = useMemo(
-    () => supportsStandardWebHeadlessRuntime(editor.runtime),
-    [editor.runtime],
-  );
   const editorIsWebModel = useMemo(
     () => String(editor.runtime || "").trim() === "web_model",
     [editor.runtime],
@@ -251,7 +226,10 @@ export function ActorProfilesTab({ isDark, isActive, scope }: ActorProfilesTabPr
         </div>
         <div className={`${settingsDialogBodyClass} space-y-4`}>
           {editorErr ? (
-            <div className="rounded-lg border px-3 py-2 text-sm border-rose-500/30 bg-rose-500/10 text-rose-400">
+            <div
+              role="alert"
+              className="rounded-lg border px-3 py-2 text-sm border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
+            >
               {editorErr}
             </div>
           ) : null}
@@ -265,7 +243,7 @@ export function ActorProfilesTab({ isDark, isActive, scope }: ActorProfilesTabPr
             />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
             <div>
               <label className={labelClass()}>{t("actorProfiles.runtime")}</label>
               <SelectCombobox
@@ -292,12 +270,6 @@ export function ActorProfilesTab({ isDark, isActive, scope }: ActorProfilesTabPr
                     return {
                       ...prev,
                       runtime: nextRuntime,
-                      runner:
-                        nextRuntime === "web_model"
-                          ? "headless"
-                          : supportsStandardWebHeadlessRuntime(nextRuntime)
-                            ? prev.runner
-                            : "pty",
                       useDefaultCommand: supportsDefault ? prev.useDefaultCommand : false,
                       command: supportsDefault && prev.useDefaultCommand ? "" : prev.command,
                     };
@@ -308,41 +280,11 @@ export function ActorProfilesTab({ isDark, isActive, scope }: ActorProfilesTabPr
                 searchable
               />
               {editorIsWebModel ? (
-                <div className="mt-1.5 text-[10px] leading-4 text-[var(--color-text-muted)]">
+                <div className="mt-1.5 text-[0.625rem] leading-4 text-[var(--color-text-muted)]">
                   ChatGPT Web Model is managed as one CCCC actor in Settings &gt; ChatGPT Web Model;
                   new Runtime Profiles cannot use this runtime.
                 </div>
               ) : null}
-            </div>
-
-            <div>
-              <label className={labelClass()}>{t("actorProfiles.runner")}</label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  className={`${modeButtonClass(editor.runner === "pty")} ${editorIsWebModel ? "opacity-50 cursor-not-allowed" : ""}`}
-                  onClick={() => {
-                    if (editorIsWebModel) return;
-                    setEditor((prev) => ({ ...prev, runner: "pty" }));
-                  }}
-                  disabled={editorIsWebModel}
-                >
-                  {t("actorProfiles.pty")}
-                </button>
-                <button
-                  type="button"
-                  className={modeButtonClass(editor.runner === "headless")}
-                  onClick={() => setEditor((prev) => ({ ...prev, runner: "headless" }))}
-                  disabled={!editorSupportsHeadlessRunner}
-                >
-                  {t("actorProfiles.headless")}
-                </button>
-              </div>
-              <div className="mt-1 text-[10px] text-[var(--color-text-muted)]">
-                {editorSupportsHeadlessRunner
-                  ? t("actorProfiles.runnerModeHint")
-                  : t("actorProfiles.runnerModeHeadlessNote")}
-              </div>
             </div>
           </div>
 
@@ -374,7 +316,7 @@ export function ActorProfilesTab({ isDark, isActive, scope }: ActorProfilesTabPr
               />
             ) : null}
             {editorSupportsDefaultCommand && editorDefaultCommand ? (
-              <div className="text-[10px] mt-1 text-[var(--color-text-muted)]">
+              <div className="text-[0.625rem] mt-1 text-[var(--color-text-muted)]">
                 {editor.useDefaultCommand
                   ? t("actorProfiles.usingRuntimeDefaultCommand")
                   : t("actorProfiles.default")}{" "}
@@ -402,7 +344,7 @@ export function ActorProfilesTab({ isDark, isActive, scope }: ActorProfilesTabPr
             />
           </div>
 
-          <div className={settingsWorkspacePanelClass(isDark)}>
+          <div className={settingsWorkspaceSectionClass}>
             <div className="text-sm font-semibold text-[var(--color-text-primary)]">
               {t("actorProfiles.capabilityDefaults")}
             </div>
@@ -462,7 +404,7 @@ export function ActorProfilesTab({ isDark, isActive, scope }: ActorProfilesTabPr
             </div>
           </div>
 
-          <div className={settingsWorkspacePanelClass(isDark)}>
+          <div className={settingsWorkspaceSectionClass}>
             <div className="text-sm font-semibold text-[var(--color-text-primary)]">
               {t("actorProfiles.env")}
             </div>
@@ -480,7 +422,7 @@ export function ActorProfilesTab({ isDark, isActive, scope }: ActorProfilesTabPr
                   <span
                     key={key}
                     title={secretMasks[key] ? `${key}=${secretMasks[key]}` : key}
-                    className="px-2 py-0.5 rounded text-[11px] bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)]"
+                    className="px-2 py-0.5 rounded text-xs bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)]"
                   >
                     {key}
                   </span>
@@ -840,11 +782,6 @@ export function ActorProfilesTab({ isDark, isActive, scope }: ActorProfilesTabPr
         scope: profileScope,
         owner_id: ownerId,
         runtime: editor.runtime,
-        runner: editorIsWebModel
-          ? "headless"
-          : editorSupportsHeadlessRunner
-            ? editor.runner
-            : "pty",
         command:
           editorSupportsDefaultCommand && editor.useDefaultCommand ? "" : editor.command.trim(),
         submit: editor.submit,
@@ -893,6 +830,14 @@ export function ActorProfilesTab({ isDark, isActive, scope }: ActorProfilesTabPr
         return;
       }
 
+      // Configuration is committed even if a subsequent secret operation fails.
+      // Keep the draft, but retry against this exact Profile and revision.
+      setEditor((current) => ({
+        ...current,
+        id: profileId,
+        revision: Number(profile?.revision || 0),
+      }));
+
       if (copyFromProfileId && copyFromProfileId !== profileId) {
         const copyResp = await api.copyProfilePrivateEnvFromProfile(
           profileId,
@@ -905,6 +850,7 @@ export function ActorProfilesTab({ isDark, isActive, scope }: ActorProfilesTabPr
         }
       }
 
+      if (copyFromProfileId) setDuplicateSourceProfileId("");
       if (hasSecretOps) {
         const secretResp = await api.updateProfilePrivateEnv(
           profileId,
@@ -963,7 +909,7 @@ export function ActorProfilesTab({ isDark, isActive, scope }: ActorProfilesTabPr
             </div>
           ) : null}
 
-          <div className={settingsWorkspacePanelClass(isDark)}>
+          <div className="min-w-0">
             <div className="grid gap-3 lg:grid-cols-[minmax(0,320px)_1fr] lg:items-end">
               <div>
                 <label className={labelClass()}>{t("actorProfiles.searchPlaceholder")}</label>
@@ -992,7 +938,7 @@ export function ActorProfilesTab({ isDark, isActive, scope }: ActorProfilesTabPr
                         {profile.name || profile.id}
                       </div>
                       <span
-                        className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] ${
+                        className={`inline-flex rounded-full border px-2 py-0.5 text-xs ${
                           isDark
                             ? "border-white/10 bg-white/[0.04] text-[var(--color-text-secondary)]"
                             : "border-black/8 bg-black/[0.03] text-[var(--color-text-secondary)]"
@@ -1005,17 +951,11 @@ export function ActorProfilesTab({ isDark, isActive, scope }: ActorProfilesTabPr
                       <code>{profile.id}</code>
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
-                      <div className={settingsWorkspaceSoftPanelClass(isDark)}>
-                        <div className="text-[11px] text-[var(--color-text-muted)]">
-                          {t("actorProfiles.usageCount", {
-                            count: Number(profile.usage_count || 0),
-                          })}
-                        </div>
+                      <div className="text-xs text-[var(--color-text-muted)]">
+                        {t("actorProfiles.usageCount", { count: Number(profile.usage_count || 0) })}
                       </div>
-                      <div className={settingsWorkspaceSoftPanelClass(isDark)}>
-                        <div className="text-[11px] text-[var(--color-text-muted)]">
-                          {t("actorProfiles.revision", { revision: Number(profile.revision || 0) })}
-                        </div>
+                      <div className="text-xs text-[var(--color-text-muted)]">
+                        {t("actorProfiles.revision", { revision: Number(profile.revision || 0) })}
                       </div>
                     </div>
                   </div>

@@ -1,7 +1,8 @@
 use crate::RuntimeError;
-use crate::cancellation::wait_interruptibly;
+use crate::cancellation::{lock_interruptibly, wait_interruptibly};
 use crate::registry::{
-    Key, completed_history, discard_completed, lookup, remember_history, sessions, with_session,
+    Key, SharedSession, completed_history, discard_completed, lookup, remember_history, sessions,
+    with_session,
 };
 use crate::session::{LaunchSpec, Session, SessionStatus};
 use crate::session_history::SessionHistory;
@@ -150,9 +151,13 @@ pub fn stop_all() -> Result<Vec<SessionStatus>, RuntimeError> {
 }
 
 pub fn write(group_id: &str, actor_id: &str, data: &[u8]) -> Result<(), RuntimeError> {
-    let gate = input_gate(group_id, actor_id)?;
+    let session = lookup(group_id, actor_id)?;
+    let gate = session
+        .lock()
+        .map_err(|_| RuntimeError::Poisoned)?
+        .input_gate();
     let _guard = gate.lock().map_err(|_| RuntimeError::Poisoned)?;
-    write_locked(group_id, actor_id, data)
+    write_locked(&session, data, None).map(|_| ())
 }
 
 pub fn submit(
@@ -198,12 +203,20 @@ pub fn submit_sequence_interruptible(
     if cancelled.load(Ordering::Acquire) {
         return Ok(false);
     }
-    let gate = input_gate(group_id, actor_id)?;
-    let _guard = gate.lock().map_err(|_| RuntimeError::Poisoned)?;
+    let session = lookup(group_id, actor_id)?;
+    let gate = session
+        .lock()
+        .map_err(|_| RuntimeError::Poisoned)?
+        .input_gate();
+    let Some(_guard) = lock_interruptibly(&gate, &|| cancelled.load(Ordering::Acquire))? else {
+        return Ok(false);
+    };
     if cancelled.load(Ordering::Acquire) {
         return Ok(false);
     }
-    write_locked(group_id, actor_id, payload)?;
+    if !write_locked(&session, payload, Some(cancelled))? {
+        return Ok(false);
+    }
     for (index, submit) in submits
         .iter()
         .filter(|submit| !submit.is_empty())
@@ -217,50 +230,21 @@ pub fn submit_sequence_interruptible(
         if !wait_interruptibly(delay, cancelled) {
             return Ok(false);
         }
-        write_locked(group_id, actor_id, submit)?;
+        if !write_locked(&session, submit, Some(cancelled))? {
+            return Ok(false);
+        }
     }
     Ok(true)
 }
 
-fn input_gate(
-    group_id: &str,
-    actor_id: &str,
-) -> Result<std::sync::Arc<std::sync::Mutex<()>>, RuntimeError> {
-    with_session(group_id, actor_id, |session| Ok(session.input_gate()))
-}
-
-fn write_locked(group_id: &str, actor_id: &str, data: &[u8]) -> Result<(), RuntimeError> {
-    with_session(group_id, actor_id, |session| session.write(data))
-}
-
-/// Wait, once per session, until the actor's terminal has enabled bracketed paste: the sign that its TUI
-/// input loop exists. Antigravity (agy) opened one conversation per input when the daemon's preamble and the
-/// first message both arrived in the seconds before that loop was up (two trajectories, two replies). Ported
-/// from upstream v0.4.38 (`wait_for_input_ready`) and applied to every PTY runtime here. A session that never
-/// enables bracketed paste waits `timeout` on its first delivery only; later deliveries pass straight through.
-/// Returns Ok(false) only when the session is gone or the wait was cancelled.
+/// Wait for the native TUI to advertise its input mode, not for a turn to finish.
+/// Creating a PTY alone leaves its canonical buffer liable to truncate a paste.
 pub fn wait_for_input_ready(
     group_id: &str,
     actor_id: &str,
     timeout: Duration,
     cancelled: &AtomicBool,
 ) -> Result<bool, RuntimeError> {
-    let current = status(group_id, actor_id)?;
-    if !current.running {
-        return Ok(false);
-    }
-    let session_key = format!("{group_id}\u{0}{actor_id}\u{0}{}", current.started_at);
-    {
-        let mut waited = readiness_waited().lock().map_err(|_| RuntimeError::Poisoned)?;
-        if waited.contains(&session_key) {
-            return Ok(true);
-        }
-        waited.insert(session_key.clone());
-        if waited.len() > 512 {
-            waited.clear();
-            waited.insert(session_key);
-        }
-    }
     let deadline = std::time::Instant::now() + timeout;
     loop {
         if cancelled.load(Ordering::Acquire) {
@@ -269,12 +253,12 @@ pub fn wait_for_input_ready(
         if !status(group_id, actor_id)?.running {
             return Ok(false);
         }
-        if crate::bracketed_paste_enabled(group_id, actor_id).unwrap_or(false) {
+        if crate::bracketed_paste_enabled(group_id, actor_id)? {
             return Ok(true);
         }
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
-            return Ok(true);
+            return Ok(false);
         }
         if !wait_interruptibly(remaining.min(Duration::from_millis(25)), cancelled) {
             return Ok(false);
@@ -282,9 +266,23 @@ pub fn wait_for_input_ready(
     }
 }
 
-fn readiness_waited() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
-    static WAITED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
-    WAITED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+fn write_locked(
+    session: &SharedSession,
+    data: &[u8],
+    cancelled: Option<&AtomicBool>,
+) -> Result<bool, RuntimeError> {
+    let writer = session
+        .lock()
+        .map_err(|_| RuntimeError::Poisoned)?
+        .input_writer()?;
+    // The input gate preserves ordering; blocking IO must not hold the Session
+    // lock required by status, stop and process cleanup. Pin this generation.
+    match cancelled {
+        Some(cancelled) => crate::pty_input::write_input_interruptibly(&writer, data, &|| {
+            cancelled.load(Ordering::Acquire)
+        }),
+        None => crate::pty_input::write_input(&writer, data).map(|()| true),
+    }
 }
 
 pub fn resize(group_id: &str, actor_id: &str, cols: u16, rows: u16) -> Result<(), RuntimeError> {

@@ -1,6 +1,7 @@
 // Drag-and-drop file handling.
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useUIStore, useComposerStore } from "../stores";
+import { useShallow } from "zustand/react/shallow";
 
 const WEB_MAX_FILE_MB = 100;
 const WEB_MAX_FILE_BYTES = WEB_MAX_FILE_MB * 1024 * 1024;
@@ -28,8 +29,13 @@ interface UseDragDropOptions {
 }
 
 export function useDragDrop({ selectedGroupId }: UseDragDropOptions) {
-  const { showError } = useUIStore();
-  const { appendComposerFiles, composerFiles } = useComposerStore();
+  const { showError } = useUIStore(useShallow((s) => ({ showError: s.showError })));
+  const { appendComposerFiles, composerFiles } = useComposerStore(
+    useShallow((s) => ({
+      appendComposerFiles: s.appendComposerFiles,
+      composerFiles: s.composerFiles,
+    })),
+  );
 
   const [dropOverlayOpen, setDropOverlayOpen] = useState(false);
   const dragDepthRef = useRef<number>(0);
@@ -61,6 +67,13 @@ export function useDragDrop({ selectedGroupId }: UseDragDropOptions) {
 
   // Drag/drop event listeners.
   useEffect(() => {
+    const inWorkspace = (e: DragEvent) => {
+      if (!(e.target instanceof Element) || !e.target.closest("[data-workspace-drop]"))
+        return false;
+      dragDepthRef.current = 0;
+      setDropOverlayOpen(false);
+      return true;
+    };
     const hasFiles = (e: DragEvent) => {
       const dt = e.dataTransfer;
       if (!dt) return false;
@@ -74,25 +87,25 @@ export function useDragDrop({ selectedGroupId }: UseDragDropOptions) {
     };
 
     const onDragEnter = (e: DragEvent) => {
-      if (!hasFiles(e)) return;
+      if (inWorkspace(e) || !hasFiles(e)) return;
       e.preventDefault();
       dragDepthRef.current += 1;
       setDropOverlayOpen(true);
     };
 
     const onDragOver = (e: DragEvent) => {
-      if (!hasFiles(e)) return;
+      if (inWorkspace(e) || !hasFiles(e)) return;
       e.preventDefault();
     };
 
     const onDragLeave = (e: DragEvent) => {
-      if (!hasFiles(e)) return;
+      if (inWorkspace(e) || !hasFiles(e)) return;
       dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
       if (dragDepthRef.current === 0) setDropOverlayOpen(false);
     };
 
     const onDrop = (e: DragEvent) => {
-      if (!hasFiles(e)) return;
+      if (inWorkspace(e) || !hasFiles(e)) return;
       e.preventDefault();
       dragDepthRef.current = 0;
       setDropOverlayOpen(false);

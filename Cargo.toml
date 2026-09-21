@@ -10,6 +10,8 @@ members = [
   "crates/cccc-mcp",
   "crates/cccc-notebooklm",
   "crates/cccc-web",
+  "crates/cccc-windows-console",
+  "crates/cccc-windows-process",
   "crates/cccc-cli",
 ]
 exclude = [
@@ -18,7 +20,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.4.37"
+version = "0.4.40"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/ChesterRa/cccc"
@@ -49,6 +51,7 @@ serenity = { version = "0.12.5", default-features = false, features = ["client",
 lark-channel = { version = "0.4", features = ["websocket"] }
 weixin-agent = "0.2.0"
 fs2 = "0.4"
+fs_at = "0.2.1"
 flate2 = "1.1"
 futures-util = "0.3"
 http-body-util = "0.1"
@@ -62,6 +65,8 @@ retach = { version = "=0.10.1", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls", "socks", "system-proxy"] }
 rust-embed = "8.7"
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
+tokio-rustls = "0.26"
+semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
@@ -75,6 +80,7 @@ tempfile = "3.20"
 thiserror = "2.0"
 tokio = { version = "1.47", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
+toml = { version = "1.1", default-features = false, features = ["parse", "std", "serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = "2.5"
@@ -84,9 +90,12 @@ mime_guess = "2.0"
 md-5 = "0.10"
 notify = "8.2"
 nix = { version = "0.28", features = ["signal"] }
+if-addrs = "0.15"
 uuid = { version = "1.17", features = ["v4", "serde"] }
 unicode-width = "0.2"
 windows-sys = "0.61"
+renamore = "0.3.2"
+same-file = "1.0.6"
 win32job = "2.0.3"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 hound = "3.5"

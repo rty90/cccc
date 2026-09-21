@@ -15,6 +15,7 @@ import type {
   TaskBoardEntry,
   TaskChecklistItem,
 } from "../../types";
+import { frameResourceUrl } from "../../features/connect/protocol";
 
 export type ApiResponse<T> =
   | { ok: true; result: T; error?: null }
@@ -46,8 +47,11 @@ export const RECENT_BOOTSTRAP_READ_TTL_MS = 1000;
 
 let globalReadEpoch = 0;
 
-export function onAuthRequired(handler: () => void): void {
+export function onAuthRequired(handler: () => void): () => void {
   authRequiredHandler = handler;
+  return () => {
+    if (authRequiredHandler === handler) authRequiredHandler = null;
+  };
 }
 
 export function isAuthRequiredErrorCode(code: unknown): boolean {
@@ -153,7 +157,7 @@ function getAuthHeaders(): Record<string, string> {
 }
 
 export function withAuthToken(url: string): string {
-  return url;
+  return frameResourceUrl(url);
 }
 
 export function refreshAuthTokenInUrl(url: string): string {
@@ -781,7 +785,15 @@ export async function apiJson<T>(path: string, init?: RequestInit): Promise<ApiR
     authRequiredHandler?.();
   }
 
-  const text = await resp.text();
+  let text: string;
+  try {
+    text = await resp.text();
+  } catch (error) {
+    return makeErrorResponse(
+      "NETWORK_ERROR",
+      error instanceof Error ? error.message : "Network response was interrupted",
+    );
+  }
   if (!text) {
     if (resp.ok) {
       return { ok: true, result: {} as T };
@@ -848,4 +860,26 @@ export async function apiForm<T>(
   } catch {
     return makeErrorResponse("PARSE_ERROR", `Invalid JSON response: ${text.slice(0, 100)}`);
   }
+}
+
+/**
+ * Read a download name out of a Content-Disposition header.
+ *
+ * Browsers hand header values back decoded as ISO-8859-1, so the plain
+ * `filename=` parameter is mojibake whenever the server put non-ASCII bytes
+ * there. Prefer the percent-encoded RFC 5987 `filename*` parameter, which is
+ * pure ASCII on the wire and decodes back to the original UTF-8 name.
+ */
+export function filenameFromContentDisposition(header: string, fallback: string): string {
+  const extended = /(?:^|;)\s*filename\*\s*=\s*UTF-8''([^;\s]+)/i.exec(header);
+  if (extended) {
+    try {
+      const decoded = decodeURIComponent(extended[1]).trim();
+      if (decoded) return decoded;
+    } catch {
+      // A malformed escape falls through to the ASCII parameter below.
+    }
+  }
+  const plain = /(?:^|;)\s*filename\s*=\s*"?([^";]+)"?/i.exec(header);
+  return plain?.[1].trim() || fallback;
 }

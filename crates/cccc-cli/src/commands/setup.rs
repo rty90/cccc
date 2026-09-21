@@ -143,14 +143,57 @@ fn setup_one(
             "runtime":runtime,"mode":"manual","status":"requires_action","config":config
         }));
     }
-    if matches!(runtime, "cursor" | "kilo" | "antigravity") {
+    if runtime == "cursor" {
         return Ok(json!({
             "runtime":runtime,"mode":"prompt_assisted","status":"requires_action",
             "project_path":absolute(&args.path)?,"config":config,
             "instruction":"Add or replace the stdio MCP server named cccc with this configuration, then verify it is enabled."
         }));
     }
-    if runtime == "opencode" {
+    if runtime == "antigravity" {
+        let environment = std::env::vars().collect();
+        let cwd = absolute(&args.path)?;
+        let command = add_command(runtime, executable)?;
+        let path = cccc_core::runtime_mcp::ensure_antigravity(&cwd, &environment, || {
+            let program = cccc_core::runtime_mcp::resolve_program_in(
+                &command[0],
+                std::env::var_os("PATH").as_deref(),
+                &cwd,
+            );
+            let output = cccc_runtime::capture_command_blocking(
+                Command::new(program).args(&command[1..]).current_dir(&cwd),
+                None,
+                std::time::Duration::from_secs(30),
+                32_768,
+            )?;
+            if !output.status.success() || output.stdout_truncated || output.stderr_truncated {
+                return Err(std::io::Error::other(
+                    "Antigravity MCP setup failed; verify that the installed agy supports `mcp add` and its configuration is writable",
+                ));
+            }
+            Ok(())
+        })?;
+        return Ok(
+            json!({"runtime":runtime,"mode":"auto","status":"ready","path":path,
+            "note":"Native feedback surveys are disabled in Antigravity user settings, including standalone sessions, to keep automated input from being consumed by a survey.",
+            "config":{"mcpServers":{"cccc":{"command":"cccc","args":["mcp"]}}}}),
+        );
+    }
+    if runtime == "grok" {
+        let environment = std::env::vars().collect();
+        let path = cccc_core::runtime_mcp::ensure_grok(
+            &absolute(&args.path)?,
+            &environment,
+            executable,
+            "grok",
+        )?;
+        return Ok(json!({
+            "runtime":runtime,"mode":"managed_session","status":"ready",
+            "managed":true,"mcp":"native_registry","path":path,
+            "note":"Only Grok's cccc MCP entry is managed. Other imported MCP servers remain available; standalone Grok also uses this native entry."
+        }));
+    }
+    if matches!(runtime, "claude" | "opencode" | "kilo") {
         return Ok(json!({
             "runtime":runtime,
             "mode":"managed_session",
@@ -159,14 +202,15 @@ fn setup_one(
             "mcp":"injected_per_session"
         }));
     }
-    if runtime == "grok" {
-        return Ok(json!({
-            "runtime":runtime,
-            "mode":"managed_session",
-            "status":"ready",
-            "managed":true,
-            "mcp":"injected_per_session"
-        }));
+    if runtime == "kimi" {
+        let mut environment = std::env::vars().collect::<std::collections::BTreeMap<_, _>>();
+        environment.insert(
+            "CCCC_HOME".into(),
+            home.root().to_string_lossy().into_owned(),
+        );
+        let path =
+            cccc_core::runtime_mcp::ensure_kimi(&absolute(&args.path)?, &environment, executable)?;
+        return Ok(json!({"runtime":runtime,"mode":"auto","status":"ready","path":path}));
     }
     let command = add_command(runtime, executable)?;
     let cwd = absolute(&args.path)?;

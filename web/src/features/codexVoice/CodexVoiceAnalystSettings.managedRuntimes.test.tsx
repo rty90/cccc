@@ -41,6 +41,20 @@ afterEach(() => {
 
 for (const candidate of [
   {
+    runtime: "kilo",
+    id: "voice-kilo",
+    name: "Voice Kilo",
+    label: "Kilo Code CLI",
+    command: "kilo --model openai/gpt-5",
+  },
+  {
+    runtime: "claude",
+    id: "voice-claude",
+    name: "Voice Claude",
+    label: "Claude Code",
+    command: "claude --model opus",
+  },
+  {
     runtime: "grok",
     id: "voice-grok",
     name: "Voice Grok",
@@ -113,6 +127,11 @@ for (const candidate of [
     );
     expect(host.textContent).toContain(candidate.name);
     expect(host.textContent).toContain(candidate.label);
+    if (candidate.runtime === "opencode" || candidate.runtime === "kilo") {
+      expect(host.textContent).toContain("opencodeManagedModelHint");
+    } else {
+      expect(host.textContent).not.toContain("opencodeManagedModelHint");
+    }
     const confirm = vi.fn(() => true);
     Object.defineProperty(window, "confirm", { configurable: true, value: confirm });
     controller.analyst = { tui_ready: true } as never;
@@ -126,6 +145,7 @@ for (const candidate of [
       environmentSet: {},
       environmentUnset: [],
       environmentClear: false,
+      discardCurrentWork: false,
     });
     await act(async () => root.unmount());
   });

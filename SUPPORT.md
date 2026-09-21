@@ -25,6 +25,37 @@ Open a [GitHub Issue](https://github.com/ChesterRa/cccc/issues) and include:
 
 If the issue involves the daemon, include relevant lines from `~/.cccc/daemon/ccccd.log`.
 
+For a source build, include **Settings → This instance → Developer → Copy build
+information**. It identifies the running Web/daemon source and served/loaded Web
+entries even when product version numbers match; it does not include credentials
+or local paths. `cccc doctor` also reports the CLI and daemon build identities and
+installation paths. Check those paths before sharing its full output publicly.
+The source fingerprint is diagnostic metadata, not a binary checksum or a protocol
+compatibility check. Different source builds never trigger an automatic restart.
+Web asset diagnostics follow the resources actually served: embedded assets in
+release builds, current disk assets in debug/source-run builds. A frontend-only
+rebuild can therefore change the Web bundle identity without changing the Rust
+source identity; temporarily unavailable assets show no identity.
+
+For a Codex Voice startup failure, include the `[cccc] Codex Voice start failed`
+line from the terminal that launched CCCC, or the failed
+`POST /api/v1/codex_voice/calls` response's `error.code` and `error.details`.
+These contain the failure stage, total startup duration and, when available, the
+upstream HTTP status or OS error number. Do not share the request body, authentication
+files or tokens. Analyst startup and Realtime Voice login/network failures are
+reported separately; a successful Analyst is retained if Realtime startup fails.
+
+For a Voice connection lost after startup, include the
+`[cccc] Managed Codex disconnected` and `[cccc] Codex Voice control ended`
+records from the launch terminal, plus the browser console's Voice connection records. These identify
+which connection ended first, its lifetime and close code, and the managed
+process state observed before cleanup. An exited process may include an exit
+code; a running process at observation time is not proof that it stayed healthy.
+Browser records include page visibility and WebRTC state. Do not include raw
+provider responses, transcripts, credentials or browser close-reason text.
+A generic control-connection error does not establish that the Analyst is still
+available; check the Analyst status separately.
+
 ## Feature Requests
 
 Open a [GitHub Issue](https://github.com/ChesterRa/cccc/issues) with:

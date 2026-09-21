@@ -93,6 +93,7 @@ export function MessageRows({
     return (
       <div
         ref={contentRef}
+        className="chat-reading-width"
         style={{
           height: `${totalVirtualSize}px`,
           width: "100%",
@@ -127,7 +128,7 @@ export function MessageRows({
   }
 
   return (
-    <div ref={contentRef} className="w-full pb-24" style={{ marginTop: nonVirtualTopMargin }}>
+    <div ref={contentRef} className="chat-reading-width pb-24" style={{ marginTop: nonVirtualTopMargin }}>
       {messages.map((message, index) => {
         const grouping = getMessageRowGrouping(
           index > 0 ? messages[index - 1] : undefined,
@@ -139,6 +140,14 @@ export function MessageRows({
             data-index={index}
             data-message-row="true"
             data-message-id={message.id ? String(message.id) : ""}
+            data-voice-viewable={
+              message.kind === "chat.message" &&
+              message.by !== "user" &&
+              !message._streaming &&
+              !readOnly
+                ? "true"
+                : undefined
+            }
             className={grouping.compactSpacing ? "pb-3" : "pb-6"}
           >
             <MessageBubble

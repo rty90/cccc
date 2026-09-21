@@ -209,6 +209,7 @@ pub fn import(
     }
     scrub_group(&mut group);
     sanitize_import_profiles(store, &mut group)?;
+    require_web_model_singleton(store, &group)?;
     let imported = store.import(group.clone())?;
     let target = store.group_dir(&final_group_id)?;
     let result = (|| {
@@ -547,6 +548,29 @@ fn scrub_group(group: &mut GroupDoc) {
     }
 }
 
+/// Imported packages must respect the same instance-wide ChatGPT Web Model
+/// limit as actor_add; this runs before the group is registered so a rejected
+/// package leaves nothing behind.
+fn require_web_model_singleton(store: &GroupStore, group: &GroupDoc) -> io::Result<()> {
+    let profiles = crate::profiles::ProfileStore::new(store.home().clone())?;
+    let mut imported = 0;
+    for actor in &group.actors {
+        imported += usize::from(crate::actors::reserves_web_model(&profiles, actor)?);
+    }
+    if imported == 0 {
+        return Ok(());
+    }
+    if imported > 1 {
+        return Err(io::Error::other(
+            "ChatGPT Web Model is limited to one actor per CCCC instance; the package contains more than one",
+        ));
+    }
+    match crate::actors::web_model_singleton_conflict(store, None)? {
+        Some(message) => Err(io::Error::other(message)),
+        None => Ok(()),
+    }
+}
+
 fn sanitize_import_profiles(store: &GroupStore, group: &mut GroupDoc) -> io::Result<()> {
     let profiles = crate::profiles::ProfileStore::new(store.home().clone())?;
     for actor in &mut group.actors {
@@ -750,6 +774,115 @@ mod tests {
             .expect_err("rollback failure");
         assert!(error.to_string().contains("rollback_failed"));
         assert!(error.to_string().contains("g_import"));
+    }
+
+    #[test]
+    fn import_rejects_a_second_web_model_actor() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = crate::HomeLayout::from_path(temp.path().join("home")).expect("home");
+        let store = GroupStore::new(home).expect("store");
+        let source = store.create("source", "").expect("source group");
+        let set_web_model = |present: bool| {
+            store
+                .mutate(&source.group_id, |doc| {
+                    doc.actors.clear();
+                    if present {
+                        let mut actor = cccc_contracts::Actor::new("web");
+                        actor.runtime = cccc_contracts::ActorRuntime::WebModel;
+                        doc.actors.push(actor);
+                    }
+                    Ok(())
+                })
+                .expect("mutate source group");
+        };
+        set_web_model(true);
+        let (bytes, _, _) = export(&store, &source.group_id).expect("export");
+
+        let error = import(&store, &bytes, "", "").expect_err("second owner must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("ChatGPT Web Model is limited to one actor"),
+            "{error}"
+        );
+        assert_eq!(
+            store.list().expect("registry").len(),
+            1,
+            "a rejected package must not register a group"
+        );
+
+        set_web_model(false);
+        import(&store, &bytes, "", "").expect("import succeeds once the slot is free");
+        assert_eq!(store.list().expect("registry").len(), 2);
+    }
+
+    #[test]
+    fn import_preserves_legacy_profile_without_runtime() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = crate::HomeLayout::from_path(temp.path().join("home")).expect("home");
+        let store = GroupStore::new(home.clone()).expect("store");
+        crate::fs::write_json(
+            &home.root().join("profiles.json"),
+            &serde_json::json!({"profiles":{"legacy":{"id":"legacy","env":{}}}}),
+        )
+        .expect("legacy profile");
+        let source = store.create("source", "").expect("group");
+        store
+            .mutate(&source.group_id, |doc| {
+                let mut actor = cccc_contracts::Actor::new("linked");
+                actor.profile_id = "legacy".into();
+                doc.actors.push(actor);
+                Ok(())
+            })
+            .expect("actor");
+        let (bytes, _, _) = export(&store, &source.group_id).expect("export");
+        let imported = import(&store, &bytes, "", "").expect("import legacy Profile");
+        let imported = store.load(&imported.group_id).expect("imported group");
+        assert_eq!(imported.actors[0].profile_id, "legacy");
+        assert_eq!(
+            imported.actors[0].runtime,
+            cccc_contracts::ActorRuntime::Codex
+        );
+    }
+
+    #[test]
+    fn import_checks_pending_linked_profile_runtime() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = crate::HomeLayout::from_path(temp.path().join("home")).expect("home");
+        let store = GroupStore::new(home.clone()).expect("store");
+        let profiles = crate::profiles::ProfileStore::new(home).expect("profiles");
+        let upsert = |runtime: &str| {
+            profiles
+                .upsert(
+                    serde_json::json!({"id":"shared", "runtime":runtime})
+                        .as_object()
+                        .expect("profile object")
+                        .clone(),
+                    None,
+                )
+                .expect("profile")
+        };
+        upsert("codex");
+        let source = store.create("source", "").expect("group");
+        store
+            .mutate(&source.group_id, |doc| {
+                let mut actor = cccc_contracts::Actor::new("linked");
+                actor.profile_id = "shared".into();
+                doc.actors.push(actor);
+                Ok(())
+            })
+            .expect("actor");
+        let (bytes, _, _) = export(&store, &source.group_id).expect("export");
+        upsert("web_model");
+        let error = import(&store, &bytes, "", "").expect_err("linked runtime owns slot");
+        assert!(
+            error.to_string().contains("limited to one actor"),
+            "{error}"
+        );
+        assert_eq!(store.list().expect("registry").len(), 1);
+        store.delete(&source.group_id).expect("remove owner");
+        import(&store, &bytes, "", "").expect("free slot");
+        assert_eq!(store.list().expect("registry").len(), 1);
     }
 
     #[test]

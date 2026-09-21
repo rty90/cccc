@@ -1,7 +1,14 @@
+import { useUIStore } from "../../stores/useUIStore";
+import { groupConnectionCount } from "../../features/connect/protocol";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Trash2 } from "lucide-react";
+import { instanceName } from "../../features/connect/instanceName";
 import { useTranslation } from "react-i18next";
 import { GroupMeta } from "../../types";
 import { classNames } from "../../utils/classNames";
+import type { GroupControl } from "../../utils/groupControls";
+import { groupRunMenuActions } from "./groupRunMenuActions";
+import { getGroupStatusFromSource } from "../../utils/groupStatus";
 import {
   CloseIcon,
   FolderIcon,
@@ -17,13 +24,16 @@ import { useBrandingStore } from "../../stores";
 import { resolveThemeAwareLogoUrl } from "../../utils/branding";
 import { Button } from "../ui/button";
 import { IconButton } from "../ui/icon-button";
-import { canReorderSidebarGroups, groupSidebarScrollClass } from "./groupSidebarModel";
+import { getSidebarReorderActivation, groupSidebarScrollClass } from "./groupSidebarModel";
 import { CodexVoiceSidebarDock } from "../../features/codexVoice/CodexVoiceShellSurfaces";
 import type { CodexVoiceShellState } from "../../features/codexVoice/useCodexVoiceShell";
 import { SidebarResizeHandle } from "./SidebarResizeHandle";
 import { SidebarMobileOverlay } from "./SidebarMobileOverlay";
+import { ConnectSidebar } from "../../features/connect/ConnectSidebar";
+import type { ConnectWorkbench } from "../../features/connect/useConnectWorkbench";
 
 export interface GroupSidebarProps {
+  connect?: ConnectWorkbench;
   orderedGroups: GroupMeta[];
   archivedGroupIds: string[];
   selectedGroupId: string;
@@ -31,9 +41,8 @@ export interface GroupSidebarProps {
   isCollapsed: boolean;
   sidebarWidth: number;
   isDark: boolean;
-  isSmallScreen: boolean;
   readOnly?: boolean;
-  codexVoice: CodexVoiceShellState;
+  codexVoice?: CodexVoiceShellState;
   onSelectGroup: (groupId: string) => void;
   onWarmGroup?: (groupId: string) => void;
   onCreateGroup?: () => void;
@@ -43,9 +52,15 @@ export interface GroupSidebarProps {
   onReorderSection: (section: "working" | "archived", fromIndex: number, toIndex: number) => void;
   onArchiveGroup: (groupId: string) => void;
   onRestoreGroup: (groupId: string) => void;
+  onOpenGroupConnections?: (groupId: string) => void;
+  /** Launch/pause/stop a group from its menu; omitted for read-only viewers. */
+  onControlGroup?: (groupId: string, control: GroupControl) => void;
+  /** Delete a group from its menu; the handler owns the confirmation. */
+  onDeleteGroup?: (groupId: string) => void;
 }
 
 export function GroupSidebar({
+  connect,
   orderedGroups,
   archivedGroupIds,
   selectedGroupId,
@@ -53,7 +68,6 @@ export function GroupSidebar({
   isCollapsed,
   sidebarWidth,
   isDark,
-  isSmallScreen,
   readOnly,
   codexVoice,
   onSelectGroup,
@@ -65,8 +79,12 @@ export function GroupSidebar({
   onReorderSection,
   onArchiveGroup,
   onRestoreGroup,
+  onOpenGroupConnections,
+  onControlGroup,
+  onDeleteGroup,
 }: GroupSidebarProps) {
   const { t } = useTranslation("layout");
+  const controlsBusy = useUIStore((state) => state.busy.startsWith("group-"));
   const branding = useBrandingStore((s) => s.branding);
   const logoSrc = resolveThemeAwareLogoUrl(branding.logo_icon_url, isDark);
   const sidebarRef = useRef<HTMLElement | null>(null);
@@ -150,6 +168,38 @@ export function GroupSidebar({
     [isCollapsed, sidebarWidth],
   );
 
+  const runActionsFor = useCallback(
+    (group: GroupMeta) => {
+      if (!onControlGroup || readOnly) return [];
+      const gid = String(group.group_id || "");
+      return groupRunMenuActions(
+        getGroupStatusFromSource(group).key,
+        t,
+        (control) => onControlGroup(gid, control),
+        controlsBusy,
+      );
+    },
+    [onControlGroup, readOnly, t, controlsBusy],
+  );
+
+  const trailingActionsFor = useCallback(
+    (group: GroupMeta) => {
+      if (!onDeleteGroup || readOnly) return [];
+      const gid = String(group.group_id || "");
+      return [
+        {
+          label: t("deleteGroup"),
+          disabled: controlsBusy,
+          icon: <Trash2 size={15} />,
+          tone: "danger" as const,
+          section: "danger",
+          onClick: () => onDeleteGroup(gid),
+        },
+      ];
+    },
+    [onDeleteGroup, readOnly, t, controlsBusy],
+  );
+
   const renderGroupList = useCallback(
     (groups: GroupMeta[], section: "working" | "archived") => {
       const isArchivedSection = section === "archived";
@@ -162,8 +212,7 @@ export function GroupSidebar({
         setArchivedOpen(true);
         onArchiveGroup(gid);
       };
-
-      if (canReorderSidebarGroups({ isSmallScreen, isCollapsed, readOnly })) {
+      if (getSidebarReorderActivation({ isCollapsed, readOnly }) !== "disabled") {
         return (
           <GroupSidebarSortableList
             groups={groups}
@@ -173,9 +222,14 @@ export function GroupSidebar({
             isCollapsed={false}
             readOnly={readOnly}
             menuActionLabel={menuActionLabel}
+            connectionsLabel={t("groupConnections.title")}
+            onOpenConnections={onOpenGroupConnections}
+            connectionSummary={connect?.groupConnections}
             menuAriaLabel={t("groupActions")}
-            dragHandleLabel={t("reorderGroup")}
+            reorderInstructions={t("reorderWithKeyboard")}
             onMenuAction={handleMenuAction}
+            runActionsFor={runActionsFor}
+            trailingActionsFor={trailingActionsFor}
             onReorderSection={onReorderSection}
             onSelectGroup={onSelectGroup}
             onWarmGroup={onWarmGroup}
@@ -183,7 +237,6 @@ export function GroupSidebar({
           />
         );
       }
-
       return (
         <div className={classNames(isCollapsed ? "flex flex-col items-center gap-2" : "space-y-1")}>
           {groups.map((g) => {
@@ -195,9 +248,16 @@ export function GroupSidebar({
                 isActive={gid === selectedGroupId}
                 isCollapsed={isCollapsed}
                 isArchived={isArchivedSection}
+                connectionsLabel={t("groupConnections.title")}
+                connection={groupConnectionCount(connect?.groupConnections, gid)}
+                onOpenConnections={
+                  onOpenGroupConnections ? () => onOpenGroupConnections(gid) : undefined
+                }
                 menuActionLabel={isCollapsed ? undefined : menuActionLabel}
                 menuAriaLabel={isCollapsed ? undefined : `${t("groupActions")} · ${g.title || gid}`}
                 onMenuAction={isCollapsed ? undefined : () => handleMenuAction(gid)}
+                runActions={isCollapsed ? undefined : runActionsFor(g)}
+                trailingActions={isCollapsed ? undefined : trailingActionsFor(g)}
                 onSelect={() => {
                   onSelectGroup(gid);
                   if (window.matchMedia("(max-width: 767px)").matches) onClose();
@@ -212,16 +272,19 @@ export function GroupSidebar({
     [
       isCollapsed,
       isDark,
-      isSmallScreen,
       onArchiveGroup,
       onClose,
       onReorderSection,
       onRestoreGroup,
+      onOpenGroupConnections,
+      connect?.groupConnections,
       onSelectGroup,
       onWarmGroup,
       readOnly,
+      runActionsFor,
       selectedGroupId,
       t,
+      trailingActionsFor,
     ],
   );
 
@@ -343,10 +406,24 @@ export function GroupSidebar({
         {/* Group list */}
         <div className={groupSidebarScrollClass(isCollapsed)}>
           {!isCollapsed && (
-            <div className="px-2 pb-2">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]/85">
+            <div
+              className="flex min-w-0 items-baseline gap-2 px-2 pb-2"
+              title={
+                connect?.ownInstance
+                  ? [connect.ownInstance.display_name, connect.ownInstance.public_origin]
+                      .filter(Boolean)
+                      .join(" · ")
+                  : undefined
+              }
+            >
+              <div className="shrink-0 text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">
                 {t("workingGroups")}
               </div>
+              {connect?.ownInstance && (
+                <span className="min-w-0 flex-1 truncate text-right text-xs text-[var(--color-text-secondary)]">
+                  {instanceName(connect.ownInstance, connect.instances)}
+                </span>
+              )}
             </div>
           )}
 
@@ -363,10 +440,10 @@ export function GroupSidebar({
                 aria-expanded={archivedPanelOpen}
               >
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-[var(--color-text-tertiary)]">
+                  <span className="text-xs font-semibold uppercase tracking-[0.15em] text-[var(--color-text-tertiary)]">
                     {t("archivedGroups")}
                   </span>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[var(--glass-panel-bg)] text-[var(--color-text-secondary)]">
+                  <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-[var(--glass-panel-bg)] text-[var(--color-text-secondary)]">
                     {archivedGroups.length}
                   </span>
                 </div>
@@ -408,9 +485,20 @@ export function GroupSidebar({
               )}
             </div>
           )}
+          {connect ? (
+            <ConnectSidebar
+              workbench={connect}
+              collapsed={isCollapsed}
+              onSelected={() => {
+                if (window.matchMedia("(max-width: 767px)").matches) onClose();
+              }}
+            />
+          ) : null}
         </div>
 
-        {!readOnly ? <CodexVoiceSidebarDock voice={codexVoice} collapsed={isCollapsed} /> : null}
+        {!readOnly && codexVoice ? (
+          <CodexVoiceSidebarDock voice={codexVoice} collapsed={isCollapsed} />
+        ) : null}
 
         {!isCollapsed && (
           <SidebarResizeHandle

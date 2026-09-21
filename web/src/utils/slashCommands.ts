@@ -124,6 +124,8 @@ function sortSlashCommands(commands: SlashCommandItem[]): SlashCommandItem[] {
 
 export function buildSlashCommands(args: {
   state?: CapabilityStateResult | null;
+  /** The Knots room's own commands (/usage, /meeting, ...). Off by default: CCCC's list stays exactly CCCC's. */
+  includeRoomCommands?: boolean;
 }): SlashCommandItem[] {
   const used = new Set<string>();
   const commands: SlashCommandItem[] = [];
@@ -141,7 +143,7 @@ export function buildSlashCommands(args: {
     used.add(name);
     commands.push({ ...command, name, command: `/${name}` });
   }
-  for (const command of KNOTS_SLASH_COMMANDS) {
+  for (const command of args.includeRoomCommands ? KNOTS_SLASH_COMMANDS : []) {
     const name = uniqueCommandName([command.name], used);
     if (!name) continue;
     used.add(name);

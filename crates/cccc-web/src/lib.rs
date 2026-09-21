@@ -2,7 +2,9 @@ mod api;
 mod auth;
 mod browser_surface;
 mod codex_voice;
-mod codex_voice_actor_results;
+#[cfg(test)]
+mod connect_browser_fixture;
+mod connect_frames;
 mod im_runtime;
 mod ledger_event_hub;
 mod local_browser_auth;
@@ -32,7 +34,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::broadcast;
 use tower_http::compression::CompressionLayer;
-use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 pub use readonly::WebMode;
@@ -83,8 +85,13 @@ enum RestartBehavior {
 #[folder = "$CCCC_WEB_DIST_DIR/"]
 struct WebAssets;
 
+mod web_assets;
+pub use web_assets::{WebAssetsInfo, web_assets_info};
+
 #[derive(Clone)]
 pub(crate) struct AppState {
+    connect_frames: Arc<connect_frames::ConnectFrames>,
+    connect_http: Result<reqwest::Client, String>,
     client: DaemonClient,
     home: HomeLayout,
     browser_surfaces: Arc<browser_surface::BrowserSurfaces>,
@@ -171,7 +178,7 @@ fn app_with_shutdown(
     let im_workers = Arc::new(im_runtime::ImWorkerRegistry::new(ledger_events.clone()));
     im_workers.restore_enabled(home.clone(), DaemonClient::new(home.clone()));
     let browser_surfaces = Arc::new(browser_surface::BrowserSurfaces::default());
-    let codex_voice = Arc::new(codex_voice::CodexVoiceSessions::new(ledger_events.clone()));
+    let codex_voice = Arc::new(codex_voice::CodexVoiceSessions::new());
     let notebooklm_auth = Arc::new(notebooklm_auth::AuthFlowManager::default());
     spawn_notebooklm_auth_shutdown(
         Arc::clone(&notebooklm_auth),
@@ -186,6 +193,10 @@ fn app_with_shutdown(
         shutdown.subscribe(),
     );
     let state = AppState {
+        connect_frames: Arc::new(connect_frames::ConnectFrames::default()),
+        connect_http: connect_frames::http_client()
+            .build()
+            .map_err(|error| error.to_string()),
         client: DaemonClient::new(home.clone()),
         home,
         browser_surfaces: Arc::clone(&browser_surfaces),
@@ -201,7 +212,11 @@ fn app_with_shutdown(
         web_mode,
         exhibit_allow_terminal: readonly::exhibit_allow_terminal_from_env(),
     };
-    let app_state = state.clone();
+    let app = router_for_state(state.clone());
+    (app, im_workers, browser_surfaces, state)
+}
+
+fn router_for_state(state: AppState) -> Router {
     let mut app = routes::router()
         .fallback(static_asset)
         .layer(CompressionLayer::new())
@@ -229,8 +244,7 @@ fn app_with_shutdown(
     if let Some(cors) = configured_cors_layer() {
         app = app.layer(cors);
     }
-    let app = app.with_state(state);
-    (app, im_workers, browser_surfaces, app_state)
+    app.with_state(state)
 }
 
 fn spawn_codex_voice_shutdown(
@@ -324,7 +338,17 @@ fn spawn_group_resource_reaper(
     });
 }
 
-async fn static_asset(uri: Uri) -> Response {
+async fn static_asset(method: axum::http::Method, uri: Uri) -> Response {
+    if uri.path().starts_with("/api/") || uri.path().starts_with("/mcp/") {
+        return (StatusCode::NOT_FOUND, axum::Json(serde_json::json!({"ok":false,"error":{"code":"not_found","message":"API route not found","details":{}}}))).into_response();
+    }
+    if !matches!(method, axum::http::Method::GET | axum::http::Method::HEAD) {
+        return (
+            StatusCode::METHOD_NOT_ALLOWED,
+            [(header::ALLOW, "GET, HEAD")],
+        )
+            .into_response();
+    }
     let requested = uri.path().trim_start_matches('/');
     let path = requested.strip_prefix("ui/").unwrap_or(requested);
     let path = if path.is_empty() || path == "ui" {
@@ -535,6 +559,14 @@ fn environment_flag(name: &str) -> bool {
 }
 
 fn configured_cors_layer() -> Option<CorsLayer> {
+    if environment_flag("CCCC_WEB_ALLOW_ANY_ORIGIN") {
+        return Some(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::any())
+                .allow_methods(AllowMethods::mirror_request())
+                .allow_headers(AllowHeaders::mirror_request()),
+        );
+    }
     let origins = std::env::var("CCCC_WEB_CORS_ORIGINS")
         .ok()?
         .split(',')
@@ -545,8 +577,8 @@ fn configured_cors_layer() -> Option<CorsLayer> {
     (!origins.is_empty()).then(|| {
         CorsLayer::new()
             .allow_origin(AllowOrigin::list(origins))
-            .allow_methods(Any)
-            .allow_headers(Any)
+            .allow_methods(AllowMethods::mirror_request())
+            .allow_headers(AllowHeaders::mirror_request())
             .allow_credentials(true)
     })
 }

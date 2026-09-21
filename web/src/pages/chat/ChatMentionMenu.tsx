@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useComposerMenuHeight } from "./useComposerMenuHeight";
 import { useTranslation } from "react-i18next";
 
 import { classNames } from "../../utils/classNames";
@@ -8,6 +9,7 @@ type ChatMentionMenuProps = {
   isDark: boolean;
   isSmallScreen: boolean;
   items: ComposerMentionSuggestion[];
+  status?: "loading" | "incomplete";
   left: number;
   selectedIndex: number;
   onSelect: (item: ComposerMentionSuggestion) => void;
@@ -18,12 +20,15 @@ export function ChatMentionMenu({
   isDark,
   isSmallScreen,
   items,
+  status,
   left,
   selectedIndex,
   onSelect,
   onHover,
 }: ChatMentionMenuProps) {
   const { t } = useTranslation("chat");
+  const menuRef = useRef<HTMLDivElement>(null);
+  useComposerMenuHeight(menuRef);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   useEffect(() => {
@@ -34,12 +39,18 @@ export function ChatMentionMenu({
 
   return (
     <div
+      ref={menuRef}
       className={classNames(
         "glass-panel absolute bottom-full left-2 right-2 sm:left-auto sm:right-auto mb-3 w-auto sm:w-80 max-w-[calc(100vw-1rem)] max-h-60 overflow-auto scrollbar-subtle rounded-2xl border shadow-2xl z-30 animate-in fade-in zoom-in-95 duration-200",
       )}
       style={isSmallScreen ? undefined : { left: `${left}px` }}
       role="listbox"
     >
+      {status ? (
+        <div role="status" className="px-4 py-2 text-xs text-[var(--color-text-secondary)]">
+          {t(status === "loading" ? "connectMentionLoading" : "connectMentionIncomplete")}
+        </div>
+      ) : null}
       {items.map((item, index) => {
         const selected = index === selectedIndex;
         return (
@@ -47,7 +58,7 @@ export function ChatMentionMenu({
             ref={(node) => {
               optionRefs.current[index] = node;
             }}
-            key={`${item.kind}:${item.value}`}
+            key={JSON.stringify([item.kind, item.remote?.instance_id, item.value])}
             className={classNames(
               "relative w-full text-left px-4 py-3 text-sm transition-colors outline-none",
               isDark
@@ -61,6 +72,7 @@ export function ChatMentionMenu({
                   ? "hover:bg-white/5"
                   : "hover:bg-gray-50",
             )}
+            role="option"
             aria-selected={selected}
             onMouseDown={(event) => {
               event.preventDefault();
@@ -92,7 +104,7 @@ export function ChatMentionMenu({
                   {item.badgeKind ? (
                     <span
                       className={classNames(
-                        "shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-semibold leading-none",
+                        "shrink-0 rounded-full border px-1.5 py-0.5 text-xs font-semibold leading-none",
                         isDark
                           ? "border-sky-300/20 bg-sky-400/10 text-sky-100"
                           : "border-sky-100 bg-sky-50 text-sky-900",
@@ -104,10 +116,15 @@ export function ChatMentionMenu({
                     </span>
                   ) : null}
                 </div>
+                {item.remote && !item.remote.fresh ? (
+                  <div className="text-xs text-[var(--color-text-tertiary)]">
+                    {t("connectMentionStale")}
+                  </div>
+                ) : null}
                 {item.description ? (
                   <div
                     className={classNames(
-                      "line-clamp-2 break-words text-[11px] leading-4",
+                      "line-clamp-2 break-words text-xs leading-4",
                       isDark ? "text-slate-400" : "text-gray-500",
                     )}
                   >
@@ -117,7 +134,7 @@ export function ChatMentionMenu({
                 {item.meta ? (
                   <div
                     className={classNames(
-                      "truncate text-[10px] leading-4 opacity-55",
+                      "truncate text-xs leading-4 opacity-55",
                       isDark ? "text-slate-500" : "text-gray-400",
                     )}
                   >

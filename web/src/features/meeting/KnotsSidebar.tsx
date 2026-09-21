@@ -15,7 +15,8 @@ import { moderatorPost, useMeetingStore, voteNeedsRuling, type SidebarTab } from
  * skills, the moderator log, and a "needs you" strip on top. It sits beside the message list
  * (the list shrinks; nothing floats over it). Below the md breakpoint it slides in as a sheet.
  */
-export function KnotsSidebarToggle({ isDark }: { isDark: boolean }) {
+/** `inline`: rendered in the work-area control row next to upstream's side-panel triggers, not floating. */
+export function KnotsSidebarToggle({ isDark, inline = false }: { isDark: boolean; inline?: boolean }) {
   const { t } = useTranslation("chat");
   const connect = useMeetingStore((state) => state.connect);
   const meetings = useMeetingStore((state) => state.meetings);
@@ -41,11 +42,20 @@ export function KnotsSidebarToggle({ isDark }: { isDark: boolean }) {
       onClick={() => setSidebar(!open)}
       aria-pressed={open}
       title={connected ? t("knotsToggle") : t("meetingOffline")}
-      className={classNames(
-        "knots-press pointer-events-auto inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-medium shadow-xl backdrop-blur-xl ring-1",
-        isDark ? "border-white/10 bg-slate-900/60 text-slate-200 ring-white/5" : "border-black/5 bg-white/70 text-gray-700 ring-black/5",
-        open ? (isDark ? "bg-white/[0.08] text-white" : "bg-[rgb(245,245,245)] text-[rgb(35,36,37)]") : "",
-      )}
+      className={
+        inline
+          ? classNames(
+              "knots-press inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium hover:bg-[var(--glass-tab-bg-hover)] pointer-coarse:h-10",
+              open
+                ? "bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] ring-1 ring-inset ring-[var(--glass-tab-border-active)]"
+                : "text-[var(--color-text-secondary)]",
+            )
+          : classNames(
+              "knots-press pointer-events-auto inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-medium shadow-xl backdrop-blur-xl ring-1",
+              isDark ? "border-white/10 bg-slate-900/60 text-slate-200 ring-white/5" : "border-black/5 bg-white/70 text-gray-700 ring-black/5",
+              open ? (isDark ? "bg-white/[0.08] text-white" : "bg-[rgb(245,245,245)] text-[rgb(35,36,37)]") : "",
+            )
+      }
     >
       <span className={classNames("h-1.5 w-1.5 shrink-0 rounded-full", connected ? "bg-emerald-500" : "bg-amber-500")} aria-hidden="true" />
       {t("knotsToggle")}

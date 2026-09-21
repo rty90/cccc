@@ -10,8 +10,8 @@ pub use integrations::{
     SpaceCredentialAction, SpaceJobsAction,
 };
 pub use messaging::{
-    CancelReplyArgs, DeliverArgs, InboxArgs, LedgerAction, LedgerArgs, ReplyArgs, SendArgs,
-    TailArgs, TrackedSendArgs,
+    CancelReplyArgs, ConnectArgs, DeliverArgs, InboxArgs, LedgerAction, LedgerArgs, ReplyArgs,
+    SendArgs, TailArgs, TrackedSendArgs,
 };
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -48,9 +48,12 @@ pub struct SetupArgs {
 pub struct UpdateArgs {
     #[arg(long, value_enum)]
     pub channel: Option<ReleaseChannelArg>,
-    /// Show the standalone installation and release channel without changing files.
+    /// Check the latest channel release and installation without changing files.
     #[arg(long)]
     pub check: bool,
+    /// Show local installation details without requesting release metadata.
+    #[arg(long, requires = "check")]
+    pub offline: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -100,6 +103,8 @@ pub enum CommandKind {
     Space(SpaceArgs),
     /// Read and consume the next unread Mail batch for an actor.
     Inbox(InboxArgs),
+    /// Read cached same-account and Group connection directories. Does not connect or start Actors.
+    Connect(ConnectArgs),
     Send(SendArgs),
     TrackedSend(TrackedSendArgs),
     Reply(ReplyArgs),
@@ -123,6 +128,11 @@ pub enum CommandKind {
         #[command(subcommand)]
         action: ReachAction,
     },
+    /// Manage standalone Group connections without an account or exposed Web UI.
+    Direct {
+        #[command(subcommand)]
+        action: DirectAction,
+    },
     Status,
     Doctor(DoctorArgs),
     Setup(SetupArgs),
@@ -131,18 +141,7 @@ pub enum CommandKind {
     Version,
     Home,
     Mcp,
-    #[command(hide = true)]
-    Hook {
-        #[command(subcommand)]
-        action: HookAction,
-    },
     Web(WebArgs),
-}
-
-#[derive(Debug, Subcommand)]
-pub enum HookAction {
-    CodexState,
-    ClaudeState,
 }
 
 #[derive(Debug, Clone, Copy, Subcommand)]
@@ -151,6 +150,42 @@ pub enum ReachAction {
     Off,
     Status,
     Install,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DirectAction {
+    Status {
+        group_id: String,
+    },
+    /// Enable an encrypted collaboration listener (does not change Web Access).
+    Listen {
+        #[arg(long)]
+        bind: String,
+        #[arg(long)]
+        address: String,
+        #[arg(long, default_value = "")]
+        name: String,
+    },
+    Stop,
+    Invite {
+        group_id: String,
+    },
+    /// Read the invitation from standard input, keeping it out of shell history.
+    Join {
+        group_id: String,
+    },
+    Approve {
+        group_id: String,
+        id: String,
+    },
+    Revoke {
+        group_id: String,
+        id: String,
+    },
+    Remove {
+        group_id: String,
+        id: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -265,6 +300,22 @@ mod tests {
             Some(CommandKind::Update(UpdateArgs {
                 check: true,
                 channel: None,
+                offline: false,
+            }))
+        ));
+    }
+
+    #[test]
+    fn offline_update_requires_an_explicit_read_only_check() {
+        assert!(Cli::try_parse_from(["cccc", "update", "--offline"]).is_err());
+        let cli =
+            Cli::try_parse_from(["cccc", "update", "--check", "--offline"]).expect("offline check");
+        assert!(matches!(
+            cli.command,
+            Some(CommandKind::Update(UpdateArgs {
+                check: true,
+                offline: true,
+                ..
             }))
         ));
     }

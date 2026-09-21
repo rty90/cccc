@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { classNames } from "../../utils/classNames";
-import { ROLE_TONE } from "./MeetingPanel";
+import { ROLE_TONE } from "./roleTone";
 import type { Meeting, Vote } from "./meetingStore";
 
 /**

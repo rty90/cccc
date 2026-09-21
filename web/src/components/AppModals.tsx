@@ -1,3 +1,6 @@
+import { formatRuntimeCommand } from "./modals/runtimeProfileControlsModel";
+import type { ActorSecretSaveChanges } from "./modals/actorSecretManagerModel";
+import { requestWorkspaceNavigation } from "../stores/workspaceNavigation";
 // AppModals renders all modal components in one place.
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -24,16 +27,11 @@ import {
 } from "../features/contextModal/contextRead";
 import { parsePrivateEnvSetText } from "../utils/privateEnvInput";
 import { parseHelpMarkdown, updateActorHelpNote } from "../utils/helpMarkdown";
-import {
-  formatCapabilityIdInput,
-  normalizeCapabilityIdList,
-  parseCapabilityIdInput,
-} from "../utils/capabilityAutoload";
+import { normalizeCapabilityIdList, parseCapabilityIdInput } from "../utils/capabilityAutoload";
 import { actorProfileIdentityKey, actorProfileMatchesRef } from "../utils/actorProfiles";
 import { findPresentationSlot } from "../utils/presentation";
 import { buildPresentationRefForSlot } from "../utils/presentationRefs";
 import { formatGroupSettingsUpdateError } from "../utils/groupSettingsErrors";
-import { getEffectiveActorRunner, normalizeActorRunner } from "../utils/headlessRuntimeSupport";
 import { appendQuotedOriginalPerspective, getMessageInsight } from "../utils/messagePerspective";
 import { projectCrossGroupRecipients, projectMessageMode } from "../utils/crossGroupRecipients";
 import {
@@ -55,10 +53,10 @@ import {
   GroupSettings,
   ChatMessageData,
   PresentationMessageRef,
-  SupportedRuntime,
   TextScale,
   Theme,
 } from "../types";
+import { useShallow } from "zustand/react/shallow";
 
 const ContextModal = lazy(() =>
   import("./ContextModal/index").then((module) => ({ default: module.ContextModal })),
@@ -82,11 +80,10 @@ interface AppModalsProps {
   onStartReply: (ev: LedgerEvent) => void;
   onThemeChange: (theme: Theme) => void;
   onTextScaleChange: (scale: TextScale) => void;
-  onStartGroup: () => Promise<void>;
-  onStopGroup: () => Promise<void>;
-  onSetGroupState: (state: "active" | "idle" | "paused") => Promise<void>;
+  onDeleteGroup: (groupId: string) => Promise<void>;
   fetchContext: ContextModalFetch;
   canManageGroups: boolean;
+  accountLabel?: string | null;
 }
 
 function sortPresentationSlotIds(slotIds: string[]): string[] {
@@ -128,11 +125,10 @@ export function AppModals({
   onStartReply,
   onThemeChange,
   onTextScaleChange,
-  onStartGroup,
-  onStopGroup,
-  onSetGroupState,
+  onDeleteGroup,
   fetchContext,
   canManageGroups,
+  accountLabel,
 }: AppModalsProps) {
   const { t } = useTranslation(["actors", "chat", "modals"]);
   // Stores
@@ -148,7 +144,6 @@ export function AppModals({
     groupPresentation,
     runtimes,
     setSelectedGroupId,
-    setGroupDoc,
     setGroupContext,
     setGroupSettings,
     setGroupPresentation,
@@ -158,7 +153,30 @@ export function AppModals({
     loadGroup,
     openChatWindow,
     mergeEventStatuses,
-  } = useGroupStore();
+  } = useGroupStore(
+    useShallow((s) => ({
+      groups: s.groups,
+      selectedGroupId: s.selectedGroupId,
+      groupDoc: s.groupDoc,
+      events: s.events,
+      chatWindow: s.chatWindow,
+      actors: s.actors,
+      groupContext: s.groupContext,
+      groupSettings: s.groupSettings,
+      groupPresentation: s.groupPresentation,
+      runtimes: s.runtimes,
+      setSelectedGroupId: s.setSelectedGroupId,
+      setGroupContext: s.setGroupContext,
+      setGroupSettings: s.setGroupSettings,
+      setGroupPresentation: s.setGroupPresentation,
+      refreshGroups: s.refreshGroups,
+      refreshSettings: s.refreshSettings,
+      refreshActors: s.refreshActors,
+      loadGroup: s.loadGroup,
+      openChatWindow: s.openChatWindow,
+      mergeEventStatuses: s.mergeEventStatuses,
+    })),
+  );
 
   const {
     busy,
@@ -171,7 +189,20 @@ export function AppModals({
     setChatMobileSurface,
     setChatPresentationDockOpen,
     setChatPresentationDisplayMode,
-  } = useUIStore();
+  } = useUIStore(
+    useShallow((s) => ({
+      busy: s.busy,
+      isSmallScreen: s.isSmallScreen,
+      chatSessions: s.chatSessions,
+      setBusy: s.setBusy,
+      showError: s.showError,
+      showNotice: s.showNotice,
+      setActiveTab: s.setActiveTab,
+      setChatMobileSurface: s.setChatMobileSurface,
+      setChatPresentationDockOpen: s.setChatPresentationDockOpen,
+      setChatPresentationDisplayMode: s.setChatPresentationDisplayMode,
+    })),
+  );
 
   const {
     modals,
@@ -190,11 +221,43 @@ export function AppModals({
     clearPresentationSlotAttention,
     setEditingActor,
     clearContextTask,
-  } = useModalStore();
+  } = useModalStore(
+    useShallow((s) => ({
+      modals: s.modals,
+      recipientsEventId: s.recipientsEventId,
+      relayEventId: s.relayEventId,
+      relaySource: s.relaySource,
+      presentationViewer: s.presentationViewer,
+      presentationPin: s.presentationPin,
+      editingActor: s.editingActor,
+      openModal: s.openModal,
+      closeModal: s.closeModal,
+      setRecipientsModal: s.setRecipientsModal,
+      setRelayModal: s.setRelayModal,
+      setPresentationViewer: s.setPresentationViewer,
+      setPresentationPin: s.setPresentationPin,
+      clearPresentationSlotAttention: s.clearPresentationSlotAttention,
+      setEditingActor: s.setEditingActor,
+      clearContextTask: s.clearContextTask,
+    })),
+  );
   const openSettingsTarget = useModalStore((state) => state.openSettingsTarget);
   const contextTaskId = useModalStore((state) => state.contextTaskId);
 
-  const { inboxActorId, inboxMessages, setInboxMessages } = useInboxStore();
+  const { inboxTarget, inboxMessages, setInboxMessages, clearInbox } = useInboxStore(
+    useShallow((s) => ({
+      inboxTarget: s.inboxTarget,
+      inboxMessages: s.inboxMessages,
+      setInboxMessages: s.setInboxMessages,
+      clearInbox: s.clearInbox,
+    })),
+  );
+  useEffect(() => {
+    if (inboxTarget && inboxTarget.groupId !== selectedGroupId) {
+      clearInbox();
+      closeModal("inbox");
+    }
+  }, [inboxTarget, selectedGroupId, clearInbox, closeModal]);
   const setQuotedPresentationRef = useComposerStore((state) => state.setQuotedPresentationRef);
   const setComposerDestGroupId = useComposerStore((state) => state.setDestGroupId);
   const [messageActionBusy, setMessageActionBusy] = useState("");
@@ -212,13 +275,11 @@ export function AppModals({
     setEditGroupTitle,
     setEditGroupTopic,
     editActorRuntime,
-    editActorRunner,
     editActorCommand,
     editActorTitle,
     editActorNotes,
     editActorCapabilityAutoloadText,
     setEditActorRuntime,
-    setEditActorRunner,
     setEditActorCommand,
     setEditActorTitle,
     setEditActorNotes,
@@ -226,7 +287,6 @@ export function AppModals({
     newActorId,
     newActorRole,
     newActorRuntime,
-    newActorRunner,
     newActorCommand,
     newActorUseDefaultCommand,
     newActorSecretsSetText,
@@ -238,7 +298,6 @@ export function AppModals({
     setNewActorId,
     setNewActorRole,
     setNewActorRuntime,
-    setNewActorRunner,
     setNewActorCommand,
     setNewActorUseDefaultCommand,
     setNewActorSecretsSetText,
@@ -258,7 +317,57 @@ export function AppModals({
     setCreateGroupPath,
     setCreateGroupName,
     resetCreateGroupForm,
-  } = useFormStore();
+  } = useFormStore(
+    useShallow((s) => ({
+      editGroupTitle: s.editGroupTitle,
+      editGroupTopic: s.editGroupTopic,
+      setEditGroupTitle: s.setEditGroupTitle,
+      setEditGroupTopic: s.setEditGroupTopic,
+      editActorRuntime: s.editActorRuntime,
+      editActorCommand: s.editActorCommand,
+      editActorTitle: s.editActorTitle,
+      editActorNotes: s.editActorNotes,
+      editActorCapabilityAutoloadText: s.editActorCapabilityAutoloadText,
+      setEditActorRuntime: s.setEditActorRuntime,
+      setEditActorCommand: s.setEditActorCommand,
+      setEditActorTitle: s.setEditActorTitle,
+      setEditActorNotes: s.setEditActorNotes,
+      setEditActorCapabilityAutoloadText: s.setEditActorCapabilityAutoloadText,
+      newActorId: s.newActorId,
+      newActorRole: s.newActorRole,
+      newActorRuntime: s.newActorRuntime,
+      newActorCommand: s.newActorCommand,
+      newActorUseDefaultCommand: s.newActorUseDefaultCommand,
+      newActorSecretsSetText: s.newActorSecretsSetText,
+      newActorCapabilityAutoloadText: s.newActorCapabilityAutoloadText,
+      newActorNotes: s.newActorNotes,
+      newActorUseProfile: s.newActorUseProfile,
+      newActorProfileId: s.newActorProfileId,
+      addActorError: s.addActorError,
+      setNewActorId: s.setNewActorId,
+      setNewActorRole: s.setNewActorRole,
+      setNewActorRuntime: s.setNewActorRuntime,
+      setNewActorCommand: s.setNewActorCommand,
+      setNewActorUseDefaultCommand: s.setNewActorUseDefaultCommand,
+      setNewActorSecretsSetText: s.setNewActorSecretsSetText,
+      setNewActorCapabilityAutoloadText: s.setNewActorCapabilityAutoloadText,
+      setNewActorNotes: s.setNewActorNotes,
+      setNewActorUseProfile: s.setNewActorUseProfile,
+      setNewActorProfileId: s.setNewActorProfileId,
+      setAddActorError: s.setAddActorError,
+      resetAddActorForm: s.resetAddActorForm,
+      createGroupPath: s.createGroupPath,
+      createGroupName: s.createGroupName,
+      dirItems: s.dirItems,
+      dirSuggestions: s.dirSuggestions,
+      currentDir: s.currentDir,
+      parentDir: s.parentDir,
+      showDirBrowser: s.showDirBrowser,
+      setCreateGroupPath: s.setCreateGroupPath,
+      setCreateGroupName: s.setCreateGroupName,
+      resetCreateGroupForm: s.resetCreateGroupForm,
+    })),
+  );
 
   const directoryBrowser = useCreateGroupDirectoryBrowser();
   const [actorProfiles, setActorProfiles] = useState<ActorProfile[]>([]);
@@ -267,6 +376,17 @@ export function AppModals({
   const [presentationViewerCacheByGroup, setPresentationViewerCacheByGroup] = useState<
     Record<string, string[]>
   >({});
+  const editProfileSaveRef = useRef<{ profile: ActorProfile; copied: boolean } | null>(null);
+  const newProfileSaveRef = useRef<ActorProfile | null>(null);
+  const savedEditActorRef = useRef<Actor | null>(null);
+  useEffect(() => {
+    if (!modals.addActor) newProfileSaveRef.current = null;
+  }, [modals.addActor]);
+  const editingActorId = editingActor?.id;
+  useEffect(() => {
+    savedEditActorRef.current = null;
+    editProfileSaveRef.current = null;
+  }, [selectedGroupId, editingActorId]);
   const editActorNotesBaselineRef = useRef("");
   const editActorNotesSeqRef = useRef(0);
 
@@ -452,6 +572,34 @@ export function AppModals({
       messageMetaEvent._obligation_status && typeof messageMetaEvent._obligation_status === "object"
         ? messageMetaEvent._obligation_status
         : null;
+    if (metaData?.dst_instance_id) {
+      const delivery = messageMetaEvent._connect_delivery || { state: "queued" as const };
+      const titles = metaData.dst_actor_titles || {};
+      return {
+        sourceEventId: String(messageMetaEvent.id || ""),
+        toLabel: toTokensList.map((id) => titles[id] || id).join(", "),
+        entries: toTokensList.map((id) => ({
+          id,
+          label: titles[id] || id,
+          cleared:
+            messageMode === "request_reply"
+              ? !!os?.[id]?.replied || !!os?.[id]?.cancelled
+              : delivery.state === "sent",
+          deliveryState: "",
+          read: false,
+          replied: !!os?.[id]?.replied,
+          replyRequested: messageMode === "request_reply",
+          cancelled: !!os?.[id]?.cancelled,
+        })),
+        statusKind: messageMode === "request_reply" ? ("reply" as const) : ("delivery" as const),
+        messageMode,
+        remoteDelivery: delivery,
+        canCancelReply:
+          messageMode === "request_reply" &&
+          !messageMetaEvent._connect_cancellation &&
+          toTokensList.some((id) => !os?.[id]?.replied && !os?.[id]?.cancelled),
+      };
+    }
     if (os) {
       const recipientIds = Object.keys(os);
       const recipientIdSet = new Set(recipientIds);
@@ -629,8 +777,7 @@ export function AppModals({
     try {
       const resp = await api.updateSettings(selectedGroupId, settings);
       if (!resp.ok) {
-        showError(formatGroupSettingsUpdateError(t, resp.error));
-        return false;
+        throw new Error(formatGroupSettingsUpdateError(t, resp.error));
       }
       await refreshSettings(selectedGroupId);
       return true;
@@ -640,24 +787,28 @@ export function AppModals({
   };
 
   const handleMarkAllRead = async () => {
-    if (!selectedGroupId || !inboxActorId) return;
+    if (!inboxTarget || inboxTarget.groupId !== selectedGroupId) return;
+    const { groupId, actorId } = inboxTarget;
     if (inboxMessages.length === 0) return;
-    setBusy(`inbox-read:${inboxActorId}`);
+    const busyKey = `inbox-read:${groupId}:${actorId}`;
+    setBusy(busyKey);
     try {
-      const resp = await api.readInbox(selectedGroupId, inboxActorId, inboxMessages.length);
+      const resp = await api.readInbox(groupId, actorId, inboxMessages.length);
       if (!resp.ok) {
-        showError(`${resp.error.code}: ${resp.error.message}`);
+        if (useInboxStore.getState().inboxTarget === inboxTarget) {
+          showError(`${resp.error.code}: ${resp.error.message}`);
+        }
         return;
       }
       const [inboxResp] = await Promise.all([
-        api.fetchInbox(selectedGroupId, inboxActorId),
-        refreshActors(selectedGroupId, { includeUnread: true }),
+        api.fetchInbox(groupId, actorId),
+        refreshActors(groupId, { includeUnread: true }),
       ]);
       if (inboxResp.ok) {
-        setInboxMessages(inboxResp.result.messages || []);
+        setInboxMessages(inboxTarget, inboxResp.result.messages || []);
       }
     } finally {
-      setBusy("");
+      if (useUIStore.getState().busy === busyKey) setBusy("");
     }
   };
 
@@ -678,28 +829,7 @@ export function AppModals({
     }
   };
 
-  const handleDeleteGroup = async () => {
-    if (!selectedGroupId) return;
-    if (!window.confirm(t("deleteGroupConfirm", { name: groupDoc?.title || selectedGroupId })))
-      return;
-    setBusy("group-delete");
-    try {
-      const resp = await api.deleteGroup(selectedGroupId);
-      if (!resp.ok) {
-        showError(`${resp.error.code}: ${resp.error.message}`);
-        return;
-      }
-      setSelectedGroupId("");
-      setGroupDoc(null);
-      useGroupStore.getState().setEvents([]);
-      useGroupStore.getState().setActors([]);
-      setGroupContext(null);
-      setGroupSettings(null);
-      await refreshGroups();
-    } finally {
-      setBusy("");
-    }
-  };
+  const handleDeleteGroup = () => onDeleteGroup(selectedGroupId);
 
   const handleResetGroup = async () => {
     if (!selectedGroupId) return;
@@ -741,10 +871,11 @@ export function AppModals({
   ) => {
     if (!selectedGroupId || !editingActor) return;
 
+    const savedActor = savedEditActorRef.current || editingActor;
     const actorId = String(editingActor.id || "").trim();
     if (!actorId) return;
 
-    const label = String(editingActor.title || editingActor.id || actorId).trim() || actorId;
+    const label = String(savedActor.title || editingActor.id || actorId).trim() || actorId;
     const mode = payload.mode === "profile" ? "profile" : "custom";
     const profileSelectionKey = String(payload.profileId || "").trim();
     const selectedProfile =
@@ -753,7 +884,7 @@ export function AppModals({
           null
         : null;
     const profileId = String(selectedProfile?.id || "").trim();
-    const linkedBefore = Boolean(String(editingActor.profile_id || "").trim());
+    const linkedBefore = Boolean(String(savedActor.profile_id || "").trim());
     const convertToCustom = mode === "custom" && linkedBefore && !!payload.convertToCustom;
 
     if (mode === "profile" && !selectedProfile) {
@@ -773,22 +904,15 @@ export function AppModals({
     const willChangeSecrets =
       canEditSecrets && (clear || setKeys.length > 0 || unsetKeys.length > 0);
 
-    const currentRuntime = String(editingActor.runtime || "codex").trim();
-    const currentRunner = getEffectiveActorRunner(editingActor);
-    const currentCommand = Array.isArray(editingActor.command)
-      ? editingActor.command
-          .filter((item) => typeof item === "string" && item.trim())
-          .join(" ")
-          .trim()
-      : "";
-    const currentTitle = String(editingActor.title || "").trim();
+    const currentRuntime = String(savedActor.runtime || "codex").trim();
+    const currentCommand = formatRuntimeCommand(savedActor.command);
+    const currentTitle = String(savedActor.title || "").trim();
     const currentCapabilityAutoload = normalizeCapabilityIdList(
-      (editingActor as { capability_autoload?: unknown[] })?.capability_autoload,
+      (savedActor as { capability_autoload?: unknown[] })?.capability_autoload,
     );
     const currentActorNotes = String(editActorNotesBaselineRef.current || "").trim();
     const nextActorNotes = String(editActorNotes || "").trim();
     const nextRuntime = String(editActorRuntime || "codex").trim();
-    const nextRunner = normalizeActorRunner(editActorRunner);
     const nextCommand = String(editActorCommand || "").trim();
     const nextTitle = String(editActorTitle || "").trim();
     const nextCapabilityAutoload = Array.isArray(payload.capabilityAutoload)
@@ -797,8 +921,6 @@ export function AppModals({
 
     const runtimeChanged =
       mode === "custom" && (!linkedBefore || convertToCustom) && nextRuntime !== currentRuntime;
-    const runnerChanged =
-      mode === "custom" && (!linkedBefore || convertToCustom) && nextRunner !== currentRunner;
     const commandChanged =
       mode === "custom" && (!linkedBefore || convertToCustom) && nextCommand !== currentCommand;
     const titleChanged = nextTitle !== currentTitle;
@@ -807,15 +929,14 @@ export function AppModals({
     const profileChanged =
       mode === "profile" &&
       !actorProfileMatchesRef(selectedProfile || { id: "", scope: "global", owner_id: "" }, {
-        profileId: String(editingActor.profile_id || "").trim(),
-        profileScope: String(editingActor.profile_scope || "global").trim() || "global",
-        profileOwner: String(editingActor.profile_owner || "").trim(),
+        profileId: String(savedActor.profile_id || "").trim(),
+        profileScope: String(savedActor.profile_scope || "global").trim() || "global",
+        profileOwner: String(savedActor.profile_owner || "").trim(),
       });
     const actorNotesChanged = nextActorNotes !== currentActorNotes;
     const hasActorMutation =
       convertToCustom ||
       runtimeChanged ||
-      runnerChanged ||
       commandChanged ||
       titleChanged ||
       autoloadChanged ||
@@ -834,16 +955,12 @@ export function AppModals({
 
     setBusy("actor-update");
     try {
-      let actorSnapshot: Record<string, unknown> = editingActor as unknown as Record<
-        string,
-        unknown
-      >;
+      let actorSnapshot: Record<string, unknown> = savedActor as unknown as Record<string, unknown>;
 
       if (mode === "custom" && linkedBefore && convertToCustom) {
         const convertResp = await api.updateActor(
           selectedGroupId,
           actorId,
-          undefined,
           undefined,
           undefined,
           nextTitle,
@@ -857,7 +974,10 @@ export function AppModals({
           convertResp.result && typeof convertResp.result === "object"
             ? (convertResp.result as { actor?: Record<string, unknown> }).actor
             : undefined;
-        if (updated && typeof updated === "object") actorSnapshot = updated;
+        if (updated && typeof updated === "object") {
+          actorSnapshot = updated;
+          savedEditActorRef.current = updated as unknown as Actor;
+        }
       }
 
       if (mode === "profile") {
@@ -866,7 +986,6 @@ export function AppModals({
           const profileResp = await api.updateActor(
             selectedGroupId,
             actorId,
-            undefined,
             undefined,
             undefined,
             nextTitle,
@@ -885,23 +1004,17 @@ export function AppModals({
             profileResp.result && typeof profileResp.result === "object"
               ? (profileResp.result as { actor?: Record<string, unknown> }).actor
               : undefined;
-          if (updated && typeof updated === "object") actorSnapshot = updated;
+          if (updated && typeof updated === "object") {
+            actorSnapshot = updated;
+            savedEditActorRef.current = updated as unknown as Actor;
+          }
         }
       } else {
         const snapshotRuntime = String(actorSnapshot.runtime || currentRuntime || "codex").trim();
-        const snapshotCommand = Array.isArray(actorSnapshot.command)
-          ? actorSnapshot.command
-              .filter((item) => typeof item === "string" && item.trim())
-              .join(" ")
-              .trim()
-          : currentCommand;
-        const snapshotRunner = getEffectiveActorRunner(
-          actorSnapshot as { runner?: unknown; runner_effective?: unknown },
-        );
+        const snapshotCommand = formatRuntimeCommand(actorSnapshot.command);
         const snapshotTitle = String(actorSnapshot.title || "").trim();
         const needCustomPatch =
           nextRuntime !== snapshotRuntime ||
-          nextRunner !== snapshotRunner ||
           nextCommand !== snapshotCommand ||
           nextTitle !== snapshotTitle ||
           autoloadChanged;
@@ -909,9 +1022,8 @@ export function AppModals({
           const customResp = await api.updateActor(
             selectedGroupId,
             actorId,
-            editActorRuntime,
-            nextRunner,
-            editActorCommand,
+            nextRuntime !== snapshotRuntime ? editActorRuntime : undefined,
+            nextCommand !== snapshotCommand ? editActorCommand : undefined,
             nextTitle,
             { capabilityAutoload: nextCapabilityAutoload },
           );
@@ -923,7 +1035,10 @@ export function AppModals({
             customResp.result && typeof customResp.result === "object"
               ? (customResp.result as { actor?: Record<string, unknown> }).actor
               : undefined;
-          if (updated && typeof updated === "object") actorSnapshot = updated;
+          if (updated && typeof updated === "object") {
+            actorSnapshot = updated;
+            savedEditActorRef.current = updated as unknown as Actor;
+          }
         }
       }
 
@@ -992,109 +1107,69 @@ export function AppModals({
     await handleSaveEditActor(payload, { restart: true });
   };
 
-  const applyEditingActor = useCallback(
-    (actor: Record<string, unknown>) => {
-      const runtime = String(actor.runtime || "").trim();
-      setEditActorRuntime((runtime || "codex") as SupportedRuntime);
-      setEditActorRunner(getEffectiveActorRunner(actor));
-      setEditActorCommand(Array.isArray(actor.command) ? actor.command.join(" ") : "");
-      setEditActorTitle(String(actor.title || ""));
-      setEditActorNotes("");
-      editActorNotesBaselineRef.current = "";
-      setEditActorCapabilityAutoloadText(
-        formatCapabilityIdInput((actor as { capability_autoload?: unknown[] }).capability_autoload),
-      );
-      setEditingActor(actor as Actor);
-    },
-    [
-      setEditActorRuntime,
-      setEditActorRunner,
-      setEditActorCommand,
-      setEditActorTitle,
-      setEditActorNotes,
-      setEditActorCapabilityAutoloadText,
-      setEditingActor,
-    ],
-  );
-
   useEffect(() => {
-    if (!editingActor || !selectedGroupId) return;
-    const actorId = String(editingActor.id || "").trim();
-    if (!actorId) return;
-    void loadEditingActorNotes(selectedGroupId, actorId);
-  }, [editingActor, selectedGroupId, loadEditingActorNotes]);
+    if (!editingActorId || !selectedGroupId) return;
+    void loadEditingActorNotes(selectedGroupId, editingActorId);
+  }, [editingActorId, selectedGroupId, loadEditingActorNotes]);
 
   useEffect(() => {
     if (!editingActor) return;
-    const actorId = String(editingActor.id || "").trim();
-    if (!actorId) return;
-    const latest = actors.find((item) => String(item.id || "").trim() === actorId);
+    const latest = actors.find((item) => item.id === editingActor.id);
     if (!latest) return;
-    const configChanged =
-      String(editingActor.profile_id || "").trim() !== String(latest.profile_id || "").trim() ||
-      String(editingActor.profile_scope || "global").trim() !==
-        String(latest.profile_scope || "global").trim() ||
-      String(editingActor.profile_owner || "").trim() !==
-        String(latest.profile_owner || "").trim() ||
-      Number(editingActor.profile_revision_applied || 0) !==
-        Number(latest.profile_revision_applied || 0) ||
-      String(editingActor.runtime || "").trim() !== String(latest.runtime || "").trim() ||
-      getEffectiveActorRunner(editingActor) !== getEffectiveActorRunner(latest) ||
-      String(editingActor.title || "") !== String(latest.title || "") ||
-      String(Array.isArray(editingActor.command) ? editingActor.command.join("\u0000") : "") !==
-        String(Array.isArray(latest.command) ? latest.command.join("\u0000") : "") ||
-      String(
-        normalizeCapabilityIdList(
-          (editingActor as { capability_autoload?: unknown[] }).capability_autoload,
-        ).join("\u0000"),
-      ) !==
-        String(
-          normalizeCapabilityIdList(
-            (latest as { capability_autoload?: unknown[] }).capability_autoload,
-          ).join("\u0000"),
-        );
-    if (configChanged) {
-      applyEditingActor(latest as Record<string, unknown>);
-      return;
+    // Polls may observe an intermediate save. Only refresh the independently
+    // saved avatar; runtime fields and secret edits belong to the open draft.
+    if (
+      editingActor.avatar_url !== latest.avatar_url ||
+      editingActor.has_custom_avatar !== latest.has_custom_avatar
+    ) {
+      setEditingActor({
+        ...editingActor,
+        avatar_url: latest.avatar_url,
+        has_custom_avatar: latest.has_custom_avatar,
+      });
     }
+  }, [actors, editingActor, setEditingActor]);
 
-    const avatarChanged =
-      String(editingActor.avatar_url || "") !== String(latest.avatar_url || "") ||
-      Boolean(editingActor.has_custom_avatar) !== Boolean(latest.has_custom_avatar);
-
-    if (avatarChanged) {
-      setEditingActor(latest);
-    }
-  }, [actors, editingActor, applyEditingActor, setEditingActor]);
-
-  const handleSaveEditActorAsProfile = async (): Promise<SaveActorProfileResult | void> => {
+  const handleSaveEditActorAsProfile = async (
+    secrets?: ActorSecretSaveChanges,
+  ): Promise<SaveActorProfileResult | void> => {
     if (!editingActor || !selectedGroupId) return;
     const suggested = String(
       editActorTitle || editingActor.title || editingActor.id || "New Profile",
     ).trim();
-    const name = window.prompt(t("profileNamePrompt"), suggested);
+    const name =
+      editProfileSaveRef.current?.profile.name || window.prompt(t("profileNamePrompt"), suggested);
     if (!name || !name.trim()) return;
     setBusy("actor-profile-save");
     try {
-      const resp = await api.upsertActorProfile({
-        name: name.trim(),
-        runtime: editActorRuntime,
-        runner: editActorRunner,
-        command: editActorCommand.trim(),
-        submit: String(editingActor.submit || "enter"),
-        env: editingActor.env && typeof editingActor.env === "object" ? editingActor.env : {},
-        capability_defaults: {
-          autoload_capabilities: parseCapabilityIdInput(editActorCapabilityAutoloadText),
-          default_scope: "actor",
-          session_ttl_seconds: 3600,
+      const resp = await api.upsertActorProfile(
+        {
+          id: editProfileSaveRef.current?.profile.id,
+          name: name.trim(),
+          runtime: editActorRuntime,
+          command: editActorCommand.trim(),
+          submit: String(editingActor.submit || "enter"),
+          env: {},
+          capability_defaults: {
+            autoload_capabilities: parseCapabilityIdInput(editActorCapabilityAutoloadText),
+            default_scope: "actor",
+            session_ttl_seconds: 3600,
+          },
         },
-      });
+        editProfileSaveRef.current?.profile.revision,
+      );
       if (!resp.ok) {
         showError(`${resp.error.code}: ${resp.error.message}`);
         return;
       }
       const profileId = String(resp.result?.profile?.id || "").trim();
       if (profileId) {
+        editProfileSaveRef.current = {
+          profile: resp.result.profile,
+          copied: editProfileSaveRef.current?.copied || false,
+        };
+      }
+      if (profileId && !editProfileSaveRef.current?.copied) {
         const copyResp = await api.copyActorPrivateEnvToProfile(
           profileId,
           selectedGroupId,
@@ -1104,9 +1179,27 @@ export function AppModals({
           showError(`${copyResp.error.code}: ${copyResp.error.message}`);
           return;
         }
+        if (editProfileSaveRef.current) editProfileSaveRef.current.copied = true;
+      }
+      if (
+        profileId &&
+        secrets &&
+        (secrets.clear || secrets.unsetKeys.length || Object.keys(secrets.setVars).length)
+      ) {
+        const secretResp = await api.updateActorProfilePrivateEnv(
+          profileId,
+          secrets.setVars,
+          secrets.unsetKeys,
+          secrets.clear,
+        );
+        if (!secretResp.ok) {
+          showError(`${secretResp.error.code}: ${secretResp.error.message}`);
+          return;
+        }
       }
       await loadActorProfiles();
       const profileName = String(resp.result?.profile?.name || "").trim() || name.trim();
+      editProfileSaveRef.current = null;
       showNotice({ message: t("savedToActorProfiles") });
       if (!profileId) return;
       const useNow = window.confirm(
@@ -1141,7 +1234,7 @@ export function AppModals({
       resetCreateGroupForm();
       closeModal("createGroup");
       await refreshGroups();
-      setSelectedGroupId(groupId);
+      requestWorkspaceNavigation(() => setSelectedGroupId(groupId));
     } finally {
       setBusy("");
     }
@@ -1186,7 +1279,6 @@ export function AppModals({
         actorId,
         newActorRole,
         newActorUseProfile ? String(selectedProfile?.runtime || "codex") : newActorRuntime,
-        newActorUseProfile ? normalizeActorRunner(selectedProfile?.runner) : newActorRunner,
         commandToUse,
         newActorUseProfile
           ? undefined
@@ -1257,36 +1349,41 @@ export function AppModals({
 
   const handleSaveNewActorAsProfile = async () => {
     if (newActorUseProfile) return;
+    const parsed = parsePrivateEnvSetText(newActorSecretsSetText);
+    if (!parsed.ok) {
+      setAddActorError(parsed.error);
+      return;
+    }
     const suggested = String(newActorId || `${newActorRuntime}-profile`).trim();
-    const name = window.prompt(t("profileNamePrompt"), suggested);
+    const name =
+      newProfileSaveRef.current?.name || window.prompt(t("profileNamePrompt"), suggested);
     if (!name || !name.trim()) return;
     setBusy("actor-profile-save");
     try {
       const commandToUse = newActorUseDefaultCommand ? "" : newActorCommand.trim();
-      const resp = await api.upsertActorProfile({
-        name: name.trim(),
-        runtime: newActorRuntime,
-        runner: newActorRunner,
-        command: commandToUse,
-        submit: "enter",
-        env: {},
-        capability_defaults: {
-          autoload_capabilities: parseCapabilityIdInput(newActorCapabilityAutoloadText),
-          default_scope: "actor",
-          session_ttl_seconds: 3600,
+      const resp = await api.upsertActorProfile(
+        {
+          id: newProfileSaveRef.current?.id,
+          name: name.trim(),
+          runtime: newActorRuntime,
+          command: commandToUse,
+          submit: "enter",
+          env: {},
+          capability_defaults: {
+            autoload_capabilities: parseCapabilityIdInput(newActorCapabilityAutoloadText),
+            default_scope: "actor",
+            session_ttl_seconds: 3600,
+          },
         },
-      });
+        newProfileSaveRef.current?.revision,
+      );
       if (!resp.ok) {
         setAddActorError(resp.error?.message || t("failedToSaveActorProfile"));
         return;
       }
       const profileId = String(resp.result?.profile?.id || "").trim();
       if (profileId) {
-        const parsed = parsePrivateEnvSetText(newActorSecretsSetText);
-        if (!parsed.ok) {
-          setAddActorError(parsed.error);
-          return;
-        }
+        newProfileSaveRef.current = resp.result.profile;
         const hasSecrets = Object.keys(parsed.setVars).length > 0;
         if (hasSecrets) {
           const secretResp = await api.updateActorProfilePrivateEnv(
@@ -1301,6 +1398,7 @@ export function AppModals({
           }
         }
       }
+      newProfileSaveRef.current = null;
       showNotice({ message: t("savedToActorProfiles") });
       await loadActorProfiles();
     } finally {
@@ -1699,15 +1797,17 @@ export function AppModals({
     <>
       <MobileMenuSheet
         isOpen={modals.mobileMenu}
-        isDark={isDark}
         theme={theme}
         textScale={textScale}
         selectedGroupId={selectedGroupId}
         groupDoc={groupDoc}
         selectedGroupRunning={selectedGroupRunning}
-        actors={actors}
-        busy={busy}
         onClose={() => closeModal("mobileMenu")}
+        onOpenFiles={
+          isSmallScreen && selectedGroupId
+            ? () => setChatMobileSurface(selectedGroupId, "files")
+            : undefined
+        }
         onThemeChange={onThemeChange}
         onTextScaleChange={onTextScaleChange}
         onOpenSearch={() => openModal("search")}
@@ -1716,6 +1816,7 @@ export function AppModals({
         }}
         onOpenSettings={() => openModal("settings")}
         canAccessAccount={canManageGroups}
+        accountLabel={accountLabel}
         onOpenAccount={() => openSettingsTarget({ scope: "global", tab: "account" })}
         onOpenGroupEdit={
           canManageGroups
@@ -1728,9 +1829,6 @@ export function AppModals({
               }
             : undefined
         }
-        onStartGroup={onStartGroup}
-        onStopGroup={onStopGroup}
-        onSetGroupState={onSetGroupState}
       />
 
       {modals.relay && relayEventId ? (
@@ -1747,6 +1845,7 @@ export function AppModals({
       ) : null}
 
       <SearchModal
+        groupTitle={groupDoc?.title}
         isOpen={modals.search}
         onClose={() => closeModal("search")}
         groupId={selectedGroupId}
@@ -1779,7 +1878,7 @@ export function AppModals({
             ? `${presentationPin.groupId}:${presentationPin.slotId}:${
                 findPresentationSlot(groupPresentation, presentationPin?.slotId || "")?.card
                   ?.published_at || "empty"
-              }`
+              }:${presentationPin.workspacePath || ""}`
             : "presentation-pin-closed"
         }
         isOpen={!!presentationPin && presentationPin.groupId === selectedGroupId}
@@ -1790,6 +1889,7 @@ export function AppModals({
             ? findPresentationSlot(groupPresentation, presentationPin?.slotId || "")
             : null
         }
+        initialWorkspaceRelPath={presentationPin?.workspacePath || ""}
         busy={busy === "presentation-pin"}
         onClose={() => setPresentationPin(null)}
         onSubmitUrl={handlePresentationPublishUrl}
@@ -1834,6 +1934,17 @@ export function AppModals({
                     ? presentationViewerSourceEvent
                     : null
                 }
+                onSelectSlot={(nextSlotId) =>
+                  setPresentationViewer({
+                    groupId: selectedGroupId,
+                    slotId: nextSlotId,
+                    surface: "modal",
+                  })
+                }
+                onPinSlot={(nextSlotId) => {
+                  setPresentationViewer(null);
+                  setPresentationPin({ groupId: selectedGroupId, slotId: nextSlotId });
+                }}
                 onQuoteInChat={handleQuotePresentationReference}
                 onOpenMessageContext={(eventId) =>
                   void handleOpenPresentationMessageContext(eventId)
@@ -1867,6 +1978,7 @@ export function AppModals({
             isOpen={modals.context}
             onClose={() => closeModal("context")}
             groupId={selectedGroupId}
+            groupTitle={groupDoc?.group_id === selectedGroupId ? groupDoc.title : undefined}
             context={groupContext}
             initialTaskId={contextTaskId}
             onInitialTaskHandled={clearContextTask}
@@ -1901,6 +2013,10 @@ export function AppModals({
         entries={messageMeta?.entries || []}
         messageMode={messageMeta?.messageMode || "send"}
         busyAction={messageActionBusy}
+        remoteDelivery={
+          messageMeta && "remoteDelivery" in messageMeta ? messageMeta.remoteDelivery : undefined
+        }
+        remoteCancellation={messageMetaEvent?._connect_cancellation}
         canCancelReply={Boolean(messageMeta?.canCancelReply)}
         onDeliver={(actorId, forceAmbiguous) => {
           void handleDeliverMessage(actorId, forceAmbiguous);
@@ -1912,13 +2028,16 @@ export function AppModals({
       />
 
       <InboxModal
-        isOpen={modals.inbox}
+        isOpen={modals.inbox && inboxTarget?.groupId === selectedGroupId}
         isDark={isDark}
-        actorId={inboxActorId}
+        actorId={inboxTarget?.actorId || ""}
         actors={actors}
         messages={inboxMessages}
         busy={busy}
-        onClose={() => closeModal("inbox")}
+        onClose={() => {
+          clearInbox();
+          closeModal("inbox");
+        }}
         onMarkAllRead={handleMarkAllRead}
       />
 
@@ -1959,8 +2078,6 @@ export function AppModals({
         runtimes={runtimes}
         runtime={editActorRuntime}
         onChangeRuntime={setEditActorRuntime}
-        runner={editActorRunner}
-        onChangeRunner={setEditActorRunner}
         command={editActorCommand}
         onChangeCommand={setEditActorCommand}
         title={editActorTitle}
@@ -2032,8 +2149,6 @@ export function AppModals({
         onRequestActorProfiles={loadActorProfiles}
         runtime={newActorRuntime}
         onChangeRuntime={setNewActorRuntime}
-        runner={newActorRunner}
-        onChangeRunner={setNewActorRunner}
         command={newActorCommand}
         onChangeCommand={setNewActorCommand}
         useDefaultCommand={newActorUseDefaultCommand}

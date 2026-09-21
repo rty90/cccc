@@ -2,11 +2,19 @@ use cccc_contracts::ActorRuntime;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+mod kimi;
+pub use kimi::ensure as ensure_kimi;
+mod antigravity;
+pub use antigravity::ensure as ensure_antigravity;
+mod grok;
+pub use grok::ensure as ensure_grok;
+
 #[must_use]
 pub const fn is_auto_managed(runtime: ActorRuntime) -> bool {
     matches!(
         runtime,
         ActorRuntime::Amp
+            | ActorRuntime::Antigravity
             | ActorRuntime::Auggie
             | ActorRuntime::Claude
             | ActorRuntime::Cline
@@ -18,6 +26,7 @@ pub const fn is_auto_managed(runtime: ActorRuntime) -> bool {
             | ActorRuntime::Grok
             | ActorRuntime::Hermes
             | ActorRuntime::Kimi
+            | ActorRuntime::Kilo
             | ActorRuntime::Opencode
     )
 }
@@ -130,9 +139,7 @@ pub fn add_command(runtime: ActorRuntime, executable: &Path) -> Option<Vec<Strin
     let cccc = executable.to_string_lossy().into_owned();
     let common = |parts: &[&str]| parts.iter().map(|part| (*part).to_owned()).collect();
     Some(match runtime {
-        ActorRuntime::Claude => common(&[
-            "claude", "mcp", "add", "-s", "user", "cccc", "--", &cccc, "mcp",
-        ]),
+        ActorRuntime::Antigravity => common(&["agy", "mcp", "add", "cccc", "cccc", "mcp"]),
         ActorRuntime::Cline => {
             common(&["cline", "mcp", "add", "cccc", "--yes", "--", &cccc, "mcp"])
         }
@@ -159,17 +166,6 @@ pub fn add_command(runtime: ActorRuntime, executable: &Path) -> Option<Vec<Strin
         ]),
         ActorRuntime::Amp => common(&["amp", "mcp", "add", "cccc", &cccc, "mcp"]),
         ActorRuntime::Auggie => common(&["auggie", "mcp", "add", "cccc", "--", &cccc, "mcp"]),
-        ActorRuntime::Kimi => common(&[
-            "kimi",
-            "mcp",
-            "add",
-            "--transport",
-            "stdio",
-            "cccc",
-            "--",
-            &cccc,
-            "mcp",
-        ]),
         _ => return None,
     })
 }
@@ -177,7 +173,6 @@ pub fn add_command(runtime: ActorRuntime, executable: &Path) -> Option<Vec<Strin
 #[must_use]
 pub fn remove_command(runtime: ActorRuntime) -> Option<Vec<String>> {
     let parts: &[&str] = match runtime {
-        ActorRuntime::Claude => &["claude", "mcp", "remove", "cccc", "-s", "user"],
         ActorRuntime::Codex => &["codex", "mcp", "remove", "cccc"],
         ActorRuntime::Copilot => &["copilot", "mcp", "remove", "cccc"],
         ActorRuntime::Devin => &["devin", "mcp", "remove", "-s", "user", "cccc"],
@@ -187,7 +182,6 @@ pub fn remove_command(runtime: ActorRuntime) -> Option<Vec<String>> {
         ActorRuntime::Droid => &["droid", "mcp", "remove", "cccc"],
         ActorRuntime::Amp => &["amp", "mcp", "remove", "cccc"],
         ActorRuntime::Auggie => &["auggie", "mcp", "remove", "cccc"],
-        ActorRuntime::Kimi => &["kimi", "mcp", "remove", "cccc"],
         _ => return None,
     };
     Some(parts.iter().map(|part| (*part).to_owned()).collect())
@@ -200,6 +194,7 @@ mod tests {
     #[test]
     fn auto_managed_runtime_catalog_matches_supported_contract() {
         let runtimes = [
+            ActorRuntime::Antigravity,
             ActorRuntime::Claude,
             ActorRuntime::Cline,
             ActorRuntime::Codex,
@@ -212,6 +207,7 @@ mod tests {
             ActorRuntime::Grok,
             ActorRuntime::Hermes,
             ActorRuntime::Kimi,
+            ActorRuntime::Kilo,
             ActorRuntime::Opencode,
         ];
         assert!(runtimes.into_iter().all(is_auto_managed));
