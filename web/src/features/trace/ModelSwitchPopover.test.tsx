@@ -124,6 +124,21 @@ describe("ModelSwitchPopover", () => {
     expect(container.textContent).not.toContain("switchDone");
   });
 
+  it("shows the new model with the failure when the restart worked but the onboarding was refused", async () => {
+    await open();
+    await clickButton("GPT-6 Astra");
+    await clickButton("switchApply");
+    actor.last_switch = { op: "op1", ok: false, restarted: true, onboarding: "failed", error: "restarted with gpt-6-astra, but onboarding was refused: down" };
+    actor.model = "gpt-6-astra";
+    actor.effort = "high";
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+    expect(container.textContent).toContain("switchFailed: restarted with gpt-6-astra, but onboarding was refused: down");
+    expect(container.textContent).toContain("· gpt-6-astra · high");
+    expect(container.textContent).not.toContain("switchDone");
+  });
+
   it("shows a switch that is already running when it opens", async () => {
     actor.switching = { op: "op0", stage: "handoff" };
     await open();

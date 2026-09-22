@@ -144,9 +144,11 @@ export function ModelSwitchPopover({
         const outcome = actor?.last_switch;
         if (outcome?.op === pendingOp) {
           setPendingOp("");
+          // Whatever the outcome, the monitor's view is the truth now: the old observation when the restart failed,
+          // the new launch configuration when only the onboarding was refused.
+          setCurrentModel(String(actor?.model || "").trim());
+          setCurrentEffort(String(actor?.effort || "").trim());
           if (outcome.ok) {
-            setCurrentModel(String(actor?.model || outcome.model || "").trim());
-            setCurrentEffort(String(actor?.effort || outcome.effort || "").trim());
             setStatus(t("switchDone"));
             window.setTimeout(() => closeRef.current(false), 1200);
           } else {
