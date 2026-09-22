@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { classNames } from "../../utils/classNames";
+import { isComposingKeyEvent } from "../../utils/imeKey";
 import { moderatorPost, type Meeting, type Vote } from "./meetingStore";
 
 /**
@@ -74,7 +75,8 @@ export function HumanRulingForm({
         value={reason}
         onChange={(event) => setReason(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key === "Enter" && option && !busy) void submit();
+          // A ruling is final: the Enter that confirms an IME candidate while typing the reason is not a submit.
+          if (event.key === "Enter" && !isComposingKeyEvent(event) && option && !busy) void submit();
         }}
       />
       <div className="mt-1.5 flex flex-wrap items-center gap-2">

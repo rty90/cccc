@@ -3,6 +3,7 @@ import { Gavel } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { Actor } from "../../types";
 import { classNames } from "../../utils/classNames";
+import { isComposingKeyEvent } from "../../utils/imeKey";
 import { HumanRulingForm } from "./HumanRuling";
 import { VoteDetails } from "./VoteDetails";
 import { HelpTicketCard } from "./HelpTicketCard";
@@ -187,7 +188,7 @@ export function KnotsSidebar({ actors, isDark }: { actors: Actor[]; isDark: bool
             value={tokenDraft}
             onChange={(event) => setTokenDraft(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && tokenDraft.trim()) setModeratorToken(tokenDraft);
+              if (event.key === "Enter" && !isComposingKeyEvent(event) && tokenDraft.trim()) setModeratorToken(tokenDraft);
             }}
             placeholder={t("knotsTokenLabel") + " · ~/.knots/moderator.token"}
             aria-label={t("knotsTokenLabel")}
