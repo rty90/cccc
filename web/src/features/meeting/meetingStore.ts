@@ -412,9 +412,13 @@ export const useMeetingStore = create<MeetingState>(() => ({
     };
     // The i18n singleton is loaded on demand: importing it at module load would initialise i18next in every test
     // that renders a component touching this store.
-    // A page load never changes the room's language (a preview page with an English UI once switched the whole
-    // room to English on connect). Only an actual switch of the UI language at this page is pushed.
-    void import("../../i18n").then(({ default: i18n }) => {
+    // A page load never changes the room's language: a page whose UI language differs from the room's used to push
+    // its own on connect (an English page switched the whole room to English on 2026-09-21 and again on 2026-09-22;
+    // a Chinese page switched it back on 2026-09-23), and every push is a [NOTICE] to every actor. Only a switch of
+    // the UI language made at this page is pushed, and only once i18next has settled on its start language, so the
+    // event that ends its own initialisation is not taken for a switch either.
+    void import("../../i18n").then(async ({ default: i18n, i18nReady }) => {
+      await i18nReady;
       let uiLanguage = normalizeLanguageCode(i18n.language);
       i18n.on("languageChanged", (next: string) => {
         const wanted = normalizeLanguageCode(next);
@@ -451,7 +455,6 @@ export const useMeetingStore = create<MeetingState>(() => ({
           language: String(data.language || ""),
           actorStatus: (data.actor_status as Record<string, ActorStatus> | undefined) || {},
         });
-        void syncLanguage();
         for (const ticket of help) if (ticket.status !== "resolved") pushHelpNotice(ticket);
       } else if (type === "updates") {
         useMeetingStore.setState({ updates: (data.updates as Record<string, HarnessUpdate> | undefined) || {} });
