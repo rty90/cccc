@@ -547,12 +547,8 @@ async function syncLanguage() {
   const { default: i18n } = await import("../../i18n");
   const wanted = normalizeLanguageCode(i18n.language);
   if (useMeetingStore.getState().language === wanted) return;
-  try {
-    await moderatorPost("/api/language", { language: wanted, by: "the human moderator" });
-    useMeetingStore.setState({ language: wanted });
-  } catch {
-    // moderator offline
-  }
+  const result = await moderatorPost<{ ok: boolean }>("/api/language", { language: wanted, by: "the human moderator" });
+  if (result.ok) useMeetingStore.setState({ language: wanted });
 }
 
 export async function setActorEnabled(actorId: string, enabled: boolean): Promise<void> {
@@ -584,19 +580,18 @@ export async function moderatorPost<T>(path: string, body: unknown): Promise<T> 
   }
 }
 
+/** A failed read rejects, so callers keep their last valid data instead of storing an error as T. */
 export async function moderatorGet<T>(path: string): Promise<T> {
+  let response: Response;
   try {
-    const response = await fetch(`${moderatorBaseUrl()}${path}`, { headers: moderatorHeaders() });
-    if (response.status === 401) useMeetingStore.setState({ authRequired: true });
-    try {
-      return (await response.json()) as T;
-    } catch {
-      return { ok: false, error: `moderator replied ${response.status} without JSON` } as unknown as T;
-    }
+    response = await fetch(`${moderatorBaseUrl()}${path}`, { headers: moderatorHeaders() });
   } catch (error) {
     useMeetingStore.setState({ connected: false });
-    return { ok: false, error: `network: ${error instanceof Error ? error.message : String(error)}` } as unknown as T;
+    throw error;
   }
+  if (response.status === 401) useMeetingStore.setState({ authRequired: true });
+  if (!response.ok) throw new Error(`moderator replied ${response.status}`);
+  return (await response.json()) as T;
 }
 
 /**

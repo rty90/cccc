@@ -98,5 +98,11 @@ describe("meetingStore language sync", () => {
     expect(pushes).toHaveLength(1);
     expect(pushes[0].body).toMatchObject({ language: "ja" });
     expect(useMeetingStore.getState().language).toBe("ja");
+
+    // A rejected change leaves the last confirmed room language intact.
+    vi.mocked(fetch).mockResolvedValue({ ok: false, status: 401, json: async () => ({ ok: false, error: "unauthorized" }) } as Response);
+    i18n.emit("languageChanged", "en");
+    await vi.waitFor(() => expect(useMeetingStore.getState().authRequired).toBe(true));
+    expect(useMeetingStore.getState().language).toBe("ja");
   });
 });

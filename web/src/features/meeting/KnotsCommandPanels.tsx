@@ -96,9 +96,13 @@ function UsagePanel() {
       .catch((e: unknown) => {
         if (!cancelled) setError(String(e));
       });
-    void moderatorGet<ModeratorUsage>("/api/usage").then((d) => {
-      if (!cancelled) setModerator(d || {});
-    });
+    void moderatorGet<ModeratorUsage>("/api/usage")
+      .then((d) => {
+        if (!cancelled) setModerator(d || {});
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setError(String(e));
+      });
     return () => {
       cancelled = true;
     };
@@ -153,11 +157,11 @@ function UsagePanel() {
               const b = day.actors?.[aid];
               return [
                 <span key={aid}>{aid} <span className="text-[11px] text-[var(--color-text-tertiary)]">{b?.model || monitor?.actor_providers?.[aid] || ""}</span></span>,
-                fmt(turns[aid]?.turns),
+                moderator ? fmt(turns[aid]?.turns) : "–",
                 b ? fmt(b.requests) : "–",
                 b ? fmt(b.input) : "–",
                 b ? fmt(b.output) : "–",
-                tiers[aid] || "both",
+                moderator ? tiers[aid] || "both" : "–",
               ];
             })}
           />
@@ -191,7 +195,8 @@ function StatusPanel({ actors }: { actors: Actor[] }) {
   const help = useMeetingStore((state) => state.help);
   const updates = useMeetingStore((state) => state.updates);
   const [monitor, setMonitor] = useState<MonitorState | null>(null);
-  const [tiers, setTiers] = useState<Record<string, string>>({});
+  const [tiers, setTiers] = useState<Record<string, string> | null>(null);
+  const [error, setError] = useState("");
   useEffect(() => {
     let cancelled = false;
     fetch(`${traceBaseUrl()}/api/state`)
@@ -200,9 +205,13 @@ function StatusPanel({ actors }: { actors: Actor[] }) {
         if (!cancelled) setMonitor(d);
       })
       .catch(() => undefined);
-    void moderatorGet<ModeratorUsage>("/api/usage").then((d) => {
-      if (!cancelled) setTiers(d?.tiers || {});
-    });
+    void moderatorGet<ModeratorUsage>("/api/usage")
+      .then((d) => {
+        if (!cancelled) setTiers(d?.tiers || {});
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setError(String(e));
+      });
     return () => {
       cancelled = true;
     };
@@ -224,7 +233,7 @@ function StatusPanel({ actors }: { actors: Actor[] }) {
       running ? t("statusRunning") : t("statusStopped"),
       String(m.phase || m.state || "–"),
       `${m.model || ""}${m.effort ? ` · ${m.effort}` : ""}` || "–",
-      tiers[id] || "both",
+      tiers ? tiers[id] || "both" : "–",
     ];
   });
   return (
@@ -234,6 +243,7 @@ function StatusPanel({ actors }: { actors: Actor[] }) {
         {connected ? t("statusConnected") : t("statusDisconnected")} · {t("statusProtocol", { version: harness?.version ?? "?" })} ·{" "}
         {t("statusOpenMeetings", { count: openMeetings })} · {t("statusOpenProjects", { count: openProjects })} · {t("statusPending", { count: pending })}
       </DialogDescription>
+      {error ? <div className="text-[12px] text-rose-500">{error}</div> : null}
       <Section title={t("statusActors")}>
         <Table head={[t("statusActors"), t("statusRunningHead"), t("statusPhase"), t("statusModel"), t("usageTier")]} rows={rows} />
       </Section>
