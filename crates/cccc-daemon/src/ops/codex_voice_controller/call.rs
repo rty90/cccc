@@ -10,14 +10,26 @@ impl CodexVoiceCall {
     #[cfg(test)]
     pub async fn launch(home: &HomeLayout, analyst: LaunchConfig) -> Result<Self> {
         let analyst = Arc::new(CodexVoiceAnalyst::launch(home, analyst).await?);
-        Self::start(home, analyst).await
+        Self::start(home, Some(analyst), None).await
     }
 
-    pub async fn start(home: &HomeLayout, analyst: Arc<CodexVoiceAnalyst>) -> Result<Self> {
+    pub async fn start(
+        home: &HomeLayout,
+        analyst: Option<Arc<CodexVoiceAnalyst>>,
+        application_context: Option<cccc_contracts::codex_voice::VoiceApplicationContext>,
+    ) -> Result<Self> {
+        let mode = application_context
+            .as_ref()
+            .map(|context| context.mode())
+            .unwrap_or_default();
+        if (mode == cccc_contracts::codex_voice::VoiceCallMode::Assistant) != analyst.is_some() {
+            bail!("Voice call mode and Analyst ownership do not match");
+        }
         let generation = uuid::Uuid::new_v4().simple().to_string();
         let lease = CallLease::acquire(home, "", "", &format!("codex-voice:{generation}"))?;
         Ok(Self {
             generation,
+            application_context,
             analyst,
             lease,
             state: tokio::sync::Mutex::new(CallState::default()),
@@ -28,28 +40,62 @@ impl CodexVoiceCall {
         &self.generation
     }
 
+    pub fn application_context(
+        &self,
+    ) -> Option<&cccc_contracts::codex_voice::VoiceApplicationContext> {
+        self.application_context.as_ref()
+    }
+
+    fn delegation_input(&self, request: &str) -> String {
+        self.application_context.as_ref().map_or_else(
+            || request.to_owned(),
+            |context| context.analyst_input(request),
+        )
+    }
+
     #[cfg(test)]
     pub fn analyst_thread_id(&self) -> &str {
-        self.analyst.thread_id()
+        self.require_analyst()
+            .expect("assistant fixture")
+            .thread_id()
     }
 
     #[cfg(test)]
     pub fn analyst_tui_command(&self) -> Vec<String> {
-        self.analyst.tui_command()
+        self.require_analyst()
+            .expect("assistant fixture")
+            .tui_command()
     }
 
     #[cfg(test)]
     pub fn analyst_tui_ready(&self) -> bool {
-        self.analyst.tui_ready()
+        self.require_analyst()
+            .expect("assistant fixture")
+            .tui_ready()
     }
 
     #[cfg(test)]
     pub fn subscribe_analyst(&self) -> broadcast::Receiver<AnalystEvent> {
-        self.analyst.subscribe()
+        self.require_analyst()
+            .expect("assistant fixture")
+            .subscribe()
     }
 
-    pub fn analyst(&self) -> Arc<CodexVoiceAnalyst> {
-        Arc::clone(&self.analyst)
+    pub fn analyst(&self) -> Option<&Arc<CodexVoiceAnalyst>> {
+        self.analyst.as_ref()
+    }
+
+    pub fn mode(&self) -> cccc_contracts::codex_voice::VoiceCallMode {
+        self.application_context
+            .as_ref()
+            .map(|context| context.mode())
+            .unwrap_or_default()
+    }
+
+    fn require_analyst(&self) -> Result<&CodexVoiceAnalyst> {
+        self.analyst
+            .as_deref()
+            .context("Persona calls have no Voice Analyst")
     }
 
     pub fn heartbeat(&self, expected_generation: &str) -> Result<()> {
@@ -64,6 +110,9 @@ impl CodexVoiceCall {
         event: &Value,
     ) -> Result<Option<TurnReceipt>> {
         self.require_generation(expected_generation)?;
+        if self.mode() == cccc_contracts::codex_voice::VoiceCallMode::Persona {
+            return Ok(None);
+        }
         let Some(delegation) = parse_provider_delegation(event)? else {
             return Ok(None);
         };
@@ -78,14 +127,17 @@ impl CodexVoiceCall {
         event: &Value,
     ) -> Result<Option<VoiceDelegationAdmission>> {
         self.require_generation(expected_generation)?;
+        if self.mode() == cccc_contracts::codex_voice::VoiceCallMode::Persona {
+            return Ok(None);
+        }
         let Some(delegation) = parse_provider_delegation(event)? else {
             return Ok(None);
         };
         validate_delegation(&delegation)?;
         let admission = self
-            .analyst
+            .require_analyst()?
             .lifecycle
-            .admit_voice(&delegation.id, &delegation.text)
+            .admit_voice(&delegation.id, &self.delegation_input(&delegation.text))
             .await?;
         if let VoiceDelegationAdmission::Turn(receipt) = &admission {
             self.follow_analyst_turn(receipt).await;
@@ -99,7 +151,7 @@ impl CodexVoiceCall {
         delegation_id: &str,
     ) -> Result<bool> {
         self.require_generation(expected_generation)?;
-        self.analyst
+        self.require_analyst()?
             .lifecycle
             .reject_native_voice(delegation_id)
             .await
@@ -114,15 +166,15 @@ impl CodexVoiceCall {
         self.require_generation(expected_generation)?;
         validate_delegation(delegation)?;
         let admission = self
-            .analyst
+            .require_analyst()?
             .lifecycle
-            .admit_voice(&delegation.id, &delegation.text)
+            .admit_voice(&delegation.id, &self.delegation_input(&delegation.text))
             .await?;
         let turn = match admission {
             VoiceDelegationAdmission::Turn(turn) => turn,
             VoiceDelegationAdmission::NativeInput { delegation_id, .. } => {
                 let _ = self
-                    .analyst
+                    .require_analyst()?
                     .lifecycle
                     .reject_native_voice(&delegation_id)
                     .await?;
@@ -144,7 +196,7 @@ impl CodexVoiceCall {
         text: &str,
     ) -> Result<()> {
         self.require_generation(expected_generation)?;
-        self.analyst
+        self.require_analyst()?
             .lifecycle
             .steer_voice(delegation_id, text)
             .await
@@ -153,13 +205,19 @@ impl CodexVoiceCall {
     #[cfg(test)]
     pub async fn cancel(&self, expected_generation: &str, delegation_id: &str) -> Result<()> {
         self.require_generation(expected_generation)?;
-        self.analyst.lifecycle.cancel_voice(delegation_id).await?;
+        self.require_analyst()?
+            .lifecycle
+            .cancel_voice(delegation_id)
+            .await?;
         Ok(())
     }
 
     pub async fn cancel_current(&self, expected_generation: &str) -> Result<bool> {
         self.require_generation(expected_generation)?;
-        self.analyst.lifecycle.cancel_current().await
+        let Some(analyst) = self.analyst() else {
+            return Ok(false);
+        };
+        analyst.lifecycle.cancel_current().await
     }
 
     pub async fn follow_analyst_turn(&self, receipt: &TurnReceipt) {

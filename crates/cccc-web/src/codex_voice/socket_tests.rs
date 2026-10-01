@@ -29,6 +29,8 @@ async fn voice_sockets_revoke_idle_terminals_and_report_notification_failure() {
             .args(["--exact", "codex_voice::socket_tests::voice_sockets_revoke_idle_terminals_and_report_notification_failure", "--nocapture"])
             .env("CCCC_TEST_VOICE_SOCKET_CHILD", "1")
             .env("CCCC_LAUNCHER_PATH", launcher)
+            .env("CODEX_HOME", temp.path().join("codex"))
+            .env_remove("CCCC_CODEX_AUTH_PATH")
             .output().expect("isolated test child");
         assert!(
             output.status.success(),
@@ -119,6 +121,26 @@ async fn voice_sockets_revoke_idle_terminals_and_report_notification_failure() {
     let tokens = AccessTokenStore::new(home.clone()).expect("tokens");
     let owner = tokens.create("owner", vec![], true, None).expect("owner");
 
+    // Malformed host input is rejected before Runtime or provider startup.
+    let rejected = reqwest::Client::new()
+        .post(format!("http://{address}/api/v1/codex_voice/calls"))
+        .bearer_auth(&owner.token)
+        .json(
+            &json!({"client_session_id":"invalid-context", "offer_sdp":"v=0\r\n",
+            "application_context":{"id":"work", "instructions":"private".repeat(4096)}}),
+        )
+        .send()
+        .await
+        .expect("invalid context request");
+    assert_eq!(rejected.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert!(
+        !rejected
+            .text()
+            .await
+            .expect("safe rejection body")
+            .contains("private")
+    );
+
     for mode in ["viewer", "control"] {
         let token = tokens
             .create("temporary admin", vec![], true, None)
@@ -177,8 +199,13 @@ async fn voice_sockets_revoke_idle_terminals_and_report_notification_failure() {
         .expect("idle terminal must close after authorization is removed");
     }
 
+    let context = cccc_contracts::codex_voice::VoiceApplicationContext::new(
+        "work:one".into(),
+        "日本語で応答する".into(),
+    )
+    .expect("first context");
     let call = Arc::new(
-        CodexVoiceCall::start(&home, runtime.analyst())
+        CodexVoiceCall::start(&home, Some(runtime.analyst()), Some(context.clone()))
             .await
             .expect("local call lease"),
     );
@@ -187,13 +214,27 @@ async fn voice_sockets_revoke_idle_terminals_and_report_notification_failure() {
         verbosity: Default::default(),
         notification_paused: tokio::sync::watch::channel(false).0,
         call,
-        analyst: Arc::clone(&runtime),
+        analyst: Some(Arc::clone(&runtime)),
         client_session_id: "fixture".into(),
         offer_digest: [0; 32],
         answer_sdp: String::new(),
         voice: "cove".into(),
         connection_state: AtomicU8::new(CONNECTION_UNATTACHED),
     });
+    assert!(session.matches_start("fixture", &[0; 32], "cove", Some(&context)));
+    assert!(!session.matches_start("fixture", &[0; 32], "cove", None));
+    let changed = cccc_contracts::codex_voice::VoiceApplicationContext::new(
+        "work:two".into(),
+        context.instructions().into(),
+    )
+    .expect("changed work context");
+    assert!(!session.matches_start("fixture", &[0; 32], "cove", Some(&changed)));
+    let changed = cccc_contracts::codex_voice::VoiceApplicationContext::new(
+        context.id().into(),
+        "日本語。別の資料範囲".into(),
+    )
+    .expect("changed instructions");
+    assert!(!session.matches_start("fixture", &[0; 32], "cove", Some(&changed)));
     state.codex_voice.state.lock().await.active = Some(Arc::clone(&session));
     // Corruption is a credible ingestion failure. It must be visible to the
     // connected owner without falsely declaring the Analyst disconnected.
@@ -230,6 +271,39 @@ async fn voice_sockets_revoke_idle_terminals_and_report_notification_failure() {
         "{"
     );
     socket.close(None).await.expect("close call");
+    state
+        .codex_voice
+        .stop(&call_generation)
+        .await
+        .expect("stop assistant call");
+    let persona = cccc_contracts::codex_voice::VoiceApplicationContext::new_with_mode(
+        "training".into(),
+        "Play the customer.".into(),
+        cccc_contracts::codex_voice::VoiceCallMode::Persona,
+    )
+    .expect("assistant fixture");
+    let config = RealtimeCallConfig {
+        auth_path: temp.path().join("missing-auth.json"),
+        base_url: "http://127.0.0.1:1".into(),
+        voice: "cove".into(),
+        preferences: Default::default(),
+        application_context: Some(persona),
+    };
+    assert!(
+        state
+            .codex_voice
+            .start_with_realtime(&home, "persona", "offer", config)
+            .await
+            .is_err()
+    );
+    let managed = state.codex_voice.state.lock().await;
+    assert!(managed.active.is_none());
+    assert!(Arc::ptr_eq(
+        managed.analyst.as_ref().expect("assistant fixture"),
+        &runtime
+    ));
+    assert!(runtime.reusable_for_call());
+    drop(managed);
     runtime.stop_terminal();
     runtime.analyst.shutdown().await.expect("stop fake Analyst");
     let _ = shutdown.send(());

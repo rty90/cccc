@@ -677,7 +677,7 @@ export function ProjectedBrowserSurfacePanel({
 
       activeLifecycleKeyRef.current = lifecycleKey;
       setSessionState(normalizeState(started.result.browser_surface));
-      attachSocket();
+      if (started.result.browser_surface.active) attachSocket();
     };
 
     void open();
@@ -777,7 +777,7 @@ export function ProjectedBrowserSurfacePanel({
       target.replaceChildren();
       setVncConnected(false);
     };
-  }, [sessionState.state, vncAvailable, webSocketUrl]);
+  }, [isExpanded, sessionState.state, vncAvailable, webSocketUrl]);
 
   useEffect(() => {
     const container = containerRef.current;

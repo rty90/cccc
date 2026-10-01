@@ -18,21 +18,28 @@ struct ViewportSize {
 
 impl BrowserSurfaces {
     pub async fn frame(&self, key: &str) -> Result<Value> {
-        let mut sessions = self.sessions.lock().await;
-        let session = sessions
-            .get_mut(key)
+        let operation = self.key_operation(key).await;
+        let _operation = operation.lock().await;
+        let mut session = self
+            .sessions
+            .lock()
+            .await
+            .get(key)
+            .cloned()
             .context("browser surface is not active")?;
-        let (bytes, viewport) = match capture_frame(&session.page).await {
+        let original_target = session.page.target_id().clone();
+        let cached_viewport = (session.width, session.height);
+        let (bytes, viewport) = match capture_frame(&session.page, cached_viewport).await {
             Ok(frame) => frame,
             Err(error) if session.recover_closed_page && is_page_gone(&error) => {
                 tracing::warn!(%error, "browser tab closed; recreating projected surface page");
-                recover_page(session).await?;
-                capture_frame(&session.page).await?
+                recover_page(&mut session).await?;
+                capture_frame(&session.page, cached_viewport).await?
             }
             Err(error) => return Err(error),
         };
-        session.width = viewport.width;
-        session.height = viewport.height;
+        session.width = viewport.0;
+        session.height = viewport.1;
         session.seq += 1;
         session.updated_at = utc_now();
         session.url = session
@@ -40,6 +47,20 @@ impl BrowserSurfaces {
             .url()
             .await?
             .unwrap_or_else(|| session.url.clone());
+        let mut sessions = self.sessions.lock().await;
+        let current = sessions
+            .get_mut(key)
+            .filter(|s| {
+                s.page.target_id() == &original_target
+                    && std::sync::Arc::ptr_eq(&s.owner, &session.owner)
+            })
+            .context("browser surface changed during capture")?;
+        current.page = session.page.clone();
+        current.url = session.url.clone();
+        current.width = session.width;
+        current.height = session.height;
+        current.seq = session.seq;
+        current.updated_at = session.updated_at.clone();
         Ok(json!({
             "t":"frame",
             "seq":session.seq,
@@ -53,13 +74,25 @@ impl BrowserSurfaces {
     }
 }
 
-async fn capture_frame(page: &Page) -> Result<(Vec<u8>, ViewportSize)> {
+pub(super) async fn viewport_size(page: &Page) -> Result<(u32, u32)> {
     let viewport = page
         .evaluate("({ width: window.innerWidth, height: window.innerHeight })")
         .await
         .context("read projected browser viewport")?
         .into_value::<ViewportSize>()
         .context("decode projected browser viewport")?;
+    Ok((viewport.width, viewport.height))
+}
+
+async fn capture_frame(page: &Page, cached_viewport: (u32, u32)) -> Result<(Vec<u8>, (u32, u32))> {
+    // Before the first response commits, Chromium can defer Runtime.evaluate
+    // while screenshot capture remains available. Use the viewport measured
+    // before navigation instead of making the loading view wait for JavaScript.
+    let viewport = if matches!(page.url().await?.as_deref(), None | Some("about:blank")) {
+        cached_viewport
+    } else {
+        viewport_size(page).await?
+    };
     let bytes = page
         .screenshot(
             ScreenshotParams::builder()

@@ -48,6 +48,7 @@ pub struct RealtimeCallConfig {
     pub base_url: String,
     pub voice: String,
     pub preferences: cccc_contracts::voice_notifications::VoicePreferences,
+    pub application_context: Option<cccc_contracts::codex_voice::VoiceApplicationContext>,
 }
 
 pub const DEFAULT_REALTIME_VOICE: &str = "cove";
@@ -79,12 +80,18 @@ impl RealtimeCallConfig {
                 .unwrap_or_else(|_| "https://chatgpt.com/backend-api/codex".into()),
             voice,
             preferences: Default::default(),
+            application_context: None,
         })
     }
 }
 
 fn realtime_instructions(config: &RealtimeCallConfig) -> String {
     use cccc_contracts::voice_notifications::VoiceStyle;
+    if let Some(context) = &config.application_context
+        && context.mode() == cccc_contracts::codex_voice::VoiceCallMode::Persona
+    {
+        return context.instructions().to_owned();
+    }
     let detail =
         cccc_core::voice_notifications::verbosity_instruction(config.preferences.verbosity);
     let style = match config.preferences.style {
@@ -92,9 +99,17 @@ fn realtime_instructions(config: &RealtimeCallConfig) -> String {
         VoiceStyle::Direct => "Be direct and matter-of-fact; avoid unnecessary filler.",
         VoiceStyle::Patient => "Be patient and explain unfamiliar ideas at the user's pace.",
     };
-    format!(
+    let mut instructions = format!(
         "{REALTIME_INSTRUCTIONS}\n\n# User expression preferences\n{detail}\n{style}\nThe user's explicit spoken preferences take priority over these defaults. Do not change factual qualifications, routing, or authorization."
-    )
+    );
+    if let Some(context) = &config.application_context {
+        instructions.push_str(&format!(
+            "\n\n# Host application context for this call\nContext ID: {}\n{}",
+            context.id(),
+            context.instructions()
+        ));
+    }
+    instructions
 }
 
 pub(super) fn configured_auth_path(
@@ -145,15 +160,7 @@ pub async fn create_realtime_answer(config: &RealtimeCallConfig, offer: &str) ->
         .header("x-session-id", uuid::Uuid::new_v4().to_string())
         .header("user-agent", format!("cccc/{}", env!("CARGO_PKG_VERSION")))
         .header("openai-alpha", "quicksilver=v2")
-        .json(&json!({
-            "sdp":offer,
-            "session":{
-                "model":"gpt-live-1-codex",
-                "instructions":realtime_instructions(config),
-                "audio":{"output":{"voice":config.voice}},
-                "delegation":{"type":"client","ack_filler":true}
-            }
-        }))
+        .json(&json!({"sdp":offer,"session":realtime_session(config)}))
         .send()
         .await
         .context("create Codex Voice call")?;
@@ -185,6 +192,20 @@ pub async fn create_realtime_answer(config: &RealtimeCallConfig, offer: &str) ->
     Ok(body)
 }
 
+fn realtime_session(config: &RealtimeCallConfig) -> Value {
+    let mut session = json!({
+        "model":"gpt-live-1-codex",
+        "instructions":realtime_instructions(config),
+        "audio":{"output":{"voice":config.voice}},
+    });
+    if !config.application_context.as_ref().is_some_and(|context| {
+        context.mode() == cccc_contracts::codex_voice::VoiceCallMode::Persona
+    }) {
+        session["delegation"] = json!({"type":"client","ack_filler":true});
+    }
+    session
+}
+
 pub(super) fn validated_realtime_offer(offer: &str) -> Result<&str> {
     if offer.trim().is_empty() {
         bail!("Codex Voice WebRTC offer is empty");
@@ -196,9 +217,19 @@ pub(super) fn validated_realtime_offer(offer: &str) -> Result<&str> {
     Ok(offer)
 }
 
-pub fn realtime_greeting_commands() -> Vec<Value> {
+pub fn realtime_greeting_commands(
+    application_context: Option<&cccc_contracts::codex_voice::VoiceApplicationContext>,
+) -> Vec<Value> {
     session_context_commands(
-        "The global voice session has started. Give the user one short, natural greeting, then wait for them to speak. Do not imply that a Working Group is already selected.",
+        if application_context.is_some_and(|context| {
+            context.mode() == cccc_contracts::codex_voice::VoiceCallMode::Persona
+        }) {
+            "The call has started. Follow the host instructions for how to open and conduct the conversation, including whether to speak first or wait."
+        } else if application_context.is_some() {
+            "The voice session has started. Follow the host application context, including its language and current subject. Give one short, natural greeting, then wait for the user to speak."
+        } else {
+            "The global voice session has started. Give the user one short, natural greeting, then wait for them to speak. Do not imply that a Working Group is already selected."
+        },
     )
 }
 
@@ -212,12 +243,126 @@ mod preference_tests {
     use cccc_contracts::voice_notifications::{VoiceStyle, VoiceVerbosity};
 
     #[test]
+    fn persona_uses_only_host_instructions_without_client_delegation() {
+        use cccc_contracts::codex_voice::{VoiceApplicationContext, VoiceCallMode};
+        let mut config = RealtimeCallConfig {
+            auth_path: "unused".into(),
+            base_url: "http://unused.invalid".into(),
+            voice: "cove".into(),
+            preferences: Default::default(),
+            application_context: Some(
+                VoiceApplicationContext::new_with_mode(
+                    "training".into(),
+                    "日本語で顧客として話す。最初は待つ。".into(),
+                    VoiceCallMode::Persona,
+                )
+                .expect("provider fixture"),
+            ),
+        };
+        for style in [VoiceStyle::Natural, VoiceStyle::Direct, VoiceStyle::Patient] {
+            config.preferences.style = style;
+            assert_eq!(
+                realtime_session(&config),
+                json!({
+                    "model":"gpt-live-1-codex",
+                    "instructions":"日本語で顧客として話す。最初は待つ。",
+                    "audio":{"output":{"voice":"cove"}},
+                })
+            );
+        }
+        let greeting = realtime_greeting_commands(config.application_context.as_ref());
+        assert!(
+            greeting[0]["content"][0]["text"]
+                .as_str()
+                .expect("provider fixture")
+                .contains("whether to speak first or wait")
+        );
+        config.application_context = None;
+        assert_eq!(
+            realtime_session(&config),
+            json!({
+                "model":"gpt-live-1-codex",
+                "instructions":realtime_instructions(&config),
+                "audio":{"output":{"voice":"cove"}},
+                "delegation":{"type":"client","ack_filler":true},
+            })
+        );
+    }
+
+    #[test]
+    fn embedded_call_context_reaches_realtime_and_uses_a_contextual_greeting() {
+        let context = cccc_contracts::codex_voice::VoiceApplicationContext::new(
+            "work:alpha".into(),
+            "日本語で応答し、現在の仕事に対応する。".into(),
+        )
+        .expect("valid context");
+        let config = RealtimeCallConfig {
+            auth_path: "unused".into(),
+            base_url: "http://unused.invalid".into(),
+            voice: "cove".into(),
+            preferences: Default::default(),
+            application_context: Some(context.clone()),
+        };
+        let instructions = realtime_instructions(&config);
+        assert!(instructions.starts_with(REALTIME_INSTRUCTIONS));
+        assert!(instructions.contains(context.id()));
+        assert!(instructions.contains(context.instructions()));
+        assert!(
+            realtime_greeting_commands(Some(&context))[0]["content"][0]["text"]
+                .as_str()
+                .expect("embedded greeting text")
+                .contains("host application context")
+        );
+        assert!(
+            realtime_greeting_commands(None)[0]["content"][0]["text"]
+                .as_str()
+                .expect("global greeting text")
+                .contains("Do not imply that a Working Group")
+        );
+    }
+
+    #[test]
+    fn full_size_host_instructions_are_preserved_in_both_modes() {
+        use cccc_contracts::codex_voice::{VoiceApplicationContext, VoiceCallMode};
+
+        let instructions = "お客様".repeat(2730) + "ああ";
+        assert_eq!(instructions.len(), 24_576);
+        for mode in [VoiceCallMode::Assistant, VoiceCallMode::Persona] {
+            let config = RealtimeCallConfig {
+                auth_path: "unused-auth-fixture".into(),
+                base_url: "http://unused.invalid".into(),
+                voice: DEFAULT_REALTIME_VOICE.into(),
+                preferences: Default::default(),
+                application_context: Some(
+                    VoiceApplicationContext::new_with_mode(
+                        "training".into(),
+                        instructions.clone(),
+                        mode,
+                    )
+                    .expect("full-size context"),
+                ),
+            };
+            let session = realtime_session(&config);
+            let actual = session["instructions"].as_str().expect("instructions");
+            if mode == VoiceCallMode::Persona {
+                assert_eq!(actual, instructions);
+                assert!(session.get("delegation").is_none());
+            } else {
+                assert!(actual.starts_with(REALTIME_INSTRUCTIONS));
+                assert!(actual.ends_with(&instructions));
+                assert_eq!(session["delegation"]["type"], "client");
+            }
+        }
+    }
+
+    #[test]
     fn preferences_extend_instructions_without_changing_routing_or_credentials() {
         let mut config = RealtimeCallConfig {
             auth_path: "unused-auth-fixture".into(),
             base_url: "http://unused.invalid".into(),
             voice: "cove".into(),
             preferences: Default::default(),
+            application_context: None,
         };
         for (verbosity, detail) in [
             (VoiceVerbosity::Concise, "essential qualifications"),

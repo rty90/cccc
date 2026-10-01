@@ -1,4 +1,6 @@
 use anyhow::{Context, Result};
+use chromiumoxide::cdp::browser_protocol::target::GetTargetsParams;
+use chromiumoxide::error::{CdpError, ChannelError};
 use chromiumoxide::{Browser, Page};
 
 use super::Session;
@@ -14,11 +16,55 @@ pub(super) fn is_page_gone(error: &anyhow::Error) -> bool {
     })
 }
 
+/// A page handle can outlive its target during session restoration. Only skip
+/// it after the browser itself responds and confirms that target has gone.
+/// In particular, a canceled URL request can also mean the whole handler died.
+pub(super) async fn candidate_page_url(browser: &Browser, page: &Page) -> Result<Option<String>> {
+    match page.url().await {
+        Ok(url) => Ok(Some(url.unwrap_or_default())),
+        Err(error) => {
+            confirm_candidate_gone(browser, page, error.into()).await?;
+            Ok(None)
+        }
+    }
+}
+
+pub(super) async fn confirm_candidate_gone(
+    browser: &Browser,
+    page: &Page,
+    error: anyhow::Error,
+) -> Result<()> {
+    let canceled = matches!(
+        error.downcast_ref::<CdpError>(),
+        Some(CdpError::ChannelSendError(ChannelError::Canceled(_)))
+    );
+    if !canceled && !is_page_gone(&error) {
+        return Err(error);
+    }
+    let targets = browser
+        .execute(GetTargetsParams::default())
+        .await
+        .context("check browser after candidate page disappeared")?;
+    if targets
+        .result
+        .target_infos
+        .iter()
+        .any(|target| &target.target_id == page.target_id())
+    {
+        return Err(error);
+    }
+    Ok(())
+}
+
 pub(super) async fn recover_page(session: &mut Session) -> Result<()> {
+    let owner = std::sync::Arc::clone(&session.owner);
+    let owner = owner.read().await;
     let mut stale_pages = Vec::new();
     let mut live_page = None;
-    for page in session.browser.pages().await? {
-        let url = page.url().await?.unwrap_or_default();
+    for page in owner.browser.pages().await? {
+        let Some(url) = candidate_page_url(&owner.browser, &page).await? else {
+            continue;
+        };
         if is_internal_page(&url) {
             stale_pages.push(page);
         } else {
@@ -28,7 +74,7 @@ pub(super) async fn recover_page(session: &mut Session) -> Result<()> {
     }
     let page = match live_page {
         Some(page) => page,
-        None => session
+        None => owner
             .browser
             .new_page(&session.url)
             .await
@@ -49,7 +95,9 @@ pub(super) async fn close_internal_pages(browser: &Browser, active: &Page) -> Re
         if page.target_id() == active_id {
             continue;
         }
-        let url = page.url().await?.unwrap_or_default();
+        let Some(url) = candidate_page_url(browser, &page).await? else {
+            continue;
+        };
         if is_internal_page(&url) {
             let _ = page.close().await;
         }

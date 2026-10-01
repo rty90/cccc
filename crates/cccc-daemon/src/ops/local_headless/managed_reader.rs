@@ -60,7 +60,7 @@ pub(super) fn spawn(
     Ok(())
 }
 
-fn stop_after_provider_exit(session: &Session) {
+pub(super) fn stop_after_provider_exit(session: &Session) {
     record_provider_exit_if_first(
         session.stop_after_process_exit(),
         &session.home,
@@ -96,6 +96,7 @@ pub(crate) async fn verify_claude_reader_release(
         actor_id: "claude-reader".into(),
         managed: Arc::clone(&managed),
         has_terminal: AtomicBool::new(false),
+        viewer: Mutex::new(None),
         status: Mutex::new(super::HeadlessStatus {
             status: "idle".into(),
             task_id: None,

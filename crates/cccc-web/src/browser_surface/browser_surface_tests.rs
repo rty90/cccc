@@ -2,9 +2,6 @@ use super::*;
 use base64::Engine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-mod chrome_test_guard;
-use chrome_test_guard::chrome_test_guard;
-
 macro_rules! require_chrome {
     () => {
         if !chrome_available() {
@@ -12,6 +9,24 @@ macro_rules! require_chrome {
         }
         let _chrome_guard = chrome_test_guard().await;
     };
+}
+
+async fn wait_for_fixture_document(page: &Page) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if page
+                .evaluate("location.protocol === 'http:' && ['interactive', 'complete'].includes(document.readyState)")
+                .await
+                .ok()
+                .and_then(|r| r.into_value::<bool>().ok()) == Some(true)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("fixture document ready");
 }
 
 #[test]
@@ -112,7 +127,7 @@ async fn interactive_system_browser_keeps_native_mode_and_reuses_its_session() {
     let manager = BrowserSurfaces::default();
     let profile = temp.path().join("profile");
     let opened = manager
-        .ensure_open_system("interactive", &profile, &url, 800, 600)
+        .ensure_open_shared_system("interactive", &profile, &url, 800, 600)
         .await
         .expect("system browser");
     let page = manager
@@ -123,6 +138,7 @@ async fn interactive_system_browser_keeps_native_mode_and_reuses_its_session() {
         .expect("session")
         .page
         .clone();
+    wait_for_fixture_document(&page).await;
     let automated: bool = page
         .evaluate("navigator.webdriver")
         .await
@@ -144,7 +160,7 @@ async fn interactive_system_browser_keeps_native_mode_and_reuses_its_session() {
     .await
     .expect("interact");
     let reused = manager
-        .ensure_open_system("interactive", &profile, &url, 800, 600)
+        .ensure_open_shared_system("interactive", &profile, &url, 800, 600)
         .await
         .expect("reuse");
     assert_eq!(opened["metadata"]["pid"], reused["metadata"]["pid"]);
@@ -154,6 +170,7 @@ async fn interactive_system_browser_keeps_native_mode_and_reuses_its_session() {
         "reopening the surface must preserve the page and draft"
     );
     manager.close("interactive").await.expect("close");
+    manager.shutdown_all().await.expect("shared owner cleanup");
     server.abort();
 }
 
@@ -296,6 +313,9 @@ async fn info_reaps_a_finished_browser_handler_instead_of_reporting_active() {
         .await
         .get_mut(key)
         .expect("session")
+        .owner
+        .read()
+        .await
         .handler
         .abort();
     tokio::task::yield_now().await;
@@ -453,22 +473,32 @@ pub(super) async fn local_page(body: &'static str) -> (String, JoinHandle<()>) {
         .expect("listener");
     let address = listener.local_addr().expect("address");
     let server = tokio::spawn(async move {
+        // Chromium can preconnect without sending a request. Serve connections
+        // independently so an idle socket cannot block another browser's page.
+        // Dropping the server also aborts its connection tasks.
+        let mut connections = tokio::task::JoinSet::new();
         loop {
-            let Ok((mut stream, _)) = listener.accept().await else {
-                return;
-            };
-            let mut request = [0_u8; 2048];
-            let _ = stream.read(&mut request).await;
-            stream
-                .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                    .as_bytes(),
-                )
-                .await
-                .expect("response");
+            tokio::select! {
+                accepted = listener.accept() => {
+                    let Ok((mut stream, _)) = accepted else { return };
+                    connections.spawn(async move {
+                        let mut request = [0_u8; 2048];
+                        if !matches!(stream.read(&mut request).await, Ok(size) if size > 0) {
+                            return;
+                        }
+                        let _ = stream
+                            .write_all(
+                                format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                    body.len()
+                                )
+                                .as_bytes(),
+                            )
+                            .await;
+                    });
+                }
+                _ = connections.join_next(), if !connections.is_empty() => {}
+            }
         }
     });
     (format!("http://{address}"), server)
@@ -834,3 +864,11 @@ fn classifies_only_group_owned_browser_sessions() {
     );
     assert_eq!(session_actor("g_one::presentation"), None);
 }
+
+mod local_page_tests;
+mod resource_cleanup;
+
+mod page_enumeration;
+
+#[cfg(target_os = "linux")]
+mod shared_owner;

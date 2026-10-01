@@ -21,6 +21,7 @@ pub const CORE_TOOL_NAMES: &[&str] = &[
     "cccc_message_deliver",
     "cccc_reply_request_cancel",
     "cccc_file",
+    "cccc_file_send",
     "cccc_context_get",
     "cccc_coordination",
     "cccc_task",
@@ -81,9 +82,7 @@ pub fn actor_base_tool_names(
     } else {
         CORE_TOOL_NAMES
     };
-    let extra = if !secretary
-        && actor.is_some_and(|a| a.runtime == cccc_contracts::ActorRuntime::WebModel)
-    {
+    let extra = if !secretary && actor.is_some_and(|a| a.runtime.is_web_model()) {
         WEB_MODEL_EXTRA_TOOL_NAMES
     } else {
         &[]

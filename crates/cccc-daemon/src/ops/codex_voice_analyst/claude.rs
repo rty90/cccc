@@ -20,8 +20,15 @@ mod transcript_continuity;
 #[cfg(all(test, unix))]
 mod transcript_move_client_tests;
 mod transcript_path;
+mod workspace_trust;
 
 pub(super) use command::prepare;
+pub(super) use workspace_trust::untrusted_workspace;
+
+#[cfg(test)]
+pub(super) fn workspace_refusal(detail: &str, workspace: &Path) -> Option<io::Error> {
+    workspace_trust::WorkspaceUntrusted::from_refusal(detail, workspace, "claude", workspace)
+}
 
 pub(super) fn remove_actor_settings(
     home: &cccc_core::HomeLayout,
@@ -156,6 +163,14 @@ async fn launch_inner(
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
         let detail = nonempty_detail(&stderr, &stdout);
+        if let Some(error) = workspace_trust::WorkspaceUntrusted::from_refusal(
+            detail,
+            cwd,
+            &prepared.executable,
+            &prepared.config_dir,
+        ) {
+            return Err(error);
+        }
         let guidance = if detail
             .contains("--bg with bypassPermissions requires accepting the disclaimer first")
         {
@@ -913,6 +928,7 @@ impl super::AnalystSession {
         config_dir: &Path,
         short: &str,
         cleanup_paths: Vec<PathBuf>,
+        observer_running: bool,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(1);
         drop(receiver);
@@ -930,7 +946,7 @@ impl super::AnalystSession {
             protocol: super::ManagedProtocol::Claude(ClaudeClient {
                 commands,
                 events,
-                running: Arc::new(AtomicBool::new(false)),
+                running: Arc::new(AtomicBool::new(observer_running)),
                 task: Mutex::new(None),
                 endpoint: control::Endpoint::resolve(config_dir).expect("fixture endpoint"),
                 short: short.into(),
@@ -2058,8 +2074,24 @@ mod tests {
         let worker_version = versions.1;
         let server = tokio::spawn(async move {
             let mut stopped = false;
+            // After a kill the real supervisor keeps answering `list` with an
+            // empty job set — and it must: the session's liveness poll and
+            // `kill_and_confirm` share this socket, so exiting on the first
+            // post-kill `list` can strand whichever caller did not win the
+            // race against a dead socket until STOP_TIMEOUT. Serve stragglers
+            // for a bounded window, then exit so teardown can await this task.
+            let mut post_kill_deadline = None;
             loop {
-                let (stream, _) = listener.accept().await.expect("accept");
+                let accepted = match post_kill_deadline {
+                    Some(deadline) => {
+                        match tokio::time::timeout_at(deadline, listener.accept()).await {
+                            Ok(accepted) => accepted.expect("accept"),
+                            Err(_) => break,
+                        }
+                    }
+                    None => listener.accept().await.expect("accept"),
+                };
+                let (stream, _) = accepted;
                 let mut stream = BufReader::new(stream);
                 let mut line = String::new();
                 stream.read_line(&mut line).await.expect("request");
@@ -2153,6 +2185,8 @@ mod tests {
                     }
                     "kill" => {
                         stopped = true;
+                        post_kill_deadline =
+                            Some(tokio::time::Instant::now() + Duration::from_millis(1500));
                         json!({"ok":true,"op":"kill"})
                     }
                     other => panic!("unexpected control operation: {other}"),
@@ -2163,9 +2197,6 @@ mod tests {
                     .await
                     .expect("response");
                 stream.flush().await.expect("response flush");
-                if stopped && operation == "list" {
-                    break;
-                }
             }
         });
 
@@ -2281,7 +2312,7 @@ mod tests {
             assert_eq!(ended.message["params"]["expected"], !fail_transcript);
             None
         };
-        tokio::time::timeout(Duration::from_secs(2), server)
+        tokio::time::timeout(Duration::from_secs(5), server)
             .await
             .expect("server timeout")
             .expect("server");

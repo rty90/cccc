@@ -14,10 +14,9 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const EVENT_CAPACITY: usize = 2048;
 const COMMAND_CAPACITY: usize = 32;
 
-struct PendingResponse {
-    response: oneshot::Sender<io::Result<Value>>,
-    turn_delegation_id: Option<String>,
-}
+#[path = "protocol_turn_scope.rs"]
+mod turn_scope;
+use turn_scope::{PendingResponse, competing_turn_started};
 
 pub(super) async fn connect_with_retry(
     endpoint: &str,
@@ -212,10 +211,7 @@ async fn protocol_loop<S>(
                         }
                         pending_turn_start = Some(id);
                     }
-                    pending.insert(id, PendingResponse {
-                        response: request.response,
-                        turn_delegation_id,
-                    });
+                    pending.insert(id, PendingResponse::new(request.response, turn_delegation_id, &request.params));
                     if let Err(error) = socket.send(Message::Text(message.to_string().into())).await {
                         break (format!("failed to write app-server request: {error}"), transport_diagnostic("request_write_failed", &error));
                     }
@@ -277,10 +273,11 @@ async fn protocol_loop<S>(
                                 .map(str::trim)
                                 .filter(|value| !value.is_empty()));
                         if let Some(response_turn_id) = response_turn_id
-                            && deferred_events.iter().any(|event| {
-                                started_turn_id(event)
-                                    .is_some_and(|turn_id| turn_id != response_turn_id)
-                            })
+                            && competing_turn_started(
+                                &deferred_events,
+                                response_turn_id,
+                                pending_response.thread_id.as_deref(),
+                            )
                         {
                             break ("a competing terminal turn started while a correlated Codex request was pending".into(), json!({"code":"competing_turn"}));
                         }
@@ -346,7 +343,17 @@ fn transport_diagnostic(
         Error::Capacity(_) => ("capacity", None),
         _ => ("other", None),
     };
-    json!({"code":code,"error_kind":kind,"os_error":os_error})
+    let mut diagnostic = json!({"code":code,"error_kind":kind,"os_error":os_error});
+    if let Error::Protocol(error) = error {
+        use tokio_tungstenite::tungstenite::error::ProtocolError;
+        diagnostic["protocol_error"] = json!(match error {
+            ProtocolError::ResetWithoutClosingHandshake => "reset_without_close_handshake",
+            ProtocolError::SendAfterClosing => "send_after_closing",
+            ProtocolError::ReceivedAfterClosing => "received_after_closing",
+            _ => "invalid_websocket_protocol",
+        });
+    }
+    diagnostic
 }
 
 fn disconnect_diagnostic(

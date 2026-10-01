@@ -6,7 +6,97 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 
 ## [Unreleased]
 
-## [0.4.40] — Unreleased
+### Added
+
+- Embedded Codex Voice supports per-call `application_context.mode: "persona"` for host-defined roleplay, without a Voice Analyst, local delegation execution or Actor notifications. Assistant mode remains the default; call responses expose the mode and readiness advertises supported modes. Experimental quicksilver delegation suppression and opening behavior require real-provider acceptance.
+
+- Runtime Dock uses fixed-size, thin activity rings and shows authoritative unread Mail counts, independent of loaded chat history. Nonzero unread and browser-queue badges remain separate, without persistent time labels. Thanks to [@chriscoveries](https://github.com/chriscoveries) for [#116](https://github.com/ChesterRa/cccc/pull/116).
+
+### Fixed
+
+- Pending Mail counts no longer build and retain a full ledger index in each MCP process. Cursor and Actor-generation boundaries remain unchanged, including rotated and compressed history.
+- On Unix, daemon crashes now trigger cleanup of its owned process groups, with restart reconciliation if the watchdog also exits. Cleanup checks recorded process identities, removes externally reaped children from its lists, and leaves unverified groups untouched. Restart recovery also preserves old-format ownership records and unfinished termination attempts; unreadable cleanup state is reported before any replacement.
+- Group connection rows use clearer status labels and keep approval guidance visible; narrow layouts place actions below long Group names.
+- Embedded Codex Voice accepts host instructions up to 24 KiB of UTF-8 text in both assistant and persona modes, up from 8 KiB. Oversized instructions are rejected without truncation; this local byte limit does not guarantee acceptance under the provider's token limits.
+- Managed Codex Actors and Voice Analyst resume the same conversation without transferring its full history to CCCC, preventing oversized history responses from disconnecting long-running sessions. Saved conversation history is retained.
+- Managed Actor terminal exits no longer stop a healthy provider. Starting the Actor, opening a writable terminal or delivering a message reconnects the native TUI to the same session; passive views remain read-only. Claude provider exits preserve durable conversation recovery, and failed provider stops remain retryable. Thanks to [@chriscoveries](https://github.com/chriscoveries) for [#119](https://github.com/ChesterRa/cccc/pull/119).
+- Switching an Actor from ChatGPT to Grok now replaces its old window through the Grok login profile when saving the Bot URL, while preserving draft and active-response checks.
+- Converting a linked Actor Profile to custom configuration preserves pending secret edits if saving fails. Successfully saved secrets are cleared from the draft independently of later save steps.
+
+## [0.4.41] — Unreleased
+
+### Added
+
+- Claude Actors can present Claude's interactive workspace-trust prompt and retry managed startup after approval, including Windows homes resolved through `USERPROFILE`.
+- Grok Bot Web Model Actors with shared login, a provider-specific MCP connector, dedicated Bot windows and per-Actor tool credentials; no pairing handshake is required.
+- Voice Secretary displays folders as an expandable tree, supports dragging documents between folders and the unfiled area, and persists a mixed root order of folders and documents. Touch dragging uses a long press.
+- Voice Secretary gains persistent document folders, a separate archive directory with previews and restore, and context-menu actions for moving, archiving and deleting documents.
+- **Voice Secretary documents can be renamed.** The document row menu gains Rename, which changes the display title only; the Markdown file keeps its path.
+- Multiple ChatGPT Web Model Actors share one dedicated browser login and one authenticated CCCC connector. Each Actor keeps its own window and verified conversation. Shared login/connector setup lives in instance settings; conversation setup lives in Actor settings. Upgrading from Actor-specific connectors requires reconfiguration; old credentials are not promoted to instance-wide access.
+- Starting a ChatGPT Web Model Actor automatically sends one setup message and verifies a unique `cccc_pair` receipt in its owned window before delivering queued tasks. No preparatory pairing click is required. Failed, cancelled or interrupted attempts require explicit retry; existing bindings survive normal restarts. `cccc_connector_status` reports the current conversation route. Tool calls require host conversation metadata and a current enabled Actor binding; missing metadata never falls back to another Actor.
+- Embedded Voice calls accept optional bounded application context, keeping the host's language and current subject attached to Realtime and each Analyst delegation. Context does not grant tool access or isolate the persistent Analyst.
+- Local PDF and PPTX reads hand off original files as native MCP resources for ChatGPT's own file reader, including attachments and code mode. CCCC performs no document extraction or rendering.
+- Local file reads deliver original PNG, JPEG and WebP bytes as native MCP images, including through code mode, with a 20 MiB image/result budget. Text previews honor their byte budget. The bridge performs no local media conversion; image understanding depends on the selected client/model.
+
+### Fixed
+
+- Group copies exclude persisted Weixin reply credentials on both export and import.
+- Settings tabs load on demand and preserve drafts. Hidden Connect and Voice notification views pause display reads; browsing IM settings does not start Weixin, and a successful QR login is retained when bridge startup needs a retry.
+- Linked Grok Profiles retain per-Actor Bot URL editing. Saving a changed URL aligns the existing idle Bot window, and partial save failures keep the editor's saved baseline current so users can retry or restore their previous configuration.
+- **Composer recipients stay selected across messages and are remembered per Group.** Reply and temporary cross-group targets no longer replace the normal selection, and delayed send completion cannot change a newly selected Group or erase a newer draft.
+- Web Model settings allow local edits while Actors run. Grok Bot URLs save together with Actor settings; applying to a running Actor confirms a stop/save/restart, while failures retain the draft. A clean editor shows **Done**. ChatGPT conversation actions handle the pause in place and show **Start Actor** after successful verification.
+- Selecting Grok Bot Web Model in the Actor editor immediately shows its required Bot URL. Runtime and URL save in one flow, with restart only after successful setup and failed drafts retained for retry.
+- Trust recovery follows the normal startup lock order and cancels pending launches when an Actor or Group stops, preventing deadlocks and late session reattachment. Approval recorded before the watcher starts is also detected.
+- Weixin reply context tokens survive restarts in owner-only storage. Outbound delivery failures are recorded in the rotating per-Group IM bridge log.
+- Shared ChatGPT and Grok login windows remain visible and closable while a page is still loading, instead of disappearing when the site's document readiness times out. Actor delivery still waits for page readiness.
+- Browser shutdown gives VNC time to release its shared-memory segments before forcing termination, preventing resource accumulation across restarts.
+- Global ChatGPT and Grok settings now close only the login window, preserving Actor windows and saved login without requiring Actors to stop. Actor windows remain viewable and closable while the provider site loads; task delivery still waits for a ready composer.
+- Runtime process-cleanup tests wait for a complete PID file instead of racing its creation; a failed test no longer poisons the shared serialization lock for later tests.
+- Shared connector setup waits for a successful initial read before enabling changes. Failed reads can be retried without rotating credentials; stale reads and duplicate clicks no longer erase a newly created connector URL or bypass rotation confirmation.
+- Voice document library operations stop updating the UI after their owning Group view closes or changes, while ordinary list refreshes preserve pending edits.
+- Voice Secretary displays live original transcription in the activity feed on wide screens or the Transcript view on narrow screens, and reconciles restores made by other clients. Document menus support native Enter/Space activation without selecting the row.
+- Deleted voice documents reject stale saves, transcript writes and archive requests. Cross-filesystem deletion retains a complete transaction backup until both index and ledger writes succeed; failures restore the file and index and permit retry.
+- **Voice Secretary documents no longer stay on "Loading document content...".** When two workspace refreshes overlapped (the periodic poll and a stop- or error-triggered refresh), the superseded one skipped clearing the loading indicator it had raised, and the newer one had no content to load, so the document view stayed blank until reload. The indicator is now cleared by whichever content load finished last.
+- **Codex Actors survive delegating to sub-agents.** A managed Codex Actor stopped itself within a second of the model calling `spawn_agent`: the sub-agent's own `turn/started` (on its own thread) was read as an overlapping terminal turn, and the same event could trip the competing-turn guard while a `turn/start` was pending. Both checks now ignore turns announced on other threads.
+- Actor settings opened from the ChatGPT conversation shortcut load the saved runtime, name, command and capabilities, preventing default Codex or another Actor's draft from being displayed and accidentally saved.
+- Clarify MCP tool permissions and paired ChatGPT identity. Separate read-only `cccc_file` from `cccc_file_send`, and honor string recipients for local attachments; refresh connector metadata after upgrading. Keep tool receipts and validation errors factual while preserving configured Actor guidance.
+- ChatGPT browser delivery no longer mistakes reappearing history or assistant quotes for a successful send. Immediate confirmation and manual-send recovery require the current batch's exact user-message receipt, preserving unverified drafts and queued work.
+- ChatGPT browser delivery activates the verified Send button through its normal page handler, avoiding native pointer delivery and visibility callbacks in background windows. The conversation, exact draft, existing receipt and enabled, unobstructed control are rechecked together before activation; no blind repeat click is added.
+- Automatic ChatGPT pairing now keeps pre-generation Actors' browser windows and routing identity stable; opening the Actor viewer or background cleanup no longer interrupts their first connection. Connection failures show their specific cause in the runtime panel.
+- ChatGPT delivery keeps its active worker locked when duplicate wake-ups arrive. Later manual sends can be confirmed in the bound conversation so queued messages resume without replay; a **Check and resume** action is available beside unverified messages.
+- ChatGPT pairing instructions distinguish connector calls from CCCC's code executor and explain the pending link, receipt verification and resulting Actor permissions. The setup message preserves normal ChatGPT approvals and asks for the original error when a call is blocked or fails.
+- Pairing retries distinguish the complete setup message, including its new code, so a shared explanatory prefix no longer suppresses a new request.
+- First-time ChatGPT Actor connection waits through ChatGPT's temporary new-conversation address instead of prematurely invalidating the pairing code. Existing-conversation isolation remains enforced, and browser inspection failures are no longer reported as a conversation switch.
+- Web Model Actor and Runtime Profile editors hide unused launch commands and environment inputs while retaining notes, presets and capabilities. The workbench now allows adding multiple ChatGPT Actors in one Group.
+- Shared ChatGPT setup keeps its browser viewport visible inline and in full screen, and restores a blank login window on explicit open. Checking login no longer reloads the page.
+- Grok managed sessions subscribe to live input echoes, preventing long Voice Analyst turns from exhausting the admission buffer while waiting for a receipt.
+- Web Model delivery preserves unsent ChatGPT drafts and pauses after unverified submissions, with an explicit checked-chat resume action that never replays the uncertain message. Verified legacy drafts remain recoverable; unrelated or changed drafts stay protected.
+- Code-mode result deadlines now return while nested tools continue; subsequent waits collect their results, and termination cancels outstanding work.
+- Clarified that workspace paths and actor binding do not sandbox shell or Git subprocess permissions.
+- Repository inspection honors scope, filters, case, context, pagination and output budgets, with explicit incomplete-result and continuation details. Traversal does not follow symlinks; the read-only tool rejects editing actions, and documented path aliases work across reads and edits.
+- Web Model command sessions honor wait times, hard timeouts and output budgets, return incremental output, and keep final pages readable after exit. Timeout/termination and host cleanup preserve ownership without relying on Actor history caches.
+- Local editing returns whole-file hashes for stale-write checks, validates batch replacements before writing, and preserves executable file permissions. Codex-style patches support exact anchors, ordered hunks, EOF markers, moves and new directories while rejecting ambiguous edits and destination conflicts.
+- Web Model code cells accept import-like text in strings, comments and templates while keeping Node module loading unavailable.
+- Repository `mkdir` honors `exist_ok` (true by default) without accepting file conflicts or paths outside the active workspace.
+- Browser page enumeration skips stale handles only after a browser-level check confirms the target disappeared; connection failures remain errors and saved profiles are preserved.
+- Local command tool descriptions make direct execution explicit. `cccc_shell` honors workspace-relative `cwd`, child `env`, output limits and the documented default timeout; session commands share the same directory and environment handling.
+
+### Changed
+
+- Direct-connection setup uses one Back action, a clearer address editor, and a compact invitation-sharing card.
+- Retire the checked-in browser fixture/Playwright harness and its CI/nightly jobs. Frontend unit/component checks, native Rust checks, and manual real-browser acceptance remain available.
+- Voice Secretary uses an audio-reactive workspace outline without re-rendering the composer on every audio frame. Desktop live transcription stays in the activity feed; narrow layouts show it inside the transcript workspace.
+- **External ASR failures name the provider error code.** When Bailian or Volcengine rejects a recognition task, the stop banner and the server log now include the provider's bounded error code (for example `Model.NotFound` or `45000000`) instead of only a generic hint; provider free-text messages are still never shown. Bailian arrearage and free-tier codes are reported as quota problems.
+- **Deleting a Voice Secretary document removes its file.** Delete no longer parks the Markdown file in a local recovery folder; the confirmation says the file cannot be recovered, and the index entry stays marked `deleted` so workspace discovery does not bring the document back. A temporary copy remains until the index and deletion event commit, for rollback.
+- Header connection feedback shares the Group status dot: red when disconnected, pulsing amber while reconnecting, and the normal lifecycle color after recovery; connection details remain available on hover and to assistive technology.
+- ChatGPT conversation settings distinguish viewing from replacing a working conversation, keep the previous binding until verification succeeds, and show the same connection state as the runtime panel. Connected Actors use a compact view; shared settings preserve Actor drafts, and connector credential creation is labelled separately from actual requests.
+- Voice Analyst notifications use shorter per-message reminders while retaining the full source message, attribution, speech preferences and instruction boundaries.
+- **Voice Secretary document rows are lighter.** The boxed per-row "default document" button is gone; the default document now carries a small badge, "Use by default" joins the row menu (right-click, keyboard, or the row's `⋮` trigger, which stays visible on touch screens), and titles get the reclaimed width.
+- **Actors can be removed while running.** The Remove button in the Actor view and the quick-controls menu no longer requires stopping the Actor first; removal stops it and then deletes it, and the confirmation says so.
+- Web conversations, filters and the composer use the available workspace width. Long messages leave an opposite-side gutter that adapts to the message area, making sent and received messages easier to distinguish without fixed bubble-width caps. Short messages retain their natural sizing, and reading position is preserved when the message area resizes.
+- Voice diagnostics distinguish Realtime request/TLS failures and managed Codex WebSocket protocol failures, including an abrupt close without a closing handshake. Reports retain bounded categories and OS error codes without private error text; retry and session-lifecycle behavior is unchanged.
+
+## [0.4.40]
 
 ### Added
 - **Native Mattermost IM connector.** Connect a Group through a dedicated Bot using REST and WebSocket, with channel/thread authorization, attachments, streaming replies, and processing reactions. Configure it in the Group's IM Bridge settings; no public callback or extra service is required.

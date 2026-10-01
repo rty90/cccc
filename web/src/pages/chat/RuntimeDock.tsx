@@ -1,11 +1,11 @@
-import { memo, useMemo, type CSSProperties } from "react";
+import { memo, useId, useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { Mail } from "lucide-react";
 
 import { ActorAvatar } from "../../components/ActorAvatar";
 import { ModelSwitchPopover } from "../../features/trace/ModelSwitchPopover";
 import { PlusIcon } from "../../components/Icons";
 import { useActorDisplayState } from "../../hooks/useActorDisplayState";
-import { ShineBorder } from "@/registry/magicui/shine-border";
 import type { Actor, HeadlessStreamEvent } from "../../types";
 import { classNames } from "../../utils/classNames";
 import type { LiveWorkCard } from "./liveWorkCards";
@@ -16,94 +16,9 @@ import { getRuntimeRingTone, type RuntimeRingTone } from "./runtimeDockRingTone"
 
 type RuntimeRingPresentation = {
   ringClassName: string;
-  ringStyle: CSSProperties;
-  unreadBadgeClassName: string;
+  queuedBadgeClassName: string;
   avatarClassName?: string;
 };
-
-const RUNTIME_RING_GEOMETRY_CLASS = "absolute -inset-[0.5px] rounded-full";
-const RUNTIME_RING_STROKE_PX = 4;
-const RUNTIME_STATIC_RING_STROKE_CLASS = "border-[4px]";
-
-function buildFlowRingStyle(args: {
-  tone: "active" | "attention";
-  isDark: boolean;
-}): CSSProperties {
-  const palette =
-    args.tone === "attention"
-      ? args.isDark
-        ? {
-            base: "rgba(251, 113, 133, 0.24)",
-            glow: "rgba(239, 68, 68, 0.42)",
-            streamA: "rgba(253, 164, 175, 0.9)",
-            streamB: "rgba(251, 113, 133, 0.82)",
-            streamC: "rgba(254, 226, 226, 0.52)",
-          }
-        : {
-            base: "rgba(251, 113, 133, 0.18)",
-            glow: "rgba(239, 68, 68, 0.28)",
-            streamA: "rgba(244, 63, 94, 0.82)",
-            streamB: "rgba(251, 113, 133, 0.74)",
-            streamC: "rgba(255, 228, 230, 0.52)",
-          }
-      : args.isDark
-        ? {
-            base: "rgba(160, 124, 254, 0.22)",
-            glow: "rgba(254, 143, 181, 0.34)",
-            streamA: "rgba(160, 124, 254, 0.92)",
-            streamB: "rgba(254, 143, 181, 0.82)",
-            streamC: "rgba(255, 190, 123, 0.56)",
-          }
-        : {
-            base: "rgba(160, 124, 254, 0.14)",
-            glow: "rgba(254, 143, 181, 0.22)",
-            streamA: "rgba(160, 124, 254, 0.82)",
-            streamB: "rgba(254, 143, 181, 0.72)",
-            streamC: "rgba(255, 190, 123, 0.46)",
-          };
-
-  return {
-    ["--runtime-flow-base" as keyof CSSProperties]: palette.base,
-    ["--runtime-flow-glow" as keyof CSSProperties]: palette.glow,
-    ["--runtime-flow-a" as keyof CSSProperties]: palette.streamA,
-    ["--runtime-flow-b" as keyof CSSProperties]: palette.streamB,
-    ["--runtime-flow-c" as keyof CSSProperties]: palette.streamC,
-  };
-}
-
-const RuntimeFlowRing = memo(function RuntimeFlowRing(args: {
-  tone: RuntimeRingTone;
-  isDark: boolean;
-}) {
-  const visible = args.tone === "active" || args.tone === "attention";
-  const tone = args.tone === "attention" ? "attention" : "active";
-  const duration = tone === "attention" ? 5.4 : 6.2;
-  const shineColors: [string, string, string] =
-    tone === "attention" ? ["#fb7185", "#ef4444", "#fda4af"] : ["#A07CFE", "#FE8FB5", "#FFBE7B"];
-  return (
-    <span
-      className={classNames(
-        "runtime-flow-ring",
-        visible ? `runtime-flow-ring--${tone}` : "runtime-flow-ring--inactive",
-        RUNTIME_RING_GEOMETRY_CLASS,
-      )}
-      style={buildFlowRingStyle({ tone, isDark: args.isDark })}
-      aria-hidden="true"
-    >
-      <span className="runtime-flow-ring__base" />
-      <span className="runtime-flow-ring__stream runtime-flow-ring__stream--primary" />
-      <span className="runtime-flow-ring__stream runtime-flow-ring__stream--secondary" />
-      <span className="runtime-flow-ring__glow" />
-      <ShineBorder
-        className={classNames(RUNTIME_RING_GEOMETRY_CLASS, "runtime-flow-ring__shine")}
-        borderWidth={RUNTIME_RING_STROKE_PX}
-        duration={duration}
-        shineColor={shineColors}
-        topGlow={true}
-      />
-    </span>
-  );
-});
 
 function getRuntimeStatusLabel(
   isRunning: boolean,
@@ -143,44 +58,30 @@ function getRuntimeRingPresentation(
   switch (tone) {
     case "active":
       return {
-        ringClassName: "hidden",
-        ringStyle: {},
-        unreadBadgeClassName: isDark
+        ringClassName: isDark ? "text-[#C4B5FD]" : "text-[#A07CFE]",
+        queuedBadgeClassName: isDark
           ? "bg-emerald-300/[0.18] text-emerald-50"
           : "bg-emerald-500/[0.14] text-emerald-700",
       };
     case "attention":
       return {
-        ringClassName: "hidden",
-        ringStyle: {},
-        unreadBadgeClassName: isDark
+        ringClassName: isDark ? "text-rose-400" : "text-rose-500",
+        queuedBadgeClassName: isDark
           ? "bg-rose-300/[0.18] text-rose-50"
           : "bg-rose-500/[0.14] text-rose-700",
       };
     case "idle":
       return {
-        ringClassName: classNames(
-          RUNTIME_RING_GEOMETRY_CLASS,
-          RUNTIME_STATIC_RING_STROKE_CLASS,
-          "transition-colors duration-200",
-          isDark ? "border-emerald-300/75" : "border-emerald-500/75",
-        ),
-        ringStyle: {},
-        unreadBadgeClassName: isDark
+        ringClassName: isDark ? "text-emerald-300/45" : "text-emerald-500/55",
+        queuedBadgeClassName: isDark
           ? "bg-emerald-300/[0.12] text-emerald-50"
           : "bg-emerald-500/[0.10] text-emerald-700",
       };
     case "stopped":
     default:
       return {
-        ringClassName: classNames(
-          RUNTIME_RING_GEOMETRY_CLASS,
-          RUNTIME_STATIC_RING_STROKE_CLASS,
-          "transition-colors duration-200",
-          isDark ? "border-slate-400/50" : "border-slate-500/50",
-        ),
-        ringStyle: {},
-        unreadBadgeClassName: isDark
+        ringClassName: "text-slate-400/50",
+        queuedBadgeClassName: isDark
           ? "bg-white/10 text-slate-100"
           : "bg-black/[0.08] text-gray-800",
         avatarClassName: "opacity-45 grayscale saturate-50",
@@ -206,6 +107,7 @@ function RuntimeDockActorButtonView({
   onOpenInspector: (actorId: string) => void;
 }) {
   const { t } = useTranslation(["chat", "actors"]);
+  const activityGradientId = useId();
   const { isRunning, workingState } = useActorDisplayState({
     groupId,
     actor: item.actor,
@@ -224,9 +126,15 @@ function RuntimeDockActorButtonView({
           defaultValue: `${queuedCount} queued for next turn`,
         })
       : "";
-  const ringFrameClassName = isSmallScreen
-    ? "pointer-events-none absolute left-1/2 top-1/2 h-[35px] w-[35px] -translate-x-1/2 -translate-y-1/2"
-    : "pointer-events-none absolute left-1/2 top-1/2 h-[39px] w-[39px] -translate-x-1/2 -translate-y-1/2";
+  const ringFrameSize = isSmallScreen ? 40 : 44;
+  const mailCount = item.unreadCount;
+  const mailLabel =
+    mailCount > 0
+      ? t("chat:runtimeDockUnreadMailNoAge", {
+          count: mailCount,
+          defaultValue: `${mailCount} unread mail`,
+        })
+      : "";
 
   const handleOpenInspector = () => {
     onOpenInspector(item.actorId);
@@ -236,7 +144,7 @@ function RuntimeDockActorButtonView({
     <div className="relative flex items-end">
       <span
         className={classNames(
-          "pointer-events-none absolute -top-[0.72rem] left-1/2 z-30 hidden max-w-[3.75rem] -translate-x-1/2 truncate text-center text-[9px] font-medium leading-[1.2] tracking-[0.01em] opacity-0 transition-opacity delay-[3000ms] duration-150 group-hover/runtime-dock:opacity-100 group-hover/runtime-dock:delay-0 group-has-[:focus-visible]/runtime-dock:opacity-100 group-has-[:focus-visible]/runtime-dock:delay-0 sm:block",
+          "pointer-events-none absolute -top-[1.4rem] left-1/2 z-30 hidden max-w-[3.75rem] -translate-x-1/2 truncate text-center text-[9px] font-medium leading-[1.2] tracking-[0.01em] opacity-0 transition-opacity delay-[3000ms] duration-150 group-hover/runtime-dock:opacity-100 group-hover/runtime-dock:delay-0 group-has-[:focus-visible]/runtime-dock:opacity-100 group-has-[:focus-visible]/runtime-dock:delay-0 sm:block",
           "runtime-dock-actor-label",
           isDark
             ? "text-white [text-shadow:0_1px_8px_rgba(2,6,23,0.85)]"
@@ -267,14 +175,8 @@ function RuntimeDockActorButtonView({
       <button
         type="button"
         className={classNames(
-          "group relative flex h-[50px] w-[50px] items-center justify-center rounded-full shadow-[0_14px_34px_-30px_rgba(15,23,42,0.52)] transition-all duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(143,163,187)]/40 focus-visible:ring-offset-0",
-          item.runner === "headless"
-            ? isDark
-              ? "bg-transparent"
-              : "bg-transparent"
-            : isDark
-              ? "bg-transparent"
-              : "bg-transparent",
+          "group relative flex h-[50px] shrink-0 items-center justify-center rounded-full shadow-[0_14px_34px_-30px_rgba(15,23,42,0.52)] transition-all duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(143,163,187)]/40 focus-visible:ring-offset-0",
+          "w-[50px] bg-transparent",
           isInspectorOpen
             ? classNames("scale-[1.04] shadow-[0_18px_40px_-28px_rgba(62,80,103,0.32)]")
             : "hover:scale-[1.05] active:scale-[0.95]",
@@ -291,14 +193,57 @@ function RuntimeDockActorButtonView({
               })
         }
         aria-describedby={`runtime-dock-status-${item.actorId}`}
+        title={[item.actorLabel, statusLabel, mailLabel, queuedLabel].filter(Boolean).join("\n")}
       >
-        <span className={ringFrameClassName}>
-          <span
-            className={classNames("pointer-events-none", ringPresentation.ringClassName)}
-            style={ringPresentation.ringStyle}
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 44 44"
+          width={ringFrameSize}
+          height={ringFrameSize}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          className={classNames(
+            "runtime-dock-ring pointer-events-none absolute transition-colors duration-200",
+            ringPresentation.ringClassName,
+          )}
+        >
+          <circle
+            cx="22"
+            cy="22"
+            r="21"
+            strokeWidth={ringTone === "active" ? 2 : 1.5}
+            opacity={ringTone === "active" ? 0.12 : 1}
           />
-          <RuntimeFlowRing tone={ringTone} isDark={isDark} />
-        </span>
+          {ringTone === "active" ? (
+            <>
+              <defs>
+                <linearGradient
+                  id={activityGradientId}
+                  gradientUnits="userSpaceOnUse"
+                  x1="43"
+                  y1="22"
+                  x2="11.5"
+                  y2="40.2"
+                >
+                  <stop stopColor="currentColor" stopOpacity="0" />
+                  <stop offset="0.55" stopColor="currentColor" stopOpacity="0.85" />
+                  <stop offset="0.85" stopColor="currentColor" />
+                  <stop offset="1" stopColor="#FE8FB5" />
+                </linearGradient>
+              </defs>
+              <circle
+                className="runtime-dock-ring__activity"
+                cx="22"
+                cy="22"
+                r="21"
+                stroke={`url(#${activityGradientId})`}
+                strokeDasharray="44 88"
+                strokeLinecap="round"
+              />
+            </>
+          ) : null}
+        </svg>
 
         <ActorAvatar
           avatarUrl={item.actor.avatar_url || undefined}
@@ -319,8 +264,8 @@ function RuntimeDockActorButtonView({
         {queuedCount > 0 ? (
           <span
             className={classNames(
-              "pointer-events-none absolute -right-0.5 -top-0.5 z-20 flex h-[17px] min-w-[17px] items-center justify-center rounded-full px-1 text-[9px] font-semibold leading-none shadow-[0_8px_18px_-10px_rgba(15,23,42,0.7)]",
-              ringPresentation.unreadBadgeClassName,
+              "pointer-events-none absolute -right-0.5 -bottom-0.5 z-20 flex h-[17px] min-w-[17px] items-center justify-center rounded-full px-1 text-[9px] font-semibold leading-none shadow-[0_8px_18px_-10px_rgba(15,23,42,0.7)]",
+              ringPresentation.queuedBadgeClassName,
             )}
             aria-hidden="true"
             title={queuedLabel}
@@ -328,11 +273,31 @@ function RuntimeDockActorButtonView({
             {queuedCount > 99 ? "99+" : queuedCount}
           </span>
         ) : null}
+        {mailCount > 0 ? (
+          <span
+            className={classNames(
+              "pointer-events-none absolute right-0 -top-1 z-20 flex h-4 items-center gap-0.5 whitespace-nowrap rounded-full border px-1 font-semibold leading-none tabular-nums",
+              isSmallScreen ? "text-[9px]" : "text-[10px]",
+              isDark
+                ? "border-slate-900 bg-amber-950 text-amber-200"
+                : "border-white bg-amber-100 text-amber-900",
+            )}
+            aria-hidden="true"
+            title={mailLabel}
+          >
+            <Mail
+              className={isSmallScreen ? "h-[9px] w-[9px]" : "h-[10px] w-[10px]"}
+              strokeWidth={2}
+            />
+            {mailCount > 99 ? "99+" : mailCount}
+          </span>
+        ) : null}
       </button>
       </ModelSwitchPopover>
       <span id={`runtime-dock-status-${item.actorId}`} className="sr-only">
         {item.actorLabel} · {item.runtime} · {statusLabel}
         {queuedLabel ? ` · ${queuedLabel}` : ""}
+        {mailLabel ? ` · ${mailLabel}` : ""}
       </span>
     </div>
   );
@@ -349,6 +314,7 @@ const RuntimeDockActorButton = memo(
     previous.item.runtime === next.item.runtime &&
     previous.item.runner === next.item.runner &&
     previous.item.webModelQueuedCount === next.item.webModelQueuedCount &&
+    previous.item.unreadCount === next.item.unreadCount &&
     previous.isDark === next.isDark &&
     previous.isSmallScreen === next.isSmallScreen &&
     previous.isInspectorOpen === next.isInspectorOpen &&
@@ -416,13 +382,11 @@ export function RuntimeDock({
             className={classNames(
               "flex items-end opacity-[0.72] transition-opacity delay-[3000ms] duration-200 ease-out group-hover/runtime-dock:opacity-100 group-hover/runtime-dock:delay-0 group-has-[:focus-visible]/runtime-dock:opacity-100 group-has-[:focus-visible]/runtime-dock:delay-0",
               isSmallScreen
-                ? "max-w-[calc(100vw-2.5rem)] gap-2 overflow-x-auto pb-1 scrollbar-hide"
-                : "gap-2.5",
+                ? "max-w-[calc(100vw-2.5rem)] gap-2 overflow-x-auto px-2 pt-2 pb-3 scrollbar-hide"
+                : "gap-2",
             )}
           >
-            <div
-              className={classNames("relative flex items-end", isSmallScreen ? "gap-2" : "gap-2.5")}
-            >
+            <div className="relative flex items-end gap-2">
               {items.map((item) => (
                 <RuntimeDockActorButton
                   key={item.actorId}

@@ -17,23 +17,39 @@ impl CodexVoiceSessions {
         client_session_id: &str,
         offer_sdp: &str,
         voice: &str,
+        application_context: Option<cccc_contracts::codex_voice::VoiceApplicationContext>,
+    ) -> Result<StartOutcome> {
+        let mut realtime = RealtimeCallConfig::from_environment_with_voice(voice)?;
+        realtime.application_context = application_context;
+        self.start_with_realtime(home, client_session_id, offer_sdp, realtime)
+            .await
+    }
+
+    pub(super) async fn start_with_realtime(
+        &self,
+        home: &HomeLayout,
+        client_session_id: &str,
+        offer_sdp: &str,
+        mut realtime: RealtimeCallConfig,
     ) -> Result<StartOutcome> {
         let client_session_id = persistence::validate_client_session_id(client_session_id)?;
-        let analyst_settings = cccc_core::codex_voice_settings::load(home)?;
-        let custom_environment = cccc_core::codex_voice_settings::private_environment(home)?;
-        let analyst_runtime =
-            cccc_core::codex_voice_settings::resolve(home, &analyst_settings, &custom_environment)?;
-        let mut realtime = RealtimeCallConfig::from_environment_with_voice(voice)?;
-        realtime.preferences = cccc_core::voice_notifications::preferences(home)?;
+        let persona = realtime
+            .application_context
+            .as_ref()
+            .is_some_and(|context| {
+                context.mode() == cccc_contracts::codex_voice::VoiceCallMode::Persona
+            });
         let offer_digest: [u8; 32] = Sha256::digest(offer_sdp.as_bytes()).into();
         // The manager lock intentionally serializes the slow launch. Releasing it would require a
         // second reservation state and could create two provider calls for one microphone lease.
         let mut state = self.state.lock().await;
         if let Some(session) = state.active.as_ref() {
-            if session.client_session_id == client_session_id
-                && session.offer_digest == offer_digest
-                && session.voice == realtime.voice
-            {
+            if session.matches_start(
+                &client_session_id,
+                &offer_digest,
+                &realtime.voice,
+                realtime.application_context.as_ref(),
+            ) {
                 return Ok(StartOutcome::Started(StartedSession {
                     session: Arc::clone(session),
                     answer_sdp: session.answer_sdp.clone(),
@@ -43,64 +59,81 @@ impl CodexVoiceSessions {
             return Ok(StartOutcome::Busy(session.info()));
         }
 
-        let analyst = async {
-            let analyst = state
-                .analyst
-                .as_ref()
-                .is_some_and(|analyst| {
-                    analyst.reusable_for_call() && analyst.matches_launch(analyst_runtime.fingerprint())
-                })
-                .then(|| Arc::clone(state.analyst.as_ref().expect("reusable Voice Analyst")));
-            let analyst = if let Some(analyst) = analyst {
-                analyst
-            } else {
-                let previous = state.analyst.take();
-                if let Some(previous) = previous.as_ref()
-                    && previous.analyst.is_busy().await
-                {
-                    state.analyst = Some(Arc::clone(previous));
-                    bail!(
-                        "Wait for or cancel the current Voice Analyst investigation before replacing it"
-                    );
-                }
-                if let Some(previous) = previous.as_ref() {
-                    // A disconnected Claude replacement may resume the exact same Agent View job.
-                    // Relinquish the old owner first; stopping it after launch would kill the job
-                    // that the replacement just adopted.
-                    previous.stop_terminal();
-                    if let Err(error) = previous.analyst.shutdown().await {
+        let analyst = if persona {
+            None
+        } else {
+            realtime.preferences = cccc_core::voice_notifications::preferences(home)?;
+            let analyst_settings = cccc_core::codex_voice_settings::load(home)?;
+            let custom_environment = cccc_core::codex_voice_settings::private_environment(home)?;
+            let analyst_runtime = cccc_core::codex_voice_settings::resolve(
+                home,
+                &analyst_settings,
+                &custom_environment,
+            )?;
+            let analyst = async {
+                let analyst = state
+                    .analyst
+                    .as_ref()
+                    .is_some_and(|analyst| {
+                        analyst.reusable_for_call() && analyst.matches_launch(analyst_runtime.fingerprint())
+                    })
+                    .then(|| Arc::clone(state.analyst.as_ref().expect("reusable Voice Analyst")));
+                let analyst = if let Some(analyst) = analyst {
+                    analyst
+                } else {
+                    let previous = state.analyst.take();
+                    if let Some(previous) = previous.as_ref()
+                        && previous.analyst.is_busy().await
+                    {
                         state.analyst = Some(Arc::clone(previous));
-                        return Err(error.context(
-                            "stop previous Voice Analyst before resuming its persistent session",
-                        ));
+                        bail!(
+                            "Wait for or cancel the current Voice Analyst investigation before replacing it"
+                        );
                     }
-                }
-                let analyst = Arc::new(
-                    persistence::launch_analyst(home)
-                        .await
-                        .context("launch persistent Voice Analyst")?,
-                );
-                analyst.start_monitor(home.clone());
-                if let Err(error) =
-                    persistence::persist_analyst(home, &analyst, analyst.analyst.tui_ready())
-                {
-                    analyst.stop_terminal();
-                    return match analyst.analyst.shutdown().await {
-                        Ok(()) => Err(error.context("persist replacement Voice Analyst receipt")),
-                        Err(cleanup) => Err(anyhow!(
-                            "persist replacement Voice Analyst receipt: {error}; replacement cleanup also failed: {cleanup}"
-                        )),
-                    };
-                }
-                state.analyst = Some(Arc::clone(&analyst));
-                analyst
-            };
-            Ok::<_, anyhow::Error>(analyst)
-        }.await.context(StartStage::Analyst)?;
+                    if let Some(previous) = previous.as_ref() {
+                        // A disconnected Claude replacement may resume the exact same Agent View job.
+                        // Relinquish the old owner first; stopping it after launch would kill the job
+                        // that the replacement just adopted.
+                        previous.stop_terminal();
+                        if let Err(error) = previous.analyst.shutdown().await {
+                            state.analyst = Some(Arc::clone(previous));
+                            return Err(error.context(
+                                "stop previous Voice Analyst before resuming its persistent session",
+                            ));
+                        }
+                    }
+                    let analyst = Arc::new(
+                        persistence::launch_analyst(home)
+                            .await
+                            .context("launch persistent Voice Analyst")?,
+                    );
+                    analyst.start_monitor(home.clone());
+                    if let Err(error) =
+                        persistence::persist_analyst(home, &analyst, analyst.analyst.tui_ready())
+                    {
+                        analyst.stop_terminal();
+                        return match analyst.analyst.shutdown().await {
+                            Ok(()) => Err(error.context("persist replacement Voice Analyst receipt")),
+                            Err(cleanup) => Err(anyhow!(
+                                "persist replacement Voice Analyst receipt: {error}; replacement cleanup also failed: {cleanup}"
+                            )),
+                        };
+                    }
+                    state.analyst = Some(Arc::clone(&analyst));
+                    analyst
+                };
+                Ok::<_, anyhow::Error>(analyst)
+            }.await.context(StartStage::Analyst)?;
+            Some(analyst)
+        };
 
-        let call = CodexVoiceCall::start(home, analyst.analyst())
-            .await
-            .context(StartStage::Recording)?;
+        let call = CodexVoiceCall::start(
+            home,
+            analyst.as_ref().map(|analyst| analyst.analyst()),
+            realtime.application_context.clone(),
+        )
+        .await
+        .context(StartStage::Recording)?;
         let generation = call.generation().to_owned();
         let answer_sdp =
             match create_realtime_answer_with_heartbeat(&call, &realtime, offer_sdp).await {

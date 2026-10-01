@@ -12,7 +12,6 @@ use super::BrowserSurfaces;
 use super::navigation::goto_dom_content_loaded;
 
 const COMPOSER_SELECTOR: &str = "[data-cccc-web-model-composer=\"cccc-web-model-composer\"]";
-const SEND_SELECTOR: &str = "[data-cccc-web-model-send=\"cccc-web-model-send\"]";
 const COMPOSER_TIMEOUT: Duration = Duration::from_secs(30);
 const PROMPT_STAGING_TIMEOUT: Duration = Duration::from_secs(3);
 const SEND_CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -44,6 +43,13 @@ struct SendProbe {
     running: bool,
     stop_visible: bool,
     send_candidate_count: usize,
+    point: Option<SendPoint>,
+}
+
+#[derive(Clone, Copy, Deserialize, PartialEq)]
+struct SendPoint {
+    x: f64,
+    y: f64,
 }
 
 #[derive(Default, Deserialize)]
@@ -89,6 +95,45 @@ struct SubmissionAttempt<'a> {
 }
 
 impl BrowserSurfaces {
+    /// Observe a late/manual send without navigating, touching the draft or
+    /// invoking Send. Only the exact batch in a user message is a receipt.
+    pub(crate) async fn inspect_delivery_receipt(
+        &self,
+        key: &str,
+        target_url: &str,
+        marker: &str,
+    ) -> Result<Option<Value>> {
+        if target_url.is_empty() || marker.is_empty() {
+            return Ok(None);
+        }
+        let page = self.page(key).await?;
+        let payload = serde_json::to_string(&json!({
+            "prompt":"", "needles":[marker]
+        }))?;
+        let observed = page
+            .evaluate(format!("({INSPECT_SUBMISSION_SCRIPT})({payload})"))
+            .await?
+            .into_value::<SubmissionSnapshot>()?;
+        let same_target = if is_chatgpt_url(target_url)
+            || cccc_core::web_model_connectors::grok_bot_url(target_url).is_ok()
+        {
+            conversation_target_matches(target_url, &observed.url)
+        } else {
+            target_url == observed.url
+        };
+        if !same_target
+            || !observed.echo_found
+            || self.page(key).await?.target_id() != page.target_id()
+        {
+            return Ok(None);
+        }
+        Ok(Some(json!({
+            "submitted":true, "submission_evidence":"message_echo",
+            "send_selector":"", "observed":observed,
+            "recovered_from":"submission_ambiguous"
+        })))
+    }
+
     pub(crate) async fn inspect_staged_prompt(
         &self,
         key: &str,
@@ -96,15 +141,9 @@ impl BrowserSurfaces {
         prompt: &str,
     ) -> Result<Value> {
         let page = self.page(key).await?;
-        let current_url = page.url().await?.unwrap_or_default();
         let _ = wait_for_composer(&page).await?;
         let snapshot = inspect_submission(&page, prompt, &submission_needles(prompt)).await?;
-        let recoverable = same_page(&current_url, target_url)
-            && snapshot.user_message_count == 0
-            && !snapshot.echo_found
-            && !snapshot.running
-            && !snapshot.stop_visible
-            && snapshot.composer_exact;
+        let recoverable = recoverable_staged_draft(target_url, &snapshot);
         self.record_page_state(key, &page).await;
         Ok(json!({
             "recoverable":recoverable,
@@ -120,25 +159,72 @@ impl BrowserSurfaces {
         prompt: &str,
         attachment_path: Option<&Path>,
         delivery_id: &str,
+        expected_staged_draft: Option<&str>,
+    ) -> Result<PromptSubmissionOutcome> {
+        self.submit_prompt(
+            key,
+            target_url,
+            prompt,
+            attachment_path,
+            delivery_id,
+            expected_staged_draft,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn submit_pairing_prompt(
+        &self,
+        key: &str,
+        target: &super::PairingPage,
+        prompt: &str,
+    ) -> Result<PromptSubmissionOutcome> {
+        self.submit_prompt(key, "", prompt, None, "", None, Some(target))
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn submit_prompt(
+        &self,
+        key: &str,
+        target_url: &str,
+        prompt: &str,
+        attachment_path: Option<&Path>,
+        delivery_id: &str,
+        expected_staged_draft: Option<&str>,
+        pairing: Option<&super::PairingPage>,
     ) -> Result<PromptSubmissionOutcome> {
         if prompt.trim().is_empty() {
             bail!("browser prompt is empty");
         }
         let page = self.page(key).await?;
-        if has_chatgpt_conversation_route(target_url) {
-            self.align_chatgpt_conversation_target(key, target_url, Duration::from_secs(5))
-                .await?;
-        } else if !target_url.is_empty() {
-            let current = page.url().await?.unwrap_or_default();
-            if !same_page(&current, target_url) {
-                goto_dom_content_loaded(&page, target_url).await?;
+        if let Some(target) = pairing {
+            target.check_before_send(self, key).await?;
+        }
+        // Recovery owns one exact draft on the current page, not permission to
+        // navigate back and replace whatever is there after a user changes tabs.
+        if expected_staged_draft.is_none() {
+            if has_chatgpt_conversation_route(target_url) {
+                self.align_chatgpt_conversation_target(key, target_url, Duration::from_secs(5))
+                    .await?;
+            } else if !target_url.is_empty() {
+                let current = page.url().await?.unwrap_or_default();
+                if !same_page(&current, target_url) {
+                    goto_dom_content_loaded(&page, target_url).await?;
+                }
             }
         }
         dismiss_duplicate_upload_dialog(&page).await?;
 
-        let needles = submission_needles(prompt);
+        // Pairing retries share their explanatory prefix, but each carries a
+        // different code. Only the complete setup message identifies this send.
+        let needles = if pairing.is_some() {
+            vec![prompt.to_owned()]
+        } else {
+            submission_needles(prompt)
+        };
         let existing = inspect_submission(&page, prompt, &needles).await?;
-        if existing.echo_found {
+        if existing.echo_found && expected_staged_draft.is_none() {
             self.record_page_state(key, &page).await;
             return Ok(PromptSubmissionOutcome::Verified(evidence(
                 true,
@@ -152,7 +238,39 @@ impl BrowserSurfaces {
 
         let composer = wait_for_composer(&page).await?;
         let staged = inspect_submission(&page, prompt, &needles).await?;
+        let owns_staged_draft = if let Some(expected) = expected_staged_draft {
+            let previous =
+                inspect_submission(&page, expected, &submission_needles(expected)).await?;
+            if !recoverable_staged_draft(target_url, &previous) {
+                return Ok(PromptSubmissionOutcome::Ambiguous(evidence(
+                    false,
+                    "",
+                    "staged_draft_changed",
+                    &composer.descriptor,
+                    &previous,
+                    &previous,
+                )));
+            }
+            true
+        } else {
+            false
+        };
+        if !staged.composer_exact && staged.composer_chars > 0 && !owns_staged_draft {
+            // A previous delivery or a human may own this draft. Never replace
+            // it, including if it appeared after the pre-claim readiness check.
+            return Ok(PromptSubmissionOutcome::Ambiguous(evidence(
+                false,
+                "",
+                "composer_occupied",
+                &composer.descriptor,
+                &staged,
+                &staged,
+            )));
+        }
         if !staged.composer_exact {
+            if let Some(target) = pairing {
+                target.check_before_send(self, key).await?;
+            }
             focus_and_select_composer(&page).await?;
             page.execute(InsertTextParams::new(prompt))
                 .await
@@ -185,17 +303,59 @@ impl BrowserSurfaces {
         }
 
         let readiness = wait_for_send_control(&page).await?;
+        if let Some(target) = pairing {
+            target.check_before_send(self, key).await?;
+        }
+        if self.page(key).await?.target_id() != page.target_id() {
+            bail!("browser surface changed before prompt submission");
+        }
+        // Waiting for controls must not grant permission to send a draft that
+        // a human changed in the meantime (or submit a manual send twice).
+        let before_send = inspect_submission(&page, prompt, &needles).await?;
+        if before_send.echo_found || !before_send.composer_exact {
+            return Ok(self
+                .classify_deferred_submission(
+                    key,
+                    &page,
+                    SubmissionAttempt {
+                        prompt,
+                        needles: &needles,
+                        input: &composer.descriptor,
+                        action: "",
+                        baseline: &baseline,
+                    },
+                    "staged_draft_changed",
+                )
+                .await);
+        }
         match readiness {
             SendReadiness::Ready(candidate) => {
-                let action = candidate.descriptor;
-                let click = match page.find_element(SEND_SELECTOR).await {
-                    Ok(button) => button.click().await.map(|_| ()),
-                    Err(error) => Err(error),
-                };
-                let action = if click.is_ok() {
-                    action
-                } else {
-                    format!("{action}:click_dispatch_unknown")
+                // Activate the validated control in its own document. Native
+                // pointer dispatch can acknowledge without delivering a click
+                // to a background window. This still uses the page's normal
+                // click/form handlers, exactly once; it is not a retry path.
+                let activation =
+                    activate_send_control(&page, &candidate, prompt, &needles, &before_send.url)
+                        .await;
+                if matches!(&activation, Ok(result) if !result.invoked) {
+                    return Ok(self
+                        .classify_deferred_submission(
+                            key,
+                            &page,
+                            SubmissionAttempt {
+                                prompt,
+                                needles: &needles,
+                                input: &composer.descriptor,
+                                action: "",
+                                baseline: &baseline,
+                            },
+                            "send_control_changed",
+                        )
+                        .await);
+                }
+                let action = match activation {
+                    Ok(result) if result.error.is_empty() => result.action,
+                    _ => format!("{}:dom_click:dispatch_unknown", candidate.descriptor),
                 };
                 Ok(self
                     .verify_attempt(
@@ -352,17 +512,6 @@ impl BrowserSurfaces {
                 &observed,
             ));
         }
-        if let Some(submission_evidence) = verified_submission_evidence(attempt.baseline, &observed)
-        {
-            return PromptSubmissionOutcome::Verified(evidence(
-                true,
-                attempt.action,
-                submission_evidence,
-                attempt.input,
-                attempt.baseline,
-                &observed,
-            ));
-        }
         if let Some(submission_evidence) = weak_submission_evidence(attempt.baseline, &observed) {
             return PromptSubmissionOutcome::Ambiguous(evidence(
                 false,
@@ -408,19 +557,6 @@ impl BrowserSurfaces {
                             true,
                             action,
                             "message_echo",
-                            input,
-                            baseline,
-                            &snapshot,
-                        ));
-                    }
-                    if let Some(submission_evidence) =
-                        verified_submission_evidence(baseline, &snapshot)
-                    {
-                        self.record_page_state(key, page).await;
-                        return PromptSubmissionOutcome::Verified(evidence(
-                            true,
-                            action,
-                            submission_evidence,
                             input,
                             baseline,
                             &snapshot,
@@ -554,21 +690,37 @@ impl BrowserSurfaces {
     pub(crate) async fn prompt_readiness(&self, key: &str) -> Result<Value> {
         let page = self.page(key).await?;
         let url = page.url().await?.unwrap_or_default();
-        let candidate = page
-            .evaluate(format!("({SELECT_COMPOSER_SCRIPT})()"))
-            .await
-            .context("inspect visible browser composer")?
-            .into_value::<ComposerCandidate>()
-            .context("decode visible browser composer")?;
+        // A new window may still be waiting for response headers. It cannot
+        // contain a composer, and evaluating JS there can wait for navigation.
+        let loading = matches!(url.as_str(), "" | "about:blank");
+        let candidate = if loading {
+            ComposerCandidate::default()
+        } else {
+            page.evaluate(format!("({SELECT_COMPOSER_SCRIPT})()"))
+                .await
+                .context("inspect visible browser composer")?
+                .into_value::<ComposerCandidate>()
+                .context("decode visible browser composer")?
+        };
         let ready = !candidate.selector.is_empty();
+        let snapshot = if ready {
+            inspect_submission(&page, "", &[]).await?
+        } else {
+            SubmissionSnapshot::default()
+        };
         let readiness = json!({
             "ready":ready,
-            "login_required":!ready,
+            "composer_chars":snapshot.composer_chars,
+            "composer_has_attachments":!loading && composer_has_attachments(&page).await?,
+            "running":snapshot.running,
+            "login_required":!ready && !loading,
             "verification_required":candidate.verification_required,
             "tab_url":url,
             "input_selector":candidate.descriptor,
             "checked_at":cccc_contracts::utc_now(),
-            "message":if candidate.verification_required {
+            "message":if loading {
+                "Browser page is loading. Delivery is waiting."
+            } else if candidate.verification_required {
                 "Complete the website's security verification in this browser. Delivery is waiting."
             } else if ready {
                 "Browser model composer is ready."
@@ -744,6 +896,16 @@ async fn attach_compatibility_image(
     }
 }
 
+// Keep the early recovery inspection and final replacement check identical.
+fn recoverable_staged_draft(target_url: &str, snapshot: &SubmissionSnapshot) -> bool {
+    same_page(&snapshot.url, target_url)
+        && snapshot.user_message_count == 0
+        && !snapshot.echo_found
+        && !snapshot.running
+        && !snapshot.stop_visible
+        && snapshot.composer_exact
+}
+
 fn same_page(left: &str, right: &str) -> bool {
     let Ok(mut left) = reqwest::Url::parse(left) else {
         return false;
@@ -818,18 +980,15 @@ async fn wait_for_prompt_staged(
 async fn wait_for_send_control(page: &Page) -> Result<SendReadiness> {
     let deadline = Instant::now() + SEND_CONTROL_TIMEOUT;
     let mut stable_descriptor = String::new();
+    let mut stable_point = None;
     let mut stable_since = Instant::now();
     let mut stop_only_since = None;
     loop {
-        let probe = page
-            .evaluate(format!("({SELECT_SEND_CONTROL_SCRIPT})()"))
-            .await
-            .context("inspect browser composer send control")?
-            .into_value::<SendProbe>()
-            .context("decode browser composer send control")?;
+        let probe = inspect_send_control(page).await?;
         if !probe.selector.is_empty() {
-            if probe.descriptor != stable_descriptor {
+            if probe.descriptor != stable_descriptor || probe.point != stable_point {
                 stable_descriptor.clone_from(&probe.descriptor);
+                stable_point = probe.point;
                 stable_since = Instant::now();
             } else if stable_since.elapsed() >= SEND_STABILITY_INTERVAL {
                 return Ok(SendReadiness::Ready(probe));
@@ -854,6 +1013,49 @@ async fn wait_for_send_control(page: &Page) -> Result<SendReadiness> {
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+async fn inspect_send_control(page: &Page) -> Result<SendProbe> {
+    page.evaluate(format!("({SELECT_SEND_CONTROL_SCRIPT})()"))
+        .await
+        .context("inspect browser composer send control")?
+        .into_value::<SendProbe>()
+        .context("decode browser composer send control")
+}
+
+async fn activate_send_control(
+    page: &Page,
+    candidate: &SendProbe,
+    prompt: &str,
+    needles: &[String],
+    url: &str,
+) -> Result<RequestSubmitResult> {
+    let payload = json!({
+        "prompt":prompt, "needles":needles, "url":url,
+        "descriptor":candidate.descriptor
+    });
+    // Reuse the same receipt, draft and visible-control predicates. All final
+    // checks and activation run in one JS task, so a draft edit, manual send,
+    // navigation or disabled/covered button cannot slip between CDP calls.
+    page.evaluate(format!(
+        r#"(() => {{
+            const payload = {payload};
+            const blocked = {{action:'', invoked:false, unsafe_state:true, error:''}};
+            const state = ({INSPECT_SUBMISSION_SCRIPT})(payload);
+            if (state.url !== payload.url || state.echo_found || !state.composer_exact) return blocked;
+            const current = ({SELECT_SEND_CONTROL_SCRIPT})();
+            if (!current.selector || current.descriptor !== payload.descriptor) return blocked;
+            const button = document.querySelector(current.selector);
+            if (!(button instanceof HTMLElement)) return blocked;
+            const result = {{action:current.descriptor + ':dom_click', invoked:true, unsafe_state:false, error:''}};
+            try {{ button.click(); }} catch (error) {{ result.error = String(error || ''); }}
+            return result;
+        }})()"#,
+    ))
+    .await
+    .context("activate verified browser send control")?
+    .into_value::<RequestSubmitResult>()
+    .context("decode browser send activation")
 }
 
 async fn request_submit(page: &Page) -> Result<RequestSubmitResult> {
@@ -891,20 +1093,6 @@ fn weak_submission_evidence(
         return Some("generation_started");
     }
     None
-}
-
-fn verified_submission_evidence(
-    baseline: &SubmissionSnapshot,
-    current: &SubmissionSnapshot,
-) -> Option<&'static str> {
-    (current.user_message_count > baseline.user_message_count)
-        .then_some("user_message_count_increased")
-}
-
-pub(crate) fn stored_verified_submission_evidence(value: &Value) -> Option<&'static str> {
-    let baseline = serde_json::from_value(value.get("baseline")?.clone()).ok()?;
-    let observed = serde_json::from_value(value.get("observed")?.clone()).ok()?;
-    verified_submission_evidence(&baseline, &observed)
 }
 
 fn conversation_route_changed(before: &str, after: &str) -> bool {
@@ -972,6 +1160,10 @@ pub(crate) fn normalized_chatgpt_conversation_url(value: &str) -> Option<String>
 }
 
 pub(crate) fn conversation_target_matches(expected: &str, observed: &str) -> bool {
+    if let Ok(expected) = cccc_core::web_model_connectors::grok_bot_url(expected) {
+        return cccc_core::web_model_connectors::grok_bot_url(observed)
+            .is_ok_and(|observed| expected == observed);
+    }
     normalized_chatgpt_conversation_url(expected)
         .zip(normalized_chatgpt_conversation_url(observed))
         .is_some_and(|(expected, observed)| expected == observed)
@@ -991,31 +1183,23 @@ fn chatgpt_conversation_id(url: &reqwest::Url) -> Option<String> {
         .find_map(|pair| (pair[0] == "c" && !pair[1].is_empty()).then(|| pair[1].to_owned()))
 }
 
-fn provisional_conversation_id(value: &str) -> bool {
+pub(super) fn provisional_conversation_id(value: &str) -> bool {
     let value = value.trim().to_ascii_uppercase();
     value.starts_with("WEB:") || value.starts_with("WEB%3A")
 }
 
 fn submission_needles(prompt: &str) -> Vec<String> {
-    let normalized = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    // One complete transport header identifies the batch, its source events
+    // and Actor. An event list or shared prose prefix alone is not a receipt.
+    let receipt = prompt
+        .lines()
+        .find(|line| line.starts_with("[cccc] Browser batch "))
+        .unwrap_or(prompt);
+    let normalized = receipt.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.is_empty() {
         return Vec::new();
     }
-    let words = normalized.split_whitespace().collect::<Vec<_>>();
-    let mut needles = Vec::new();
-    for window in words.windows(3) {
-        if window[0].eq_ignore_ascii_case("browser") && window[1].eq_ignore_ascii_case("batch") {
-            needles.push(format!("Browser batch {}", window[2]));
-            break;
-        }
-    }
-    if let Some(events) = words.iter().find(|word| word.starts_with("events=")) {
-        needles.push((*events).to_owned());
-    }
-    if needles.is_empty() {
-        needles.push(normalized.chars().take(120).collect());
-    }
-    needles
+    vec![normalized]
 }
 
 fn evidence(
@@ -1123,7 +1307,7 @@ const SELECT_COMPOSER_SCRIPT: &str = r#"() => {
     // conversation composer is a delivery target; generic inputs are not.
     const chatGptHost = /(^|\.)chatgpt\.com$/.test(location.hostname)
         || ['chat.openai.com', 'auth.openai.com'].includes(location.hostname);
-    const selectors = chatGptHost ? ['#prompt-textarea'] : [
+    const selectors = chatGptHost ? ['#prompt-textarea'] : location.hostname === 'grok.com' ? ['[data-testid="chat-input"] [role="textbox"][contenteditable="true"]'] : [
         '.ProseMirror', '#prompt-textarea', '[contenteditable="true"][data-virtualkeyboard="true"]',
         '[role="textbox"][contenteditable="true"]', 'textarea[data-id="prompt-textarea"]',
         'textarea[name="prompt-textarea"]', 'textarea[placeholder*="Send a message"]',
@@ -1187,14 +1371,15 @@ const SELECT_SEND_CONTROL_SCRIPT: &str = r#"() => {
             || /\bsend\b|\bsubmit\b|发送|送信/.test(text);
     };
     const allButtons = Array.from(document.querySelectorAll('button, [role="button"]')).filter(visible);
-    const running = allButtons.some(stop);
+    const working = document.querySelector('[data-testid="bot-working-slot"]');
+    const running = allButtons.some(stop) || !!working && Array.from(working.children).some(visible);
     let root = input?.closest('form')
         || input?.closest('[data-testid*="composer" i], [class*="composer" i]')
         || null;
     if (!root && input) {
         let parent = input.parentElement;
         for (let depth = 0; parent && depth < 6; depth += 1, parent = parent.parentElement) {
-            if (parent.querySelector('button, [role="button"]')) { root = parent; break; }
+            if (parent.querySelector(input.closest('[data-testid="chat-input"]') ? '[data-testid="chat-submit"]' : 'button, [role="button"]')) { root = parent; break; }
         }
     }
     const buttons = root ? Array.from(root.querySelectorAll('button, [role="button"]')).filter(visible) : [];
@@ -1211,9 +1396,20 @@ const SELECT_SEND_CONTROL_SCRIPT: &str = r#"() => {
         return value;
     };
     const best = enabled.sort((left, right) => score(right) - score(left))[0];
-    if (!best) return {
+    if (!best || running) return {
         selector: '', descriptor: '', running, stop_visible: running,
         send_candidate_count: sendCandidates.length
+    };
+    let rect = best.getBoundingClientRect();
+    if (rect.top < 0 || rect.left < 0 || rect.bottom > innerHeight || rect.right > innerWidth) {
+        best.scrollIntoView({block:'nearest', inline:'nearest', behavior:'instant'});
+        rect = best.getBoundingClientRect();
+    }
+    const point = {x:rect.left + rect.width / 2, y:rect.top + rect.height / 2};
+    const hit = document.elementFromPoint(point.x, point.y);
+    if (!hit || (hit !== best && !best.contains(hit))) return {
+        selector:'', descriptor:'', running, stop_visible:running,
+        send_candidate_count:sendCandidates.length
     };
     best.setAttribute(markerName, markerValue);
     const descriptor = best.id ? `#${best.id}`
@@ -1222,7 +1418,7 @@ const SELECT_SEND_CONTROL_SCRIPT: &str = r#"() => {
         : best.getAttribute('type') === 'submit' ? 'button[type=submit]' : 'composer:send-control';
     return {
         selector: `[${markerName}="${markerValue}"]`, descriptor, running,
-        stop_visible: running, send_candidate_count: sendCandidates.length
+        stop_visible: running, send_candidate_count: sendCandidates.length, point
     };
 }"#;
 
@@ -1278,7 +1474,7 @@ const INSPECT_SUBMISSION_SCRIPT: &str = r#"payload => {
         ((node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) && !node.disabled && !node.readOnly)
         || node.isContentEditable || node.getAttribute('contenteditable') === 'true'
     );
-    const read = node => normalize(('value' in node && node.value) ? node.value : (node.innerText || node.textContent || ''));
+    const read = node => normalize(('value' in node) ? node.value : (node.innerText || node.textContent || ''));
     const marked = document.querySelector('[data-cccc-web-model-composer="cccc-web-model-composer"]');
     const markedText = marked ? read(marked) : '';
     const composers = Array.from(new Set([
@@ -1287,21 +1483,28 @@ const INSPECT_SUBMISSION_SCRIPT: &str = r#"payload => {
         ...document.querySelectorAll('textarea, [role="textbox"], [contenteditable="true"]')
     ])).filter(editable);
     const composerTexts = composers.map(read).filter(Boolean);
-    const messageNodes = Array.from(new Set([
-        ...document.querySelectorAll('[data-message-author-role="user"]'),
-        ...document.querySelectorAll('[data-testid*="conversation-turn"]'),
-        ...document.querySelectorAll('main article')
-    ]));
+    // Virtualized history can grow without a send, and assistants may quote a
+    // pending batch. Only the exact receipt inside a user message proves it.
+    const messageNodes = Array.from(document.querySelectorAll('[data-message-author-role="user"], [data-testid="bot-transcript-scroller"] [data-testid="user-message"][role="article"]'));
     const needles = Array.isArray(payload.needles) ? payload.needles.map(normalize).filter(Boolean) : [];
     const echoFound = messageNodes.some(node => {
         const text = read(node);
-        return needles.some(needle => text.includes(needle));
+        return needles.some(needle => {
+            let at = text.indexOf(needle);
+            while (at !== -1) {
+                const end = at + needle.length;
+                if ((at === 0 || /\s/.test(text[at - 1])) && (end === text.length || /\s/.test(text[end]))) return true;
+                at = text.indexOf(needle, at + 1);
+            }
+            return false;
+        });
     });
     const controls = Array.from(document.querySelectorAll('button, [role="button"]')).filter(visible);
     const label = node => [node.getAttribute('aria-label') || '', node.getAttribute('title') || '',
         node.getAttribute('data-testid') || '', node.id || '', node.innerText || node.textContent || '']
         .join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
-    const stopVisible = controls.some(node => /\bstop\b|停止|中止|cancel generation|interrupt/.test(label(node)));
+    const working = document.querySelector('[data-testid="bot-working-slot"]');
+    const stopVisible = !!working && Array.from(working.children).some(visible) || controls.some(node => /\bstop\b|停止|中止|cancel generation|interrupt/.test(label(node)));
     const safeSend = controls.filter(node => {
         const text = label(node);
         if (/\bstop\b|停止|中止|cancel|retry|signin|sign in|log in|login|voice|microphone|attach|upload/.test(text)) return false;
@@ -1313,7 +1516,7 @@ const INSPECT_SUBMISSION_SCRIPT: &str = r#"payload => {
         url: location.href || '', echo_found: echoFound, running: stopVisible, stop_visible: stopVisible,
         composer_exact: Boolean(markedText && markedText === expected),
         composer_contains_prompt: composerTexts.some(containsPrompt), composer_chars: markedText.length,
-        user_message_count: document.querySelectorAll('[data-message-author-role="user"]').length,
+        user_message_count: messageNodes.length,
         send_enabled_count: safeSend.filter(node => !node.disabled
             && String(node.getAttribute('aria-disabled') || '').toLowerCase() !== 'true').length
     };
@@ -1398,15 +1601,507 @@ const ATTACHMENT_STATUS_SCRIPT: &str = r#"payload => {
         preview_count: previewNodes.length, image_preview_count: imagePreviews.length };
 }"#;
 
+pub(super) async fn composer_has_attachments(page: &Page) -> Result<bool> {
+    // An empty text box can still contain a user's pending file upload.
+    // Restrict previews to the composer, never earlier chat images.
+    page.evaluate(r#"() => {
+            if ([...document.querySelectorAll('input[type=file]')].some(e => e.files?.length)) return true;
+            const composer = document.querySelector('#prompt-textarea, [data-cccc-web-model-composer]');
+            let root = composer?.closest('form, [data-testid*="composer" i], [class*="composer" i]');
+            if (!root && composer?.closest('[data-testid="chat-input"]')) {
+                for (let parent = composer.parentElement, depth = 0; parent && depth < 6; parent = parent.parentElement, depth++) {
+                    if (parent.querySelector('[data-testid="chat-submit"]')) { root = parent; break; }
+                }
+            }
+            return !!root && [...root.querySelectorAll('[data-testid*="file-preview" i], [data-testid="attachment" i], [data-testid*="attachment-preview" i], [data-testid*="upload-preview" i], [class*="file-preview" i], [class*="attachment-preview" i], [class*="upload-preview" i], img[src^="blob:"]')]
+                .some(e => e.getClientRects().length > 0);
+        }"#).await?.into_value::<bool>().map_err(Into::into)
+}
+
 #[cfg(test)]
 mod readiness_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn image_compat_submission_waits_for_enabled_button_and_sends_once() {
+        use base64::Engine as _;
+
+        if crate::system_browser_path().is_none() {
+            return;
+        }
+        let _chrome_guard = crate::browser_surface::chrome_test_guard().await;
+        let temp = tempfile::tempdir().expect("fixture");
+        let image = temp.path().join("compat.png");
+        std::fs::write(&image, base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAKUlEQVR42u3OIQEAAAACIP+f1hkWWEB6FgEBAQEBAQEBAQEBAQEBgXdgl/rw4tnPBf0AAAAASUVORK5CYII=").expect("PNG")).expect("image");
+        let (url, server) = super::super::browser_surface_tests::local_page(r#"<main><form><textarea id="prompt-textarea"></textarea><input id="upload-photos" type="file" accept="image/png"><button id="composer-submit-button" type="submit" disabled>Send</button></form></main><script>
+            window.sends=0;window.uploadReady=false;window.earlySend=false;
+            const button=document.querySelector('button');
+            document.querySelector('input').onchange=()=>{
+                const image=document.createElement('div');image.dataset.testid='attachment';image.textContent='Uploading compat.png';document.querySelector('form').prepend(image);
+                setTimeout(()=>{window.uploadReady=true;image.textContent='compat.png';button.disabled=false},600);
+            };
+            button.onclick=e=>{
+                e.preventDefault();e.stopPropagation();window.sends++;window.earlySend=!window.uploadReady;
+                const t=document.querySelector('textarea'),a=document.createElement('article');
+                a.dataset.messageAuthorRole='user';a.textContent=t.value;document.querySelector('main').prepend(a);t.value='';
+            };
+        </script>"#).await;
+        let manager = BrowserSurfaces::default();
+        manager
+            .open("upload", &temp.path().join("profile"), &url, 800, 600)
+            .await
+            .expect("open");
+        let prompt = "[cccc] Browser batch webdelivery:A:image events=e1 actor=A\nTask";
+        let result = manager
+            .submit_prompt_with_attachment("upload", &url, prompt, Some(&image), "image", None)
+            .await
+            .expect("submit");
+        let PromptSubmissionOutcome::Verified(evidence) = result else {
+            panic!("upload must send through the ready button")
+        };
+        assert_eq!(
+            evidence["send_selector"],
+            "#composer-submit-button:dom_click"
+        );
+        let page = manager.page("upload").await.expect("page");
+        assert_eq!(
+            page.evaluate("({sends:window.sends,early:window.earlySend})")
+                .await
+                .expect("state")
+                .into_value::<Value>()
+                .expect("json"),
+            json!({"sends":1,"early":false})
+        );
+        manager.close("upload").await.expect("close");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn send_activation_rechecks_ownership_and_uses_the_button_handler_once() {
+        if crate::system_browser_path().is_none() {
+            return;
+        }
+        let _chrome_guard = crate::browser_surface::chrome_test_guard().await;
+        let temp = tempfile::tempdir().expect("fixture");
+        let manager = BrowserSurfaces::default();
+        let (url, server) = super::super::browser_surface_tests::local_page("<main></main>").await;
+        manager
+            .open("activation", &temp.path().join("profile"), &url, 800, 600)
+            .await
+            .expect("open");
+        let page = manager.page("activation").await.expect("page");
+        let observed_url = page.url().await.expect("URL").expect("loaded URL");
+        let prompt = "[cccc] Browser batch webdelivery:A:activation events=e1 actor=A\nTask";
+        let needles = submission_needles(prompt);
+        for case in [
+            "edited",
+            "disabled",
+            "aria_disabled",
+            "covered",
+            "running",
+            "manual",
+            "navigated",
+            "replaced",
+            "ready",
+        ] {
+            page.evaluate(format!(r#"(() => {{
+                history.replaceState(null,'',{});
+                document.body.innerHTML='<main><form><textarea id="prompt-textarea"></textarea><button id="composer-submit-button" type="submit" style="position:absolute;left:20px;top:200px;width:80px;height:30px">Send</button></form></main>';
+                const input=document.querySelector('textarea'); input.value={};
+                window.sends=0; window.formSubmits=0; window.pointerDowns=0;
+                document.querySelector('button').onpointerdown=()=>window.pointerDowns++;
+                document.querySelector('form').onsubmit=e=>{{e.preventDefault();window.formSubmits++}};
+                document.querySelector('button').onclick=e=>{{
+                    e.preventDefault(); e.stopPropagation(); window.sends++;
+                    const a=document.createElement('article'); a.dataset.messageAuthorRole='user';
+                    a.textContent=input.value; document.querySelector('main').prepend(a); input.value='';
+                }};
+            }})()"#, json!(url), json!(prompt))).await.expect("fixture");
+            wait_for_composer(&page).await.expect("composer");
+            let candidate = inspect_send_control(&page).await.expect("ready control");
+            assert!(!candidate.selector.is_empty());
+            let mutation = match case {
+                "edited" => "document.querySelector('textarea').value='Human draft'",
+                "disabled" => "document.querySelector('button').disabled=true",
+                "aria_disabled" => {
+                    "document.querySelector('button').setAttribute('aria-disabled','true')"
+                }
+                "covered" => {
+                    "document.body.insertAdjacentHTML('beforeend','<div style=\"position:absolute;left:20px;top:200px;width:80px;height:30px;background:white\"></div>')"
+                }
+                "running" => {
+                    "document.body.insertAdjacentHTML('beforeend','<button aria-label=Stop>Stop</button>')"
+                }
+                "manual" => {
+                    "const a=document.createElement('article');a.dataset.messageAuthorRole='user';a.textContent=document.querySelector('textarea').value;document.querySelector('main').prepend(a)"
+                }
+                "navigated" => "history.replaceState(null,'','/another-conversation')",
+                "replaced" => "document.querySelector('button').id='another-control'",
+                _ => "void 0",
+            };
+            page.evaluate(mutation).await.expect("intervening change");
+            let activation =
+                activate_send_control(&page, &candidate, prompt, &needles, &observed_url)
+                    .await
+                    .expect("activation");
+            assert_eq!(activation.invoked, case == "ready", "{case}");
+            assert_eq!(activation.unsafe_state, case != "ready", "{case}");
+            assert!(activation.error.is_empty());
+            let actual = page.evaluate("({sends:window.sends,formSubmits:window.formSubmits,pointerDowns:window.pointerDowns,draft:document.querySelector('textarea').value})").await.expect("result").into_value::<Value>().expect("json");
+            assert_eq!(actual["sends"], u32::from(case == "ready"), "{case}");
+            assert_eq!(actual["formSubmits"], 0, "do not bypass the button handler");
+            assert_eq!(actual["pointerDowns"], 0, "no native pointer dispatch");
+            assert_eq!(
+                actual["draft"],
+                match case {
+                    "ready" => "",
+                    "edited" => "Human draft",
+                    _ => prompt,
+                },
+                "{case}"
+            );
+            if case == "ready" {
+                assert_eq!(activation.action, "#composer-submit-button:dom_click");
+                let repeated =
+                    activate_send_control(&page, &candidate, prompt, &needles, &observed_url)
+                        .await
+                        .expect("receipt check");
+                assert!(
+                    !repeated.invoked,
+                    "an existing receipt prevents resubmission"
+                );
+            }
+        }
+        manager.close("activation").await.expect("close");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn submission_receipt_requires_the_current_batch_in_a_user_message() {
+        if crate::system_browser_path().is_none() {
+            return;
+        }
+        let _chrome_guard = crate::browser_surface::chrome_test_guard().await;
+        let temp = tempfile::tempdir().expect("fixture");
+        let manager = BrowserSurfaces::default();
+        let (url, server) = super::super::browser_surface_tests::local_page(
+            "<main><textarea id='prompt-textarea'></textarea></main>",
+        )
+        .await;
+        manager
+            .open("receipt", &temp.path().join("profile"), &url, 800, 600)
+            .await
+            .expect("open");
+        let page = manager.page("receipt").await.expect("page");
+        let prompt =
+            "[cccc] Browser batch webdelivery:A:current events=e1,e2 actor=A\nDo the task.";
+        let _ = wait_for_composer(&page).await.expect("composer");
+        for (role, text) in [
+            ("assistant", prompt),
+            (
+                "user",
+                "[cccc] Browser batch webdelivery:A:old events=e1,e2 actor=A",
+            ),
+            (
+                "user",
+                "[cccc] Browser batch webdelivery:A:current events=e1,e2 actor=B",
+            ),
+            (
+                "user",
+                "[cccc] Browser batch webdelivery:A:current events=e1,e2 actor=AB",
+            ),
+        ] {
+            page.evaluate(format!("(() => {{const a=document.createElement('article');a.dataset.messageAuthorRole={};a.dataset.testid='conversation-turn-1';a.textContent={};document.querySelector('main').append(a);}})()",json!(role),json!(text))).await.expect("non-receipt");
+            let snapshot = inspect_submission(&page, prompt, &submission_needles(prompt))
+                .await
+                .expect("inspect");
+            assert!(!snapshot.echo_found, "{role}: {text}");
+        }
+        page.evaluate(format!("(() => {{const a=document.createElement('article');a.dataset.messageAuthorRole='user';a.textContent={};document.querySelector('main').append(a);}})()",json!(prompt))).await.expect("actual receipt");
+        assert!(
+            inspect_submission(&page, prompt, &submission_needles(prompt))
+                .await
+                .expect("inspect receipt")
+                .echo_found
+        );
+        manager.close("receipt").await.expect("close");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn send_wait_preserves_covered_controls_and_changed_drafts() {
+        if crate::system_browser_path().is_none() {
+            return;
+        }
+        let _chrome_guard = crate::browser_surface::chrome_test_guard().await;
+        let temp = tempfile::tempdir().expect("fixture");
+        let manager = BrowserSurfaces::default();
+        let (url, server) = super::super::browser_surface_tests::local_page(r#"<main><form onsubmit="event.preventDefault();window.sends++"><textarea id="prompt-textarea"></textarea><button id="composer-submit-button" type="submit" style="position:absolute;left:20px;top:200px;width:80px;height:30px">Send</button></form><div id="cover" style="position:absolute;left:20px;top:200px;width:80px;height:30px;background:white" onclick="window.wrongClicks++"></div></main><script>window.sends=0;window.wrongClicks=0;</script>"#).await;
+        manager
+            .open("protected", &temp.path().join("profile"), &url, 800, 600)
+            .await
+            .expect("open");
+        let page = manager.page("protected").await.expect("page");
+        let result = manager
+            .submit_prompt_with_attachment("protected", &url, "Pending batch", None, "first", None)
+            .await
+            .expect("covered send");
+        assert!(
+            matches!(result, PromptSubmissionOutcome::Deferred(_)),
+            "a covered button cannot fall through to form or keyboard submission"
+        );
+        assert_eq!(page.evaluate("({sends:window.sends, wrong:window.wrongClicks,draft:document.querySelector('textarea').value})").await.expect("snapshot").into_value::<Value>().expect("json"),json!({"sends":0,"wrong":0,"draft":"Pending batch"}));
+        page.evaluate("document.querySelector('#cover').remove();const t=document.querySelector('textarea');t.value='';t.oninput=()=>{const b=document.querySelector('button');b.disabled=true;setTimeout(()=>{t.value='Human draft edited during send readiness';b.disabled=false},100)}").await.expect("edit during wait");
+        let result = manager
+            .submit_prompt_with_attachment("protected", &url, "Next batch", None, "next", None)
+            .await
+            .expect("changed draft");
+        assert!(matches!(result, PromptSubmissionOutcome::Ambiguous(_)));
+        assert_eq!(
+            page.evaluate("({sends:window.sends,draft:document.querySelector('textarea').value})")
+                .await
+                .expect("preserved draft")
+                .into_value::<Value>()
+                .expect("json"),
+            json!({"sends":0,"draft":"Human draft edited during send readiness"})
+        );
+        // A manual send may appear before React clears the composer. Receipt
+        // ownership, not the remaining draft, must prevent a second click.
+        page.evaluate("(() => {const t=document.querySelector('textarea');t.value='';t.oninput=()=>{const b=document.querySelector('button');b.disabled=true;setTimeout(()=>{const a=document.createElement('article');a.dataset.messageAuthorRole='user';a.textContent=t.value;document.querySelector('main').append(a);b.disabled=false},100)};})()").await.expect("manual receipt during wait");
+        let result = manager
+            .submit_prompt_with_attachment(
+                "protected",
+                &url,
+                "Manually sent batch",
+                None,
+                "manual",
+                None,
+            )
+            .await
+            .expect("manual receipt");
+        assert!(matches!(result, PromptSubmissionOutcome::Verified(_)));
+        assert_eq!(
+            page.evaluate("window.sends")
+                .await
+                .expect("no duplicate send")
+                .into_value::<u32>()
+                .expect("count"),
+            0
+        );
+        manager.close("protected").await.expect("close");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn owned_draft_recovery_rechecks_composer_and_page_before_replacement() {
+        if crate::system_browser_path().is_none() {
+            return;
+        }
+        let _chrome_guard = crate::browser_surface::chrome_test_guard().await;
+        let temp = tempfile::tempdir().expect("fixture");
+        let manager = BrowserSurfaces::default();
+        let (url, server) = super::super::browser_surface_tests::local_page("<main></main>").await;
+        manager
+            .open("owned", &temp.path().join("profile"), &url, 800, 600)
+            .await
+            .expect("browser");
+        let page = manager.page("owned").await.expect("page");
+        let old = "[user -> browser-test] Verified old draft.";
+        let prompt = "[CCCC] Rebuilt bootstrap and recovered delivery batch.";
+        for editable in [false, true] {
+            for case in [
+                "unchanged",
+                "edited",
+                "cleared",
+                "history",
+                "generating",
+                "navigated",
+            ] {
+                let element = if editable {
+                    "<div id='prompt-textarea' contenteditable='true' role='textbox' style='width:400px;height:100px'></div>"
+                } else {
+                    "<textarea id='prompt-textarea' style='width:400px;height:100px'></textarea>"
+                };
+                let html = format!(
+                    "<main><form>{element}<button type='submit'>Send</button></form></main>"
+                );
+                page.evaluate(format!(r#"(() => {{
+                    history.replaceState(null,'',{});
+                    document.body.innerHTML={};
+                    window.sends=0;
+                    window.readDraft=()=>{{ const n=document.querySelector('#prompt-textarea'); return 'value' in n?n.value:n.textContent; }};
+                    window.writeDraft=(text)=>{{ const n=document.querySelector('#prompt-textarea'); if('value' in n)n.value=text;else n.textContent=text; }};
+                    window.writeDraft({});
+                    document.querySelector('form').onsubmit=(e)=>{{e.preventDefault(); window.sends++; const a=document.createElement('article'); a.dataset.messageAuthorRole='user'; a.textContent=window.readDraft(); document.querySelector('main').append(a); window.writeDraft('');}};
+                }})()"#, serde_json::to_string(&url).expect("url"),serde_json::to_string(&html).expect("html"),serde_json::to_string(old).expect("old"))).await.expect("reset fixture");
+                assert_eq!(
+                    manager
+                        .inspect_staged_prompt("owned", &url, old)
+                        .await
+                        .expect("precheck")["recoverable"],
+                    true
+                );
+                let mutation = match case {
+                    "edited" => "window.writeDraft('A newer human draft')",
+                    "cleared" => "window.writeDraft('')",
+                    "history" => {
+                        "document.querySelector('main').insertAdjacentHTML('beforeend', '<article data-message-author-role=user>A message already sent</article>')"
+                    }
+                    "generating" => {
+                        "document.querySelector('main').insertAdjacentHTML('beforeend', '<button aria-label=Stop>Stop</button>')"
+                    }
+                    "navigated" => "history.replaceState(null,'','/another-page')",
+                    _ => "void 0",
+                };
+                page.evaluate(mutation)
+                    .await
+                    .expect("change after early inspection");
+                let before: String = page
+                    .evaluate("window.readDraft()")
+                    .await
+                    .expect("before")
+                    .into_value()
+                    .expect("text");
+                let page_before = page.url().await.expect("url");
+                let outcome = manager
+                    .submit_prompt_with_attachment(
+                        "owned",
+                        &url,
+                        prompt,
+                        None,
+                        "recovered",
+                        Some(old),
+                    )
+                    .await
+                    .expect("recovery");
+                let sends: usize = page
+                    .evaluate("window.sends")
+                    .await
+                    .expect("sends")
+                    .into_value()
+                    .expect("count");
+                if case == "unchanged" {
+                    assert!(
+                        matches!(outcome, PromptSubmissionOutcome::Verified(_)),
+                        "owned draft must recover"
+                    );
+                    assert_eq!(sends, 1);
+                } else {
+                    let PromptSubmissionOutcome::Ambiguous(evidence) = outcome else {
+                        panic!("changed recovery must stop: {case}")
+                    };
+                    assert_eq!(
+                        evidence["submission_evidence"], "staged_draft_changed",
+                        "{case}"
+                    );
+                    assert_eq!(sends, 0, "{case}");
+                    assert_eq!(
+                        page.evaluate("window.readDraft()")
+                            .await
+                            .expect("after")
+                            .into_value::<String>()
+                            .expect("text"),
+                        before,
+                        "preserve {case}"
+                    );
+                    assert_eq!(
+                        page.url().await.expect("url"),
+                        page_before,
+                        "do not navigate on {case}"
+                    );
+                }
+            }
+        }
+        manager.close("owned").await.expect("close");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unverified_submission_and_user_drafts_are_never_overwritten() {
+        if crate::system_browser_path().is_none() {
+            return;
+        }
+        let _chrome_guard = crate::browser_surface::chrome_test_guard().await;
+        let temp = tempfile::tempdir().expect("fixture");
+        let manager = BrowserSurfaces::default();
+        let (url, server) = super::super::browser_surface_tests::local_page(
+            "<main><article data-message-author-role='user'>Existing message</article><form onsubmit='event.preventDefault(); window.clicks=(window.clicks||0)+1'><textarea id='prompt-textarea'></textarea><button type='submit'>Send</button></form></main>"
+        ).await;
+        manager
+            .open("draft", &temp.path().join("profile"), &url, 800, 600)
+            .await
+            .expect("open");
+        let page = manager.page("draft").await.expect("page");
+        let first = manager
+            .submit_prompt_with_attachment(
+                "draft",
+                &url,
+                "original unsent batch",
+                None,
+                "first",
+                None,
+            )
+            .await
+            .expect("attempt");
+        assert!(matches!(first, PromptSubmissionOutcome::Ambiguous(_)));
+        for (element, original) in [
+            ("textarea", "original unsent batch"),
+            ("contenteditable", "human draft"),
+        ] {
+            if element == "contenteditable" {
+                page.evaluate("document.querySelector('textarea').outerHTML = '<div id=prompt-textarea contenteditable=true role=textbox style=width:400px;height:60px>human draft</div>'").await.expect("editable draft");
+            }
+            let next = manager
+                .submit_prompt_with_attachment(
+                    "draft",
+                    &url,
+                    "later incoming batch",
+                    None,
+                    "next",
+                    None,
+                )
+                .await
+                .expect("blocked");
+            let PromptSubmissionOutcome::Ambiguous(evidence) = next else {
+                panic!("must block occupied composer")
+            };
+            assert_eq!(evidence["submission_evidence"], "composer_occupied");
+            let snapshot = inspect_submission(&page, original, &[])
+                .await
+                .expect("preserved");
+            assert!(snapshot.composer_exact);
+            assert_eq!(
+                page.evaluate("window.clicks")
+                    .await
+                    .expect("clicks")
+                    .into_value::<usize>()
+                    .expect("number"),
+                1
+            );
+        }
+        page.evaluate("document.querySelector('#prompt-textarea').textContent=''; document.querySelector('form').onsubmit=(e)=>{e.preventDefault(); const input=document.querySelector('#prompt-textarea'); const msg=document.createElement('article'); msg.dataset.messageAuthorRole='user'; msg.textContent=input.textContent; document.querySelector('main').append(msg); input.textContent='';}").await.expect("manual clear");
+        let next = manager
+            .submit_prompt_with_attachment(
+                "draft",
+                &url,
+                "confirmed new batch",
+                None,
+                "confirmed",
+                None,
+            )
+            .await
+            .expect("submit");
+        assert!(matches!(next, PromptSubmissionOutcome::Verified(_)));
+        manager.close("draft").await.expect("close");
+        server.abort();
+    }
 
     #[tokio::test]
     async fn chatgpt_auth_and_landing_inputs_are_not_conversation_composers() {
         if crate::system_browser_path().is_none() {
             return;
         }
+        let _chrome_guard = crate::browser_surface::chrome_test_guard().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let manager = BrowserSurfaces::default();
         let (url, server) = super::super::browser_surface_tests::local_page("<main></main>").await;
@@ -1448,3 +2143,7 @@ mod readiness_tests {
         server.abort();
     }
 }
+
+#[cfg(test)]
+#[path = "grok_tests.rs"]
+mod grok_tests;

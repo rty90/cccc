@@ -334,7 +334,7 @@ fn dispatch_to_inner(
             online += 1;
         }
         let transport = delivery_transport(home, group, actor);
-        if preclaimed && actor.runtime == ActorRuntime::WebModel {
+        if preclaimed && actor.runtime.is_web_model() {
             // Structured Web Model consumers take the durable claim through
             // runtime_wait_next_turn. Do not enqueue the actor on the PTY lane.
             queued += 1;
@@ -444,7 +444,7 @@ pub(super) fn delivery_transport(
 ) -> &'static str {
     if actor.runtime == ActorRuntime::Deepseek {
         "deepseek"
-    } else if actor.runtime == ActorRuntime::WebModel {
+    } else if actor.runtime.is_web_model() {
         web_model_delivery_transport(home, group, actor)
     } else if crate::ops::local_headless::uses_managed_session(actor) {
         "managed_session"
@@ -457,7 +457,7 @@ pub(super) fn delivery_transport(
 
 fn web_model_delivery_transport(
     home: &HomeLayout,
-    group: &GroupDoc,
+    _group: &GroupDoc,
     actor: &Actor,
 ) -> &'static str {
     let setting = |names: &[&str]| {
@@ -475,6 +475,9 @@ fn web_model_delivery_transport(
             })
             .unwrap_or_default()
     };
+    if actor.runtime == ActorRuntime::GrokWebModel {
+        return "web_model_browser";
+    }
     let mode = setting(&["CCCC_WEB_MODEL_DELIVERY_MODE", "CCCC_WEB_MODEL_DELIVERY"]);
     if matches!(
         mode.as_str(),
@@ -494,9 +497,7 @@ fn web_model_delivery_transport(
             .unwrap_or_default()
             .into_iter()
             .find(|connector| {
-                !connector["revoked"].as_bool().unwrap_or(false)
-                    && connector["group_id"].as_str() == Some(group.group_id.as_str())
-                    && connector["actor_id"].as_str() == Some(actor.id.as_str())
+                connector["revoked"] != true && connector["provider"] == "chatgpt_web"
             })
             .and_then(|connector| connector["provider"].as_str().map(str::to_owned))
             .map(|value| value.trim().to_ascii_lowercase())
@@ -684,6 +685,29 @@ fn deferred_retry_delay(failures: u32) -> std::time::Duration {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn configured_browser_transport_does_not_require_a_completed_pairing() {
+        let temp = tempfile::tempdir().expect("temp");
+        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+        home.initialize().expect("init");
+        let groups = GroupStore::new(home.clone()).expect("groups");
+        let group = groups.create("transport", "").expect("group");
+        cccc_core::web_model_connectors::configure(&home).expect("connector");
+        let mut actor = Actor::new("a");
+        actor.runtime = ActorRuntime::WebModel;
+        assert_eq!(
+            web_model_delivery_transport(&home, &group, &actor),
+            "web_model_browser"
+        );
+        actor
+            .env
+            .insert("CCCC_WEB_MODEL_DELIVERY_MODE".into(), "pull".into());
+        assert_eq!(
+            web_model_delivery_transport(&home, &group, &actor),
+            "web_model_pull"
+        );
+    }
+
     use super::*;
     use cccc_core::{GroupStore, ledger};
     use serde_json::json;

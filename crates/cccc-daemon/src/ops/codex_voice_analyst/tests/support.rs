@@ -1,3 +1,4 @@
+use super::super::launch;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -51,6 +52,10 @@ pub(super) async fn fake_app_server() -> (
                         assert_eq!(request["params"]["approvalPolicy"], "never");
                         assert_eq!(request["params"]["sandbox"], "danger-full-access");
                         assert_eq!(request["params"]["historyMode"], "legacy");
+                        assert_eq!(
+                            request["params"]["developerInstructions"],
+                            json!(launch::ANALYST_INSTRUCTIONS)
+                        );
                         assert!(
                             request["params"]["developerInstructions"]
                                 .as_str()
@@ -88,6 +93,12 @@ pub(super) async fn fake_app_server() -> (
                         assert_eq!(request["params"]["approvalPolicy"], "never");
                         assert_eq!(request["params"]["sandbox"], "danger-full-access");
                         assert!(request["params"].get("historyMode").is_none());
+                        // Only the thread id is used; full history can exceed the frame limit.
+                        assert_eq!(request["params"]["excludeTurns"], true);
+                        assert_eq!(
+                            request["params"]["developerInstructions"],
+                            json!(launch::ANALYST_INSTRUCTIONS)
+                        );
                         send_result(&mut socket, id, json!({"thread":{"id":"thread-1"}})).await;
                     }
                     "turn/start" => {

@@ -679,7 +679,6 @@ export function useChatTab({
           setQuotedPresentationRef,
           setQuotedVoiceDocumentRef,
           setMessageMode,
-          setToText,
           upsertDraft,
         },
       );
@@ -687,6 +686,9 @@ export function useChatTab({
 
     const applyImmediateComposerFeedback = (shouldLockBottom: boolean) => {
       clearComposer();
+      // Consume only the draft being sent. Completion may arrive after the
+      // user has composed another draft or switched to another Group.
+      clearDraft(originGroupId);
       if (chatAtBottomRef) chatAtBottomRef.current = shouldLockBottom;
       if (selectedGroupId) {
         setShowScrollButton(selectedGroupId, !shouldLockBottom);
@@ -801,8 +803,6 @@ export function useChatTab({
         }
         completeCanonicalOutboxReconciliation(selectedGroupId, reconciliation);
       }
-      setDestGroupId(selectedGroupId);
-      clearDraft(selectedGroupId);
       if (fileInputRef?.current) fileInputRef.current.value = "";
       if (inChatWindow) {
         closeChatWindow();
@@ -847,7 +847,6 @@ export function useChatTab({
     setQuotedPresentationRef,
     setQuotedVoiceDocumentRef,
     setMessageMode,
-    setToText,
     setDestGroupId,
     upsertDraft,
     clearDraft,

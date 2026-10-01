@@ -5,8 +5,10 @@ import { apiJson, normalizePresentationBrowserSurfaceState, withAuthToken } from
 export type WebModelConnector = {
   connector_id: string;
   kind?: string;
-  group_id: string;
-  actor_id: string;
+  group_id?: string;
+  actor_id?: string;
+  routing_mode?: string;
+  bound_actor_count?: number;
   provider?: string;
   label?: string;
   secret_preview?: string;
@@ -124,6 +126,7 @@ export type WebModelBrowserSession = {
   last_delivery_timeout_seconds?: number;
   last_delivery_id?: string;
   last_delivery_status?: string;
+  can_resume_delivery?: boolean;
   last_submission_evidence?: string;
   last_send_selector?: string;
   last_turn_id?: string;
@@ -194,26 +197,80 @@ export type WebModelBrowserSurfaceResult = {
   browser_session: WebModelBrowserSession;
   browser_surface: PresentationBrowserSurfaceState;
   health_snapshot?: WebModelHealthSnapshot;
+  pairing?: WebModelPairing;
+};
+
+export type WebModelPairing = {
+  state: string;
+  pairing_id?: string;
+  expires_at_ms?: number;
+  url?: string;
+  error_code?: string;
+  actor_enabled?: boolean;
+  previous_url?: string;
 };
 
 export async function fetchWebModelConnectors() {
-  return apiJson<{ connectors: WebModelConnector[] }>("/api/v1/web-model/connectors");
+  return apiJson<{ connectors: WebModelConnector[]; requires_reconfiguration?: boolean }>(
+    "/api/v1/web-model/connectors",
+  );
 }
 
-export async function createWebModelConnector(args: {
-  groupId: string;
-  actorId: string;
-  provider?: string;
-  label?: string;
-}) {
+export type WebModelProvider = "chatgpt_web" | "grok_web";
+
+export async function createWebModelConnector(provider: WebModelProvider = "chatgpt_web") {
   return apiJson<WebModelConnectorCreateResult>("/api/v1/web-model/connectors", {
     method: "POST",
-    body: JSON.stringify({
-      group_id: String(args.groupId || "").trim(),
-      actor_id: String(args.actorId || "").trim(),
-      provider: String(args.provider || "").trim(),
-      label: String(args.label || "").trim(),
-    }),
+    body: JSON.stringify({ provider }),
+  });
+}
+
+export async function changeWebModelPairing(
+  groupId: string,
+  actorId: string,
+  action: "connect" | "cancel" | "remove",
+  pairingId?: string,
+) {
+  return apiJson<WebModelPairing>("/api/v1/web-model/pairing", {
+    method: "POST",
+    body: JSON.stringify({ group_id: groupId, actor_id: actorId, action, pairing_id: pairingId }),
+  });
+}
+
+export async function sharedWebModelBrowser(
+  action: "status" | "open" | "close" = "status",
+  inspect = false,
+  provider: WebModelProvider = "chatgpt_web",
+): Promise<ApiResponse<WebModelBrowserSurfaceResult>> {
+  const path =
+    action === "status"
+      ? `?inspect=${inspect}&provider=${provider}`
+      : `/${action}?provider=${provider}`;
+  const response = await apiJson<WebModelBrowserSurfaceResult>(
+    `/api/v1/web-model/shared-browser${path}`,
+    action === "status" ? undefined : { method: "POST", body: "{}" },
+  );
+  if (!response.ok) return response;
+  return {
+    ok: true,
+    result: {
+      ...response.result,
+      browser_surface: normalizePresentationBrowserSurfaceState(response.result.browser_surface),
+    },
+  };
+}
+
+export function sharedWebModelBrowserWebSocketUrl(provider: WebModelProvider = "chatgpt_web") {
+  const url = new URL(withAuthToken("/api/v1/web-model/shared-browser/ws"), window.location.href);
+  url.searchParams.set("provider", provider);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
+}
+
+export async function reloadWebModelBrowserSession(groupId: string, actorId: string) {
+  return apiJson<WebModelBrowserSurfaceResult>("/api/v1/web-model/browser-session/reload", {
+    method: "POST",
+    body: JSON.stringify({ group_id: groupId, actor_id: actorId }),
   });
 }
 
@@ -272,7 +329,7 @@ export async function fetchWebModelBrowserSession(
   });
   if (typeof options?.inspect === "boolean")
     params.set("inspect", options.inspect ? "true" : "false");
-  return apiJson<{ browser_session: WebModelBrowserSession }>(
+  return apiJson<{ browser_session: WebModelBrowserSession; pairing?: WebModelPairing }>(
     `/api/v1/web-model/browser-session?${params.toString()}`,
   );
 }
@@ -298,6 +355,7 @@ export async function fetchWebModelBrowserSurfaceSession(
       browser_session: resp.result.browser_session || {},
       browser_surface: normalizePresentationBrowserSurfaceState(resp.result.browser_surface),
       health_snapshot: resp.result.health_snapshot,
+      pairing: resp.result.pairing,
     },
   };
 }
@@ -307,7 +365,7 @@ export async function openWebModelBrowserSession(args: {
   actorId: string;
   visibility?: "visible" | "background" | "headless" | string;
 }) {
-  return apiJson<{ browser_session: WebModelBrowserSession }>(
+  return apiJson<{ browser_session: WebModelBrowserSession; pairing?: WebModelPairing }>(
     "/api/v1/web-model/browser-session/open",
     {
       method: "POST",
@@ -349,12 +407,13 @@ export async function openWebModelBrowserSurfaceSession(args: {
       browser_session: resp.result.browser_session || {},
       browser_surface: normalizePresentationBrowserSurfaceState(resp.result.browser_surface),
       health_snapshot: resp.result.health_snapshot,
+      pairing: resp.result.pairing,
     },
   };
 }
 
 export async function closeWebModelBrowserSession(groupId: string, actorId: string) {
-  return apiJson<{ browser_session: WebModelBrowserSession }>(
+  return apiJson<{ browser_session: WebModelBrowserSession; pairing?: WebModelPairing }>(
     "/api/v1/web-model/browser-session/close",
     {
       method: "POST",
@@ -387,6 +446,7 @@ export async function closeWebModelBrowserSurfaceSession(
       browser_session: resp.result.browser_session || {},
       browser_surface: normalizePresentationBrowserSurfaceState(resp.result.browser_surface),
       health_snapshot: resp.result.health_snapshot,
+      pairing: resp.result.pairing,
     },
   };
 }
@@ -418,8 +478,23 @@ export async function bindCurrentWebModelBrowserConversation(args: {
       browser_session: resp.result.browser_session || {},
       browser_surface: normalizePresentationBrowserSurfaceState(resp.result.browser_surface),
       health_snapshot: resp.result.health_snapshot,
+      pairing: resp.result.pairing,
     },
   };
+}
+
+export async function resumeWebModelBrowserDelivery(
+  groupId: string,
+  actorId: string,
+  deliveryId: string,
+) {
+  return apiJson<WebModelBrowserSurfaceResult>(
+    "/api/v1/web-model/browser-session/resume-delivery",
+    {
+      method: "POST",
+      body: JSON.stringify({ group_id: groupId, actor_id: actorId, delivery_id: deliveryId }),
+    },
+  );
 }
 
 export async function updateWebModelDeliveryPreference(args: {
@@ -445,6 +520,7 @@ export async function updateWebModelDeliveryPreference(args: {
       browser_session: resp.result.browser_session || {},
       browser_surface: normalizePresentationBrowserSurfaceState(resp.result.browser_surface),
       health_snapshot: resp.result.health_snapshot,
+      pairing: resp.result.pairing,
     },
   };
 }
@@ -458,4 +534,11 @@ export function getWebModelBrowserSurfaceWebSocketUrl(groupId: string, actorId: 
   return withAuthToken(
     `${protocol}//${window.location.host}/api/v1/web-model/browser-session/ws?${params.toString()}`,
   );
+}
+
+export async function bindGrokBot(groupId: string, actorId: string, url: string) {
+  return apiJson<WebModelBrowserSurfaceResult>("/api/v1/web-model/browser-session/grok-bind", {
+    method: "POST",
+    body: JSON.stringify({ group_id: groupId, actor_id: actorId, url }),
+  });
 }

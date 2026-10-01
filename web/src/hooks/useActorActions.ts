@@ -1,13 +1,12 @@
-import { formatRuntimeCommand } from "../components/modals/runtimeProfileControlsModel";
 // Actor action helpers extracted from ActorTab-related logic.
 import { useCallback, useRef, useState } from "react";
-import { useGroupStore, useUIStore, useModalStore, useInboxStore, useFormStore } from "../stores";
+import { useGroupStore, useUIStore, useModalStore, useInboxStore } from "../stores";
 import * as api from "../services/api";
-import type { Actor, SupportedRuntime } from "../types";
-import { formatCapabilityIdInput } from "../utils/capabilityAutoload";
+import type { Actor } from "../types";
 import { beginActorAction, endActorAction } from "./actorActionInFlight";
 import { resolveActorLifecycleRunning } from "./actorLifecycleAction";
 import { useShallow } from "zustand/react/shallow";
+import i18n from "../i18n";
 
 function latestActorHasResumeFailure(groupId: string, actorId: string): boolean {
   if (useGroupStore.getState().selectedGroupId !== groupId) return false;
@@ -39,24 +38,11 @@ export function useActorActions(groupId: string) {
       showError: s.showError,
     })),
   );
-  const { openModal, setEditingActor } = useModalStore(
-    useShallow((s) => ({ openModal: s.openModal, setEditingActor: s.setEditingActor })),
+  const { openModal, openActorEditor: editActor } = useModalStore(
+    useShallow((s) => ({ openModal: s.openModal, openActorEditor: s.openActorEditor })),
   );
   const { openInbox, setInboxMessages } = useInboxStore(
     useShallow((s) => ({ openInbox: s.openInbox, setInboxMessages: s.setInboxMessages })),
-  );
-  const {
-    setEditActorRuntime,
-    setEditActorCommand,
-    setEditActorTitle,
-    setEditActorCapabilityAutoloadText,
-  } = useFormStore(
-    useShallow((s) => ({
-      setEditActorRuntime: s.setEditActorRuntime,
-      setEditActorCommand: s.setEditActorCommand,
-      setEditActorTitle: s.setEditActorTitle,
-      setEditActorCapabilityAutoloadText: s.setEditActorCapabilityAutoloadText,
-    })),
   );
 
   // Local state: terminal epoch is used to force a terminal re-mount.
@@ -157,32 +143,12 @@ export function useActorActions(groupId: string) {
     ],
   );
 
-  // Edit actor (initialize form state and open modal).
-  const editActor = useCallback(
-    (actor: Actor) => {
-      if (!actor) return;
-      // Initialize form state with actor's current values
-      const runtime = String(actor.runtime || "").trim();
-      setEditActorRuntime((runtime || "codex") as SupportedRuntime);
-      setEditActorCommand(formatRuntimeCommand(actor.command));
-      setEditActorTitle(actor.title || "");
-      setEditActorCapabilityAutoloadText(formatCapabilityIdInput(actor.capability_autoload));
-      setEditingActor(actor);
-    },
-    [
-      setEditingActor,
-      setEditActorRuntime,
-      setEditActorCommand,
-      setEditActorTitle,
-      setEditActorCapabilityAutoloadText,
-    ],
-  );
-
   // Remove actor
   const removeActor = useCallback(
     async (actor: Actor, currentActiveTab: string) => {
       if (!actor || !groupId) return;
-      if (!window.confirm(`Remove actor "${actor.title || actor.id}"?`)) return;
+      if (!window.confirm(i18n.t("actors:removeAgentConfirm", { name: actor.title || actor.id })))
+        return;
       changeActorBusy(groupId, actor.id, 1);
       try {
         const resp = await api.removeActor(groupId, actor.id);

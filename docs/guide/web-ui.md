@@ -23,6 +23,12 @@ The Web UI has these main areas:
 - **Main Area**: Group message history or a paginated terminal view
 - **Input**: Message composer with @mention support
 
+The header uses its existing Group status dot for page-connection health: red
+means disconnected, pulsing amber means reconnecting, and a connected page uses
+the normal Group lifecycle color. The badge text still describes the Group's
+runtime state (for example, Idle); hover or focus exposes connection details.
+No separate connection subtitle or extra dot is shown on desktop or mobile.
+
 ### Group message and terminal views
 
 On desktop, Group editing, search, context and runtime controls stay directly in the header.
@@ -112,6 +118,14 @@ this never stops or restarts Actors. Actors without a TUI use their existing
 runtime activity display, and stopped Actors are explicitly identified. Hidden Group messages do
 not clear the message unread count or count as viewed for Voice suppression. Following a message
 source link returns to Messages and locates the original event.
+
+The Runtime Dock uses a thin violet-to-rose trailing arc for working Actors, rotating gently
+once every 3.6 seconds. Idle Actors have a quieter green ring, stopped Actors gray, and states
+needing attention rose. All rings keep the same size; reduced-motion preferences leave the working arc static. Hover or focus an Actor
+for its name and use the button's description for status details. No duration or progress is
+inferred from status timestamps. The upper-right envelope badge shows unread Mail from the
+daemon, including messages outside the loaded chat history. Browser delivery queues have a
+separate badge at the lower right; both badges appear only when their count is nonzero.
 
 The Runtime Dock's progress bubbles show the latest short live update for each Actor, with up to
 two Actors visible at once. Updates from the same Actor replace the previous excerpt. Open the
@@ -388,6 +402,62 @@ every Group, Actor, task, ledger, or repository operation must resolve and pass 
 Repository modification remains work for the target Group's Foreman or peer rather than work rooted
 in the neutral Voice directory.
 
+An embedding application can provide optional `application_context` in
+`POST /api/v1/codex_voice/calls`: `{ "id": "work:123", "instructions": "Reply in Japanese for the current work." }`.
+The ID is 1–128 ASCII letters, digits, `-`, `_`, `.`, or `:`; instructions are
+nonempty UTF-8 text up to 24 KiB (24,576 bytes), without control characters except newline and tab.
+The same byte limit applies to assistant and persona modes. CCCC rejects oversized text
+instead of truncating it. This is a local input size limit, not a provider token limit;
+token counts vary with the text and model, and provider limits still apply.
+CCCC holds this context unchanged for that call. In assistant mode, it includes the context
+in Realtime startup instructions and every Voice Analyst delegation, and uses a context-aware greeting.
+Replaying the same client session and SDP with different context returns busy rather
+than silently reusing the old call. Omitting the field preserves the global Voice behavior.
+Context is not authentication, a selected CCCC Group, a tool permission, or an isolated
+Analyst session. The host application remains responsible for authorization, business
+records and any session reset needed when changing subjects. Do not include credentials.
+
+For host-defined roleplay, set `application_context.mode` to `"persona"`:
+
+```json
+{
+  "client_session_id": "training-call-1",
+  "offer_sdp": "<WebRTC offer>",
+  "voice": "cove",
+  "application_context": {
+    "id": "training:customer",
+    "mode": "persona",
+    "instructions": "Act as a customer in a Japanese phone-training exercise. Wait for the trainee to speak first."
+  }
+}
+```
+
+The default mode is `"assistant"`; explicitly specifying it behaves like omitting it.
+In persona mode CCCC supplies only the host's instructions, without its assistant role,
+routing instructions or saved expression preferences. It does not resolve, launch, attach
+or reset a Voice Analyst. Incoming delegation events are ignored; Actor/Group notifications
+are neither consumed nor spoken. An existing Analyst and its pending notifications remain
+available for later assistant calls. Authorization checks, the single-call microphone lease,
+heartbeats and disconnect cleanup still apply. The host decides the opening behavior in
+its instructions; CCCC sends only a neutral call-start cue.
+
+Check `GET /api/v1/codex_voice/calls/active` first: `readiness.supported_modes` advertises
+`["assistant", "persona"]`. For persona, check `realtime_credentials_available`; do not
+require `analyst_runtime_available` or configure/reset an Analyst. Credential presence is
+not a guarantee of provider availability. Old servers reject the nested `mode` field;
+never retry a rejected persona request by silently dropping it. Start and active responses
+include `call.mode`; persona has `call.analyst_generation: null` and the start response has
+`analyst: null`. The active endpoint's top-level `analyst` still describes the independently
+managed global Analyst, if one exists. A different mode with the same client session ID
+returns busy, just like a changed context or SDP. Stop the old call before changing modes.
+
+**Experimental provider boundary:** persona startup omits the quicksilver `delegation`
+configuration and CCCC enforces no local delegation execution. Omission must not be treated
+as proof that the upstream model cannot emit delegation events. [Public GPT-Live documentation](https://developers.openai.com/api/docs/guides/live-delegation#configure-responses-delegation) describes
+`delegation: null` as client mode, not as a disabling setting; CCCC's experimental quicksilver
+v2 behavior and both opening directions require real-call acceptance before production use.
+The host instructions do not override the provider's own system rules.
+
 CCCC reads the existing Codex credential only in the native process that creates the provider call;
 the browser receives the WebRTC answer and bounded session events, not the credential. Use the
 console header to mute the microphone, resume browser-blocked playback, or stop the call. The
@@ -451,6 +521,17 @@ CCCC's server log records only bounded code/type/event/parameter identifiers and
 the call generation, not the explanation or conversation content. A stopped
 audio call does not discard the warm Analyst session. Provider diagnostics do
 not retry requests or change the existing disconnect policy.
+
+For startup or later connection failures, keep the CCCC and Runtime versions
+alongside the first server-log diagnostic. Realtime startup reports its stage,
+elapsed time, and available request/TLS categories and OS error code. Managed
+Codex disconnects report the session generation, child-process state and
+WebSocket protocol category. `reset_without_close_handshake` means the local
+transport ended without a WebSocket close handshake; it does not by itself
+identify which process or network component caused the closure. A later
+`analyst_disconnected` Voice-control message can be a consequence of that first
+failure. A still-running child PID does not prove that its session is usable.
+These reports omit raw errors, credentials and conversation content.
 
 Ordinary Codex, Claude Code, Grok, OpenCode, and Kilo Actors use the same runtime-specific managed adapter
 as Voice Analyst and always attach the Runtime's native writable TUI. Actor controllers
@@ -599,6 +680,19 @@ Switch to **Terminals** for the paged multi-Agent view, or open one Agent's
 inspector from its entry. Runtime restart and session-reset actions have different
 semantics; use the action's explanation before discarding a session.
 
+### Claude workspace trust
+
+If managed Claude startup requires workspace trust, the Actor terminal opens
+Claude's own interactive prompt. Only Claude records the approval. Once its
+configuration changes, CCCC can retry the managed launch. Stopping, removing, or
+restarting the Actor cancels the pending recovery; an in-flight launch is cleaned
+up instead of attaching after stop. Group shutdown also includes pending trust
+prompts that do not yet have a managed session.
+
+Trust-record monitoring uses the configured Claude directory and the home
+directory, falling back from `HOME` to `USERPROFILE` on Windows in both Actor
+environment overrides and the inherited environment.
+
 ## Messaging
 
 ### Sending Messages
@@ -627,9 +721,12 @@ headings use smaller phone sizes, and document content scrolls within the availa
 space. Wider layouts use
 the existing workspace arrangement.
 
-Recipient chips are one-shot: a successful send clears the selection, and switching Groups does not
-restore a previous manual recipient. Unsent message text and attachments still remain as per-Group
-drafts.
+Recipient selections are remembered separately for each Group while the Web page remains open.
+Sending a normal message keeps the selection; switching Groups restores that Group's selection
+and unsent draft. Use Clear recipients to return to the Group's default routing.
+Reply recipients are temporary: canceling or sending a reply restores the normal selection.
+A temporary cross-group destination does not replace the local Group's remembered recipients;
+after sending, routing returns to the local Group. Reloading the page clears this in-memory state.
 
 Broadcasts (`@all` and `@peers`, including the Group's default broadcast target) leave
 disabled Actors stopped and deliver to enabled recipients. To wake a disabled Actor,

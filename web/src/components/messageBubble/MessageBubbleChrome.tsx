@@ -4,6 +4,7 @@ import type { ChatMessageData, LedgerEvent } from "../../types";
 import { classNames } from "../../utils/classNames";
 import type { WebModelDeliveryStatus } from "../../utils/webModelDeliveryStatus";
 import { ActorAvatar } from "../ActorAvatar";
+import { WebModelDeliveryRecovery } from "../webModel/WebModelDeliveryRecovery";
 
 export function MessageMetadataHeader({
   mobile,
@@ -275,6 +276,17 @@ export function MessageFooter({
             ) : null}
             <span className="truncate">{deliveryLabel}</span>
           </span>
+        ) : null}
+        {webModelDeliveryStatus ? (
+          <WebModelDeliveryRecovery
+            groupId={event.group_id}
+            status={webModelDeliveryStatus}
+            actorLabel={
+              displayNameMap.get(webModelDeliveryStatus.actorId) || webModelDeliveryStatus.actorId
+            }
+            isDark={isDark}
+            readOnly={readOnly}
+          />
         ) : null}
         {obligationSummary ? (
           readOnly ? (

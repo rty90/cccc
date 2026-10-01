@@ -2,7 +2,7 @@ use super::operation::{
     Operation,
     Policy::{Read, Write},
 };
-use cccc_contracts::{Actor, ActorRuntime, DaemonRequest, Event};
+use cccc_contracts::{Actor, DaemonRequest, Event};
 use cccc_core::actors;
 use cccc_core::ledger;
 use cccc_core::permissions::{self, ActorAction};
@@ -86,9 +86,6 @@ fn add(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
             ));
         }
         actor = actor_profile_runtime::link(home, &actor, &actor.profile_id)?;
-    }
-    if actor.runtime == ActorRuntime::WebModel {
-        require_single_web_model_actor(home, &group_id, &actor.id)?;
     }
     actor.normalize_runtime_constraints();
     actor.default_scope_key = normalize_default_scope_key(&group, &actor.default_scope_key)?;
@@ -219,13 +216,6 @@ fn update(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
     };
     final_preview.role = None;
     final_preview.normalize_runtime_constraints();
-    // The scan only rejects; re-running it for an actor that already holds
-    // the slot cannot change the outcome.
-    if original_actor.runtime != ActorRuntime::WebModel
-        && final_preview.runtime == ActorRuntime::WebModel
-    {
-        require_single_web_model_actor(home, &group_id, &actor_id)?;
-    }
     let original_secrets = if profile_action == "convert_to_custom" {
         Some(actor_secrets::values(home, &group_id, &actor_id)?)
     } else {
@@ -348,6 +338,25 @@ fn update(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
             effect = ActorUpdateEffect::Started;
         }
     }
+    let retired_routes =
+        if original_actor.runtime.web_model_provider() != actor.runtime.web_model_provider() {
+            match web_model_connectors::retire_actor(home, &group_id, &actor_id) {
+                Ok(routes) => routes,
+                Err(error) => {
+                    return Err(rollback_actor_update(
+                        home,
+                        &group,
+                        &original_actor,
+                        original_secrets.as_ref(),
+                        Some(&updated_group),
+                        effect,
+                        OpError::io(error),
+                    ));
+                }
+            }
+        } else {
+            Vec::new()
+        };
     let event = match append_event(
         home,
         &group_id,
@@ -356,7 +365,12 @@ fn update(home: &HomeLayout, request: &DaemonRequest) -> OpResult {
         json!({"actor_id": actor_id, "patch": patch}),
     ) {
         Ok(event) => event,
-        Err(error) => {
+        Err(mut error) => {
+            if let Err(restore_error) = web_model_connectors::restore(home, &retired_routes) {
+                error
+                    .message
+                    .push_str(&format!("; route rollback failed: {restore_error}"));
+            }
             return Err(rollback_actor_update(
                 home,
                 &group,
@@ -431,6 +445,7 @@ fn rollback_actor_update(
     if matches!(effect, ActorUpdateEffect::Stopped)
         && let Err(error) =
             actor_runtime::apply(home, original_group, &original_actor.id, "actor.start")
+        && !actor_runtime::same_untrusted_workspace(&original, &error)
     {
         failures.push(format!(
             "restart previously running actor: {}",
@@ -912,19 +927,6 @@ fn normalize_default_scope_key(group: &GroupDoc, reference: &str) -> Result<Stri
                 format!("scope not attached: {reference}"),
             )
         })
-}
-
-fn require_single_web_model_actor(
-    home: &HomeLayout,
-    group_id: &str,
-    actor_id: &str,
-) -> Result<(), OpError> {
-    match actors::web_model_singleton_conflict(&store(home)?, Some((group_id, actor_id)))
-        .map_err(OpError::io)?
-    {
-        Some(message) => Err(OpError::new("chatgpt_web_model_singleton", message)),
-        None => Ok(()),
-    }
 }
 
 fn private_env_arg(request: &DaemonRequest) -> Result<Option<BTreeMap<String, String>>, OpError> {

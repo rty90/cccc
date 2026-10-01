@@ -11,11 +11,12 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
-cccc-client = { package = "cccc-pair-client", version = "=0.4.40", path = "../cccc-client" }
-cccc-contracts = { package = "cccc-pair-contracts", version = "=0.4.40", path = "../cccc-contracts" }
-cccc-core = { package = "cccc-pair-core", version = "=0.4.40", path = "../cccc-core" }
-cccc-runtime = { package = "cccc-pair-runtime", version = "=0.4.40", path = "../cccc-runtime" }
+cccc-client = { package = "cccc-pair-client", version = "=0.4.41", path = "../cccc-client" }
+cccc-contracts = { package = "cccc-pair-contracts", version = "=0.4.41", path = "../cccc-contracts" }
+cccc-core = { package = "cccc-pair-core", version = "=0.4.41", path = "../cccc-core" }
+cccc-runtime = { package = "cccc-pair-runtime", version = "=0.4.41", path = "../cccc-runtime" }
 chrono.workspace = true
+globset.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 serde.workspace = true
@@ -25,10 +26,11 @@ sha2.workspace = true
 shell-words.workspace = true
 tokio.workspace = true
 uuid.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
-cccc-daemon = { package = "cccc-pair-daemon", version = "=0.4.40", path = "../cccc-daemon" }
+cccc-daemon = { package = "cccc-pair-daemon", version = "=0.4.41", path = "../cccc-daemon" }
 tempfile.workspace = true
 
 [lints]

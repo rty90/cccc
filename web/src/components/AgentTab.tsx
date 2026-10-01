@@ -1,3 +1,4 @@
+import { isWebModelRuntime } from "../types";
 import { useTerminalTitlePaging } from "./agentTerminal/useTerminalTitlePaging";
 import {
   useCallback,
@@ -159,10 +160,7 @@ export function AgentTab({
   });
   const effectiveRunner = getEffectiveActorRunner(actor);
   const isHeadless = effectiveRunner === "headless";
-  const isWebModel =
-    String(actor.runtime || "")
-      .trim()
-      .toLowerCase() === "web_model";
+  const isWebModel = isWebModelRuntime(actor.runtime);
   const canStartNewSession = actorSupportsNewSession(actor.runtime);
   const hasRuntimeResumeFailure = actorHasRuntimeResumeFailure(actor);
   const runtimeResumeError = String(actor.runtime_session_last_resume_error || "").trim();
@@ -1204,12 +1202,12 @@ export function AgentTab({
           </button>
           <button
             onClick={onRemove}
-            disabled={isBusy || isRunning}
+            disabled={isBusy}
             className={classNames(
               "flex items-center gap-1.5 rounded-xl px-3 py-2.5 text-sm disabled:opacity-50 min-h-[44px] transition-colors flex-shrink-0 whitespace-nowrap",
               "text-rose-600 hover:bg-rose-500/10 dark:text-rose-400",
             )}
-            title={isRunning ? t("stopBeforeRemoving") : t("removeAgent")}
+            title={t("removeAgent")}
             aria-label={t("removeAgent")}
           >
             <TrashIcon size={16} />

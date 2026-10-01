@@ -2,6 +2,19 @@ use super::*;
 use anyhow::{Result, anyhow};
 
 impl ActiveSession {
+    pub(super) fn matches_start(
+        &self,
+        client_session_id: &str,
+        offer_digest: &[u8; 32],
+        voice: &str,
+        context: Option<&cccc_contracts::codex_voice::VoiceApplicationContext>,
+    ) -> bool {
+        self.client_session_id == client_session_id
+            && &self.offer_digest == offer_digest
+            && self.voice == voice
+            && self.call.application_context() == context
+    }
+
     pub(crate) fn notification_status(&self) -> tokio::sync::watch::Receiver<bool> {
         self.notification_paused.subscribe()
     }
@@ -10,14 +23,18 @@ impl ActiveSession {
         &self.call
     }
 
-    pub(crate) fn analyst(&self) -> &Arc<AnalystRuntime> {
-        &self.analyst
+    pub(crate) fn analyst(&self) -> Option<&Arc<AnalystRuntime>> {
+        self.analyst.as_ref()
     }
 
     pub(crate) fn info(&self) -> SessionInfo {
         SessionInfo {
             generation: self.call.generation().to_owned(),
-            analyst_generation: self.analyst.analyst.generation().to_owned(),
+            analyst_generation: self
+                .analyst
+                .as_ref()
+                .map(|analyst| analyst.analyst.generation().to_owned()),
+            mode: self.call.mode(),
             voice: self.voice.clone(),
             connected: self.connection_state.load(Ordering::Acquire) == CONNECTION_ATTACHED,
         }

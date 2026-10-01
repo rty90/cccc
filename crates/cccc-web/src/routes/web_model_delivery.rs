@@ -10,12 +10,12 @@ use crate::AppState;
 use crate::api::ApiError;
 use crate::browser_surface::{
     BOUND_CONVERSATION_ERROR_MARKER, PromptSubmissionOutcome, conversation_url_for_target,
-    is_chatgpt_url, stored_verified_submission_evidence,
+    is_chatgpt_url,
 };
 
 use super::web_model_browser::key;
 use super::web_model_delivery_completion::{
-    args, call as daemon_call, complete_args, reconcile, record_delivery,
+    args, call as daemon_call, complete_args, reconcile, record_delivery, try_record_delivery,
 };
 use super::web_model_delivery_state::{record_connector, target as load_target, update_target};
 
@@ -231,9 +231,14 @@ pub(super) async fn deliver_pending(
     deliver_once(state, group_id, actor_id, &session_key).await
 }
 
-struct SessionGuard {
+pub(super) struct SessionGuard {
     sessions: &'static Mutex<HashSet<String>>,
     key: String,
+}
+
+pub(super) fn control_guard(group: &str, actor: &str) -> Result<SessionGuard, ApiError> {
+    SessionGuard::acquire(&IN_FLIGHT, key(group, actor))
+        .ok_or_else(|| ApiError::bad("Actor browser delivery is busy; retry after it completes"))
 }
 
 impl SessionGuard {
@@ -243,7 +248,9 @@ impl SessionGuard {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(key.clone());
-        inserted.then_some(Self { sessions, key })
+        // Construct only for the winner: dropping a rejected guard would
+        // otherwise remove the registration still owned by the active task.
+        inserted.then(|| Self { sessions, key })
     }
 }
 
@@ -336,12 +343,12 @@ async fn deliver_once(
         if recover_verified_ambiguous_submission(state, group_id, actor_id, &target).await? {
             return Ok(DeliveryOutcome::Submitted);
         }
-        // The attempted turn was already committed to preserve at-most-once delivery. A known
-        // conversation target can therefore continue with later turns without retrying it. A new
-        // chat must remain fenced until its conversation URL can be recovered.
+        // Terminalizing the attempted turn prevents replay; it does not prove
+        // that the browser composer is free for another delivery.
         if target["kind"] == "new_chat" {
             return resolve_pending_new_chat(state, group_id, actor_id, session_key, &target).await;
         }
+        return Ok(DeliveryOutcome::Ambiguous);
     }
     if is_legacy_pending_delivery(&target) {
         if state
@@ -382,6 +389,7 @@ async fn deliver_once(
                 )
                 .await;
             }
+            return Ok(DeliveryOutcome::Ambiguous);
         } else {
             if reconciled["kind"] == "new_chat" {
                 return resolve_pending_new_chat(
@@ -411,8 +419,48 @@ async fn deliver_once(
         .prompt_readiness(session_key)
         .await
         .map_err(|error| ApiError::bad(error.to_string()))?;
-    if readiness["ready"] != true {
+    if readiness["ready"] != true || readiness["running"] == true {
+        // Leave queued work unclaimed while the provider is still responding.
         return Ok(DeliveryOutcome::Idle);
+    }
+    if (readiness["composer_chars"].as_u64().unwrap_or(0) > 0
+        || readiness["composer_has_attachments"] == true)
+        && target["last_delivery_status"] != "deferred"
+    {
+        if target["last_delivery_status"] != "draft_blocked" {
+            update_target(
+                state,
+                group_id,
+                actor_id,
+                json!({
+                    "last_delivery_status":"draft_blocked",
+                    "last_error":"The conversation has an unsent draft. Send or clear it in the browser; queued CCCC messages will then continue."
+                }),
+            )?;
+        }
+        return Ok(DeliveryOutcome::Idle);
+    }
+    if target["last_delivery_status"] == "draft_blocked" {
+        update_target(
+            state,
+            group_id,
+            actor_id,
+            json!({"last_delivery_status":"resolved","last_error":""}),
+        )?;
+    }
+    if cccc_core::web_model_connectors::grok_bot_url(target_url).is_ok()
+        && !crate::browser_surface::conversation_target_matches(
+            target_url,
+            readiness["tab_url"].as_str().unwrap_or_default(),
+        )
+    {
+        update_target(
+            state,
+            group_id,
+            actor_id,
+            json!({"last_delivery_status":"failed","last_error":"Saved Grok Bot is not open in this Actor window"}),
+        )?;
+        return Ok(DeliveryOutcome::Stopped);
     }
     if target["kind"] == "existing_chat" && is_chatgpt_url(target_url) {
         if let Err(error) = state
@@ -470,6 +518,7 @@ async fn deliver_once(
         &delivery_id,
         &event_label,
     )?;
+    let browser_prompt = with_actor_credential(state, group_id, actor_id, browser_prompt)?;
     let attachment = compatibility_attachment(state, turn, &delivery_id)?;
     update_target(
         state,
@@ -497,6 +546,7 @@ async fn deliver_once(
             &browser_prompt,
             attachment.as_deref(),
             &delivery_id,
+            None,
         )
         .await;
     let browser = match submitted {
@@ -513,7 +563,11 @@ async fn deliver_once(
             return Ok(DeliveryOutcome::Deferred(turn_id.to_owned()));
         }
         Ok(PromptSubmissionOutcome::Ambiguous(browser)) => {
-            let message = "browser submission was attempted but could not be verified; this message will not be redelivered automatically";
+            let message = if browser["submission_evidence"] == "composer_occupied" {
+                "The conversation has a different unsent draft; CCCC preserved it without sending this batch. Check the browser and resume delivery explicitly; this batch will not be replayed automatically."
+            } else {
+                "browser submission was attempted but could not be verified; delivery is paused until you check the conversation and resume explicitly. This message will not be redelivered automatically"
+            };
             return complete_ambiguous_attempt(
                 state,
                 group_id,
@@ -817,9 +871,81 @@ async fn complete_ambiguous_attempt(
         actor_id,
         turn_id = attempt.turn_id,
         completion_recorded = completion.is_ok(),
+        evidence = browser["submission_evidence"].as_str().unwrap_or("unknown"),
+        composer_chars = browser["observed"]["composer_chars"].as_u64(),
+        composer_exact = browser["observed"]["composer_exact"].as_bool(),
         "Web-model browser submission could not be verified; the attempted message will not be redelivered automatically"
     );
     Ok(DeliveryOutcome::Ambiguous)
+}
+
+/// User acknowledgement releases the composer fence, not the old turn's
+/// at-most-once receipt. No browser click, replay, or target reset occurs here.
+pub(super) async fn resume_after_review(
+    state: &AppState,
+    group_id: &str,
+    actor_id: &str,
+    delivery_id: &str,
+) -> Result<(), ApiError> {
+    let session_key = key(group_id, actor_id);
+    let _guard = SessionGuard::acquire(&IN_FLIGHT, session_key.clone())
+        .ok_or_else(|| ApiError::bad("Delivery is busy; try again after it settles."))?;
+    let target = load_target(state, group_id, actor_id)?;
+    if target["kind"] != "existing_chat" || target["last_delivery_status"] != "submission_ambiguous"
+    {
+        return Err(ApiError::bad(
+            "Only an unresolved delivery to an existing chat can be resumed. Refresh its status first.",
+        ));
+    }
+    if delivery_id.is_empty() || target["last_delivery_id"].as_str() != Some(delivery_id) {
+        return Err(ApiError::bad(
+            "The pending delivery changed. Refresh and check the conversation again before resuming.",
+        ));
+    }
+    let readiness = state
+        .browser_surfaces
+        .prompt_readiness(&session_key)
+        .await
+        .map_err(|error| ApiError::bad(error.to_string()))?;
+    let expected = target["url"].as_str().unwrap_or("");
+    let current = readiness["tab_url"].as_str().unwrap_or("");
+    let matches = if is_chatgpt_url(expected)
+        || cccc_core::web_model_connectors::grok_bot_url(expected).is_ok()
+    {
+        crate::browser_surface::conversation_target_matches(expected, current)
+    } else {
+        !expected.is_empty() && expected == current
+    };
+    if !matches || readiness["ready"] != true {
+        return Err(ApiError::bad(
+            "Open the saved conversation and finish signing in before resuming.",
+        ));
+    }
+    if readiness["composer_chars"].as_u64().unwrap_or(0) > 0
+        || readiness["composer_has_attachments"] == true
+        || readiness["running"] == true
+    {
+        return Err(ApiError::bad(
+            "Check the conversation, send or clear its unsent draft, and wait for its response to finish before resuming.",
+        ));
+    }
+    // Browser inspection awaits I/O; another settings window may have rebound
+    // the actor while it was running. Do not release a newer target's fence.
+    if load_target(state, group_id, actor_id)? != target {
+        return Err(ApiError::bad(
+            "The delivery target changed. Refresh and check it again.",
+        ));
+    }
+    update_target(
+        state,
+        group_id,
+        actor_id,
+        json!({
+            "last_delivery_status":"resolved", "last_error":"",
+            "last_delivery_reviewed_at":cccc_contracts::utc_now()
+        }),
+    )?;
+    Ok(())
 }
 
 async fn recover_verified_ambiguous_submission(
@@ -828,12 +954,40 @@ async fn recover_verified_ambiguous_submission(
     actor_id: &str,
     target: &Value,
 ) -> Result<bool, ApiError> {
-    let submission = &target["last_submission_evidence"];
-    let Some(submission_evidence) = stored_verified_submission_evidence(submission) else {
+    if target["kind"] != "existing_chat" {
+        return Ok(false);
+    }
+    let (Some(turn_id), Some(delivery_id), Some(event_ids)) = (
+        target["last_delivery_turn_id"].as_str(),
+        target["last_delivery_id"].as_str(),
+        target["last_delivery_event_ids"].as_array(),
+    ) else {
         return Ok(false);
     };
-    let turn_id = required(target, "last_delivery_turn_id")?;
-    let delivery_id = required(target, "last_delivery_id")?;
+    if turn_id.is_empty() || delivery_id.is_empty() || event_ids.is_empty() {
+        return Ok(false);
+    }
+    let event_label = event_ids
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join(",");
+    let target_url = target["url"].as_str().unwrap_or("");
+    // Stored DOM counts (or a prior assistant quote) cannot authorize recovery.
+    // Re-observe the exact batch in a user message on the owned bound page.
+    let Some(submission) = state
+        .browser_surfaces
+        .inspect_delivery_receipt(
+            &key(group_id, actor_id),
+            target_url,
+            &browser_batch_marker(actor_id, delivery_id, &event_label),
+        )
+        .await
+        .map_err(|error| ApiError::bad(error.to_string()))?
+    else {
+        return Ok(false);
+    };
+    let submission_evidence = "message_echo";
     let mut recover_args = args(group_id, actor_id);
     recover_args.insert(
         "event_ids".into(),
@@ -841,16 +995,8 @@ async fn recover_verified_ambiguous_submission(
     );
     let recovered = daemon_call(state, "web_model_runtime_recover_turn", recover_args).await?;
     let turn = &recovered["turn"];
-    let target_url = target["url"].as_str().unwrap_or("");
     let observed_url = submission["observed"]["url"].as_str().unwrap_or("");
     let conversation_url = conversation_url_for_target(target_url, observed_url);
-    let event_label = target["last_delivery_event_ids"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect::<Vec<_>>()
-        .join(",");
     let (_, bootstrap_seed) = build_browser_prompt(
         turn,
         target,
@@ -859,6 +1005,27 @@ async fn recover_verified_ambiguous_submission(
         delivery_id,
         &event_label,
     )?;
+    // Inspection and daemon reads await I/O. A stopped/rebound Actor must not
+    // inherit evidence from a window or delivery it no longer owns.
+    if !super::web_model_supervisor::actor_delivery_enabled(state, group_id, actor_id)
+        || load_target(state, group_id, actor_id)? != *target
+    {
+        return Ok(false);
+    }
+    // A later manual send supplies new handoff evidence. Append it before
+    // releasing the fence, so the message badge and daemon agree with the queue.
+    try_record_delivery(
+        state,
+        group_id,
+        actor_id,
+        turn_id,
+        target["last_delivery_event_ids"].clone(),
+        delivery_id,
+        "submitted",
+        submission_evidence,
+        json!({"target_url":target_url}),
+    )
+    .await?;
     if let Some(seed) = &bootstrap_seed {
         mark_bootstrap_seed_delivered(
             state,
@@ -868,12 +1035,6 @@ async fn recover_verified_ambiguous_submission(
             seed,
         )?;
     }
-    if target["kind"] == "new_chat"
-        && let Some(conversation_url) = &conversation_url
-    {
-        bind_new_chat_target(state, group_id, actor_id, conversation_url)?;
-    }
-    let pending_new_chat_bind = target["kind"] == "new_chat" && conversation_url.is_none();
     let mut recovered_submission = submission.clone();
     if let Some(object) = recovered_submission.as_object_mut() {
         object.insert("submitted".into(), json!(true));
@@ -885,10 +1046,10 @@ async fn recover_verified_ambiguous_submission(
         group_id,
         actor_id,
         json!({
-            "last_delivery_status":if pending_new_chat_bind {"pending_new_chat_bind"} else {"submitted"},
+            "last_delivery_status":"submitted",
             "last_delivery_at":cccc_contracts::utc_now(),
             "last_submission_evidence":recovered_submission,
-            "last_error":if pending_new_chat_bind {"conversation_url_pending"} else {""}
+            "last_error":""
         }),
     )?;
     record_connector(state, group_id, actor_id, "submitted", turn_id, "")?;
@@ -898,7 +1059,7 @@ async fn recover_verified_ambiguous_submission(
         turn_id,
         submission_evidence,
         conversation_bound = conversation_url.is_some(),
-        "Recovered a browser submission from persisted direct evidence"
+        "Recovered a browser submission from direct delivery evidence"
     );
     Ok(true)
 }
@@ -999,6 +1160,7 @@ async fn recover_legacy_pending_delivery(
             &browser_prompt,
             attachment.as_deref(),
             &delivery_id,
+            Some(&old_prompt),
         )
         .await
     {
@@ -1018,7 +1180,11 @@ async fn recover_legacy_pending_delivery(
             return Ok(DeliveryOutcome::Deferred(turn_id.to_owned()));
         }
         Ok(PromptSubmissionOutcome::Ambiguous(browser)) => {
-            let message = "legacy recovery attempted submission but could not verify whether ChatGPT accepted it; automatic redelivery is paused";
+            let message = if browser["submission_evidence"] == "staged_draft_changed" {
+                "the verified legacy draft or page changed before recovery; CCCC preserved it without submitting, and automatic recovery is paused"
+            } else {
+                "legacy recovery attempted submission but could not verify whether ChatGPT accepted it; automatic redelivery is paused"
+            };
             update_target(
                 state,
                 group_id,
@@ -1101,6 +1267,10 @@ fn browser_delivery_id(actor_id: &str, turn_id: &str) -> String {
     format!("webdelivery:{actor_id}:{turn_key}")
 }
 
+fn browser_batch_marker(actor_id: &str, delivery_id: &str, event_label: &str) -> String {
+    format!("[cccc] Browser batch {delivery_id} events={event_label} actor={actor_id}")
+}
+
 fn browser_wait_args(group_id: &str, actor_id: &str) -> serde_json::Map<String, Value> {
     let mut request = args(group_id, actor_id);
     request.insert("transport".into(), json!("web_model_browser"));
@@ -1142,9 +1312,33 @@ fn build_browser_prompt(
     };
     Ok((
         format!(
-            "{setup}[cccc] Browser batch {delivery_id} events={event_label} actor={actor_id}\n{compatibility_note}{prompt}"
+            "{setup}{}\n{compatibility_note}{prompt}",
+            browser_batch_marker(actor_id, delivery_id, event_label)
         ),
         seed,
+    ))
+}
+
+fn with_actor_credential(
+    state: &AppState,
+    group: &str,
+    actor: &str,
+    prompt: String,
+) -> Result<String, ApiError> {
+    let Some(binding) = super::web_model_connector_store::for_actor(state, group, actor) else {
+        return Err(ApiError::bad("Actor binding changed before delivery"));
+    };
+    if binding["provider"] != "grok_web" {
+        return Ok(prompt);
+    }
+    let connector = super::web_model_connector_store::load(state)?
+        .into_iter()
+        .find(|c| c["connector_id"] == binding["connector_id"])
+        .ok_or_else(|| ApiError::bad("Grok connector unavailable"))?;
+    let token = cccc_core::web_model_connectors::grok_token(&connector, &binding)
+        .map_err(|e| ApiError::bad(e.to_string()))?;
+    Ok(format!(
+        "[CCCC] For CCCC connector tools in this task, include actor_token=\"{token}\" in every top-level call. This credential selects this Actor's configured permissions. Nested calls inside cccc_code_exec inherit that context. Keep it out of replies, files and commands.\n\n{prompt}"
     ))
 }
 
@@ -1344,11 +1538,158 @@ mod login_tests {
     use cccc_contracts::{Actor, ActorRuntime, RunnerKind};
     use cccc_core::{GroupStore, HomeLayout};
 
+    pub(super) fn pair_fixture(state: &AppState, group: &str, url: &str) {
+        let c =
+            cccc_core::web_model_connectors::configure(&state.home).expect("valid test fixture");
+        cccc_core::web_model_connectors::update_connector(&state.home,c["connector"]["connector_id"].as_str().expect("valid test fixture"),|c| {
+            c["bindings"][json!([group,"browser-test"]).to_string()]=json!({"group_id":group,"actor_id":"browser-test","generation":"fixture-generation","state":"bound","revision":"fixture","url":url});
+        }).expect("valid test fixture");
+    }
     #[tokio::test]
-    async fn login_and_verification_do_not_claim_delivery_or_leave_the_page() {
+    async fn existing_chat_requires_review_and_empty_composer_before_resuming() {
         if crate::system_browser_path().is_none() {
             return;
         }
+        let _chrome_guard = crate::browser_surface::chrome_test_guard().await;
+        let temp = tempfile::tempdir().expect("fixture");
+        let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
+        let store = GroupStore::new(home.clone()).expect("store");
+        let mut group = store.create("draft", "").expect("group");
+        group.extra.insert(
+            super::super::web_model_browser::TARGETS_KEY.into(),
+            json!({}),
+        );
+        group.running = true;
+        let mut actor = Actor::new("browser-test");
+        actor.runtime = ActorRuntime::WebModel;
+        actor.runner = RunnerKind::Headless;
+        actor
+            .env
+            .insert("CCCC_WEB_MODEL_DELIVERY_MODE".into(), "browser".into());
+        actor.generation = "fixture-generation".into();
+        group.actors.push(actor);
+        store.save(&group).expect("group");
+        let shutdown = tokio::sync::broadcast::channel(1).0;
+        let (_, _, surfaces, state) = crate::app_with_shutdown(
+            home,
+            shutdown.clone(),
+            crate::WebMode::Normal,
+            None,
+            crate::LiveBinding {
+                host: "127.0.0.1".into(),
+                port: 0,
+            },
+            "draft-test".into(),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listen");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/", get(||async {Html("<textarea id='prompt-textarea' autofocus style='width:300px;height:100px'>old unsent draft</textarea><button onclick=\"document.querySelector('textarea').value=''\" style='position:fixed;left:400px;top:20px;width:150px;height:60px'>Clear draft</button>")}))).await.expect("serve");
+        });
+        let url = format!("{base}/");
+        let session_key = key(&group.group_id, "browser-test");
+        surfaces
+            .open(&session_key, &temp.path().join("profile"), &url, 800, 600)
+            .await
+            .expect("open");
+        let target = json!({"kind":"existing_chat","url":url,"last_delivery_status":"submission_ambiguous",
+            "last_delivery_id":"original-receipt","bootstrap_seed_digest":"keep-bootstrap","last_submission_evidence":{"submission_evidence":"interrupted_dispatch"}});
+        pair_fixture(
+            &state,
+            &group.group_id,
+            target["url"].as_str().expect("valid test fixture"),
+        );
+        update_target(&state, &group.group_id, "browser-test", target.clone()).expect("target");
+        let target =
+            load_target(&state, &group.group_id, "browser-test").expect("effective target");
+        for _ in 0..2 {
+            assert!(matches!(
+                deliver_pending(&state, &group.group_id, "browser-test")
+                    .await
+                    .expect("fenced before IPC"),
+                DeliveryOutcome::Ambiguous
+            ));
+            assert!(
+                resume_after_review(&state, &group.group_id, "browser-test", "original-receipt")
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                load_target(&state, &group.group_id, "browser-test").expect("target"),
+                target
+            );
+        }
+        surfaces
+            .command(&session_key, &json!({"t":"click","x":450,"y":45}))
+            .await
+            .expect("user clears draft");
+        // An empty composer alone does not release an uncertain previous turn.
+        assert!(matches!(
+            deliver_pending(&state, &group.group_id, "browser-test")
+                .await
+                .expect("still fenced"),
+            DeliveryOutcome::Ambiguous
+        ));
+        assert!(
+            resume_after_review(&state, &group.group_id, "browser-test", "stale-receipt")
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            load_target(&state, &group.group_id, "browser-test").expect("unchanged"),
+            target
+        );
+        resume_after_review(&state, &group.group_id, "browser-test", "original-receipt")
+            .await
+            .expect("explicit review");
+        let resolved = load_target(&state, &group.group_id, "browser-test").expect("resolved");
+        assert_eq!(resolved["last_delivery_status"], "resolved");
+        assert_eq!(resolved["last_delivery_id"], "original-receipt");
+        assert_eq!(resolved["bootstrap_seed_digest"], "keep-bootstrap");
+        // No daemon is running: reaching IPC proves that only new queued work
+        // is requested, without reconstructing/replaying the ambiguous batch.
+        assert!(
+            deliver_pending(&state, &group.group_id, "browser-test")
+                .await
+                .is_err()
+        );
+        surfaces
+            .command(
+                &session_key,
+                &json!({"t":"navigate","url":format!("{url}?fresh-draft")}),
+            )
+            .await
+            .expect("another draft");
+        update_target(
+            &state,
+            &group.group_id,
+            "browser-test",
+            json!({"last_delivery_status":"submitted"}),
+        )
+        .expect("prior success");
+        assert!(matches!(
+            deliver_pending(&state, &group.group_id, "browser-test")
+                .await
+                .expect("draft blocks before IPC"),
+            DeliveryOutcome::Idle
+        ));
+        assert_eq!(
+            load_target(&state, &group.group_id, "browser-test").expect("blocked")["last_delivery_status"],
+            "draft_blocked"
+        );
+        surfaces.close(&session_key).await.expect("close");
+        let _ = shutdown.send(());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn login_verification_and_generation_do_not_claim_delivery_or_leave_the_page() {
+        if crate::system_browser_path().is_none() {
+            return;
+        }
+        let _chrome_guard = crate::browser_surface::chrome_test_guard().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let home = HomeLayout::from_path(temp.path().join("home")).expect("home");
         let store = GroupStore::new(home.clone()).expect("store");
@@ -1360,6 +1701,7 @@ mod login_tests {
         actor
             .env
             .insert("CCCC_WEB_MODEL_DELIVERY_MODE".into(), "browser".into());
+        actor.generation = "fixture-generation".into();
         group.actors.push(actor);
         group.extra.insert(
             super::super::web_model_browser::TARGETS_KEY.into(),
@@ -1386,12 +1728,20 @@ mod login_tests {
             axum::serve(listener, Router::new()
                 .route("/login", get(|| async { Html("<button data-testid='login-button'>Log in</button><textarea id='prompt-textarea'></textarea>") }))
                 .route("/verify", get(|| async { Html("<script type='application/json' src='/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1'></script><textarea id='prompt-textarea'></textarea>") }))
+                .route("/working", get(|| async { Html("<textarea id='prompt-textarea'></textarea><button aria-label='Stop generating'>Stop</button>") }))
                 .route("/ready", get(|| async { Html("<textarea id='prompt-textarea'></textarea>") }))
             ).await.expect("serve");
         });
         let key = key(&group.group_id, "browser-test");
         let target = json!({"kind":"existing_chat", "url":format!("{base}/ready")});
+        pair_fixture(
+            &state,
+            &group.group_id,
+            target["url"].as_str().expect("valid test fixture"),
+        );
         update_target(&state, &group.group_id, "browser-test", target.clone()).expect("target");
+        let target =
+            load_target(&state, &group.group_id, "browser-test").expect("effective target");
         surfaces
             .open(
                 &key,
@@ -1402,7 +1752,7 @@ mod login_tests {
             )
             .await
             .expect("open");
-        for path in ["/login", "/verify"] {
+        for path in ["/login", "/verify", "/working"] {
             let url = format!("{base}{path}");
             surfaces
                 .navigate_to_url(&key, &url)
@@ -1442,3 +1792,7 @@ mod login_tests {
         server.abort();
     }
 }
+
+#[cfg(test)]
+#[path = "web_model_delivery_recovery_tests.rs"]
+mod recovery_tests;

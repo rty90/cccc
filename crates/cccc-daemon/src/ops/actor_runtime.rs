@@ -10,9 +10,14 @@ mod environment;
 mod persistence;
 mod reconcile;
 pub(crate) mod terminal_history;
+#[cfg(test)]
+mod untrusted_workspace_tests;
 pub use persistence::persist_lifecycle;
 pub(crate) use reconcile::record_process_exit;
 pub use reconcile::{reap_exited, reconcile_exited};
+
+/// Claude Code refused the Actor's workspace; only the operator can accept its trust prompt.
+pub(crate) const CLAUDE_WORKSPACE_UNTRUSTED: &str = "claude_workspace_untrusted";
 
 pub fn apply(
     home: &HomeLayout,
@@ -27,6 +32,16 @@ pub fn apply(
         .ok_or_else(|| OpError::new("not_found", format!("actor not found: {actor_id}")))?;
     // Configuration may already name a different backend. Lifecycle ownership
     // comes from the registries, not from the next launch configuration.
+    if stored_actor.runtime.is_web_model()
+        && matches!(kind, "actor.stop" | "actor.restart" | "actor.new_session")
+    {
+        cccc_core::web_model_connectors::interrupt_automatic_pairings(
+            home,
+            &group.group_id,
+            Some(actor_id),
+        )
+        .map_err(OpError::io)?;
+    }
     if kind == "actor.stop" {
         return stop_registered(group, actor_id);
     }
@@ -36,6 +51,7 @@ pub fn apply(
     {
         // Saving config does not restart an existing session. Explicit restart
         // applies it; start remains idempotent across backend changes too.
+        super::local_headless::ensure_viewer(&group.group_id, actor_id).map_err(OpError::io)?;
         super::capabilities::apply_actor_startup_baseline(home, group, &actor);
         return Ok(
             if super::local_headless::running(&group.group_id, actor_id)
@@ -74,7 +90,26 @@ fn start_local_headless(home: &HomeLayout, group: &GroupDoc, actor: &Actor) -> R
     actor.env = env;
     let _start_permit = crate::runtime_start_gate::permit(home)
         .map_err(|message| OpError::new("runtime_shutting_down", message))?;
-    super::local_headless::start(home, group, &actor).map_err(OpError::io)
+    super::local_headless::start(home, group, &actor).map_err(launch_error)
+}
+
+fn launch_error(error: std::io::Error) -> OpError {
+    let Some(workspace) = super::codex_voice_analyst::untrusted_claude_workspace(&error) else {
+        return OpError::io(error);
+    };
+    let mut op_error = OpError::new(CLAUDE_WORKSPACE_UNTRUSTED, error.to_string());
+    op_error
+        .details
+        .insert("workspace".into(), serde_json::json!(workspace));
+    op_error
+}
+
+/// A rollback restart refused for the same untrusted workspace is not a separate failure: the
+/// original error already names the workspace to trust, and the Actor simply stays stopped.
+pub(super) fn same_untrusted_workspace(original: &OpError, restart: &OpError) -> bool {
+    original.code == CLAUDE_WORKSPACE_UNTRUSTED
+        && restart.code == original.code
+        && restart.details.get("workspace") == original.details.get("workspace")
 }
 
 fn start(home: &HomeLayout, group: &GroupDoc, actor: &Actor) -> Result<SessionStatus, OpError> {
@@ -137,7 +172,7 @@ pub fn status(group_id: &str, actor_id: &str) -> Option<SessionStatus> {
 #[must_use]
 pub fn is_structured(actor: &Actor) -> bool {
     !super::local_headless::uses_managed_session(actor)
-        && (actor.runner == RunnerKind::Headless || actor.runtime == ActorRuntime::WebModel)
+        && (actor.runner == RunnerKind::Headless || actor.runtime.is_web_model())
 }
 
 pub fn start_group(home: &HomeLayout, group: &GroupDoc) -> Result<Vec<SessionStatus>, OpError> {

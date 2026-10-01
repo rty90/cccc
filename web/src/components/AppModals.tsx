@@ -1,3 +1,4 @@
+import { isWebModelRuntime } from "../types";
 import { formatRuntimeCommand } from "./modals/runtimeProfileControlsModel";
 import type { ActorSecretSaveChanges } from "./modals/actorSecretManagerModel";
 import { requestWorkspaceNavigation } from "../stores/workspaceNavigation";
@@ -10,11 +11,11 @@ import { CreateGroupModal } from "./modals/CreateGroupModal";
 import { useCreateGroupDirectoryBrowser } from "./modals/useCreateGroupDirectoryBrowser";
 import {
   ActorConfigModal,
-  NO_CHANGES_SENTINEL,
   type EditActorSavePayload,
   type SaveActorProfileResult,
 } from "./modals/ActorConfigModal";
 import { resolveNewActorId } from "./modals/actorCreateModel";
+import { isGrokBotUrl } from "../utils/webModelTargetDraft";
 import { GroupEditModal } from "./modals/GroupEditModal";
 import { InboxModal } from "./modals/InboxModal";
 import { PresentationPinModal } from "./presentation/PresentationPinModal";
@@ -92,14 +93,6 @@ function sortPresentationSlotIds(slotIds: string[]): string[] {
     const rightIndex = Number(String(right || "").replace("slot-", "")) || 0;
     return leftIndex - rightIndex;
   });
-}
-
-function isStandardChatGptWebModelActor(actor?: Actor | null): boolean {
-  return (
-    String(actor?.runtime || "")
-      .trim()
-      .toLowerCase() === "web_model" && !String(actor?.internal_kind || "").trim()
-  );
 }
 
 function LazyModalFallback({ isDark: _ }: { isDark?: boolean }) {
@@ -241,6 +234,7 @@ export function AppModals({
       clearContextTask: s.clearContextTask,
     })),
   );
+  const editingActorSection = useModalStore((state) => state.editingActorSection);
   const openSettingsTarget = useModalStore((state) => state.openSettingsTarget);
   const contextTaskId = useModalStore((state) => state.contextTaskId);
 
@@ -378,13 +372,11 @@ export function AppModals({
   >({});
   const editProfileSaveRef = useRef<{ profile: ActorProfile; copied: boolean } | null>(null);
   const newProfileSaveRef = useRef<ActorProfile | null>(null);
-  const savedEditActorRef = useRef<Actor | null>(null);
   useEffect(() => {
     if (!modals.addActor) newProfileSaveRef.current = null;
   }, [modals.addActor]);
   const editingActorId = editingActor?.id;
   useEffect(() => {
-    savedEditActorRef.current = null;
     editProfileSaveRef.current = null;
   }, [selectedGroupId, editingActorId]);
   const editActorNotesBaselineRef = useRef("");
@@ -871,7 +863,7 @@ export function AppModals({
   ) => {
     if (!selectedGroupId || !editingActor) return;
 
-    const savedActor = savedEditActorRef.current || editingActor;
+    const savedActor = editingActor;
     const actorId = String(editingActor.id || "").trim();
     if (!actorId) return;
 
@@ -900,7 +892,10 @@ export function AppModals({
     const setKeys = Object.keys(setVars);
     const unsetKeys = Array.isArray(payload?.unsetKeys) ? payload.unsetKeys : [];
     const clear = !!payload?.clear;
-    const canEditSecrets = mode === "custom" && (!linkedBefore || convertToCustom);
+    const canEditSecrets =
+      mode === "custom" &&
+      !isWebModelRuntime(editActorRuntime) &&
+      (!linkedBefore || convertToCustom);
     const willChangeSecrets =
       canEditSecrets && (clear || setKeys.length > 0 || unsetKeys.length > 0);
 
@@ -912,8 +907,16 @@ export function AppModals({
     );
     const currentActorNotes = String(editActorNotesBaselineRef.current || "").trim();
     const nextActorNotes = String(editActorNotes || "").trim();
-    const nextRuntime = String(editActorRuntime || "codex").trim();
-    const nextCommand = String(editActorCommand || "").trim();
+    const nextRuntime = String(
+      mode === "profile" ? selectedProfile?.runtime || currentRuntime : editActorRuntime || "codex",
+    ).trim();
+    const grokBotUrl = nextRuntime === "grok_web_model" ? payload.grokBotUrl?.trim() : undefined;
+    if (grokBotUrl !== undefined && !isGrokBotUrl(grokBotUrl)) {
+      throw new Error(t("settings:grokActor.invalidUrl"));
+    }
+    const nextCommand = isWebModelRuntime(nextRuntime)
+      ? currentCommand
+      : String(editActorCommand || "").trim();
     const nextTitle = String(editActorTitle || "").trim();
     const nextCapabilityAutoload = Array.isArray(payload.capabilityAutoload)
       ? normalizeCapabilityIdList(payload.capabilityAutoload)
@@ -942,20 +945,39 @@ export function AppModals({
       autoloadChanged ||
       profileChanged;
 
-    if (!options.restart && !hasActorMutation && !willChangeSecrets && !actorNotesChanged) {
-      throw new Error(NO_CHANGES_SENTINEL);
+    if (
+      !options.restart &&
+      !hasActorMutation &&
+      !willChangeSecrets &&
+      !actorNotesChanged &&
+      grokBotUrl === undefined
+    ) {
+      setEditingActor(null);
+      return;
     }
 
     if (options.restart) {
-      const msg = willChangeSecrets
-        ? t("saveSecretsAndRestartConfirm", { label })
-        : t("saveAndRestartConfirm", { label });
+      const msg =
+        grokBotUrl !== undefined
+          ? t("applyWebModelTargetConfirm", { label })
+          : willChangeSecrets
+            ? t("saveSecretsAndRestartConfirm", { label })
+            : t("saveAndRestartConfirm", { label });
       if (!window.confirm(msg)) return;
     }
 
     setBusy("actor-update");
     try {
       let actorSnapshot: Record<string, unknown> = savedActor as unknown as Record<string, unknown>;
+
+      // A new Grok route must be configured while stopped. Do this before
+      // changing runtime so an enabled Actor cannot start without its Bot URL.
+      if (grokBotUrl !== undefined) {
+        const stopResp = await api.stopActor(selectedGroupId, actorId);
+        if (!stopResp.ok) throw new Error(`${stopResp.error.code}: ${stopResp.error.message}`);
+        actorSnapshot = { ...actorSnapshot, enabled: false, running: false };
+        setEditingActor(actorSnapshot as Actor);
+      }
 
       if (mode === "custom" && linkedBefore && convertToCustom) {
         const convertResp = await api.updateActor(
@@ -967,8 +989,7 @@ export function AppModals({
           { profileAction: "convert_to_custom", capabilityAutoload: nextCapabilityAutoload },
         );
         if (!convertResp.ok) {
-          showError(`${convertResp.error.code}: ${convertResp.error.message}`);
-          return;
+          throw new Error(`${convertResp.error.code}: ${convertResp.error.message}`);
         }
         const updated =
           convertResp.result && typeof convertResp.result === "object"
@@ -976,7 +997,7 @@ export function AppModals({
             : undefined;
         if (updated && typeof updated === "object") {
           actorSnapshot = updated;
-          savedEditActorRef.current = updated as unknown as Actor;
+          setEditingActor(updated as Actor);
         }
       }
 
@@ -997,8 +1018,7 @@ export function AppModals({
             },
           );
           if (!profileResp.ok) {
-            showError(`${profileResp.error.code}: ${profileResp.error.message}`);
-            return;
+            throw new Error(`${profileResp.error.code}: ${profileResp.error.message}`);
           }
           const updated =
             profileResp.result && typeof profileResp.result === "object"
@@ -1006,7 +1026,7 @@ export function AppModals({
               : undefined;
           if (updated && typeof updated === "object") {
             actorSnapshot = updated;
-            savedEditActorRef.current = updated as unknown as Actor;
+            setEditingActor(updated as Actor);
           }
         }
       } else {
@@ -1023,13 +1043,12 @@ export function AppModals({
             selectedGroupId,
             actorId,
             nextRuntime !== snapshotRuntime ? editActorRuntime : undefined,
-            nextCommand !== snapshotCommand ? editActorCommand : undefined,
+            nextCommand !== snapshotCommand ? nextCommand : undefined,
             nextTitle,
             { capabilityAutoload: nextCapabilityAutoload },
           );
           if (!customResp.ok) {
-            showError(`${customResp.error.code}: ${customResp.error.message}`);
-            return;
+            throw new Error(`${customResp.error.code}: ${customResp.error.message}`);
           }
           const updated =
             customResp.result && typeof customResp.result === "object"
@@ -1037,7 +1056,7 @@ export function AppModals({
               : undefined;
           if (updated && typeof updated === "object") {
             actorSnapshot = updated;
-            savedEditActorRef.current = updated as unknown as Actor;
+            setEditingActor(updated as Actor);
           }
         }
       }
@@ -1051,9 +1070,9 @@ export function AppModals({
           clear,
         );
         if (!envResp.ok) {
-          showError(`${envResp.error.code}: ${envResp.error.message}`);
-          return;
+          throw new Error(`${envResp.error.code}: ${envResp.error.message}`);
         }
+        payload.onSecretsSaved?.(envResp.result.keys);
       }
 
       if (actorNotesChanged) {
@@ -1064,24 +1083,27 @@ export function AppModals({
           actors.map((item) => String(item.id || "").trim()).filter(Boolean),
         );
         if (!actorNotesResp.ok) {
-          showError(actorNotesResp.error);
-          return;
+          throw new Error(actorNotesResp.error);
         }
         editActorNotesBaselineRef.current = nextActorNotes;
+      }
+
+      if (grokBotUrl !== undefined) {
+        const bindResp = await api.bindGrokBot(selectedGroupId, actorId, grokBotUrl);
+        if (!bindResp.ok) throw new Error(`${bindResp.error.code}: ${bindResp.error.message}`);
       }
 
       if (options.restart) {
         const restartResp = await api.restartActor(selectedGroupId, actorId);
         if (!restartResp.ok) {
-          showError(`${restartResp.error.code}: ${restartResp.error.message}`);
-          return;
+          throw new Error(`${restartResp.error.code}: ${restartResp.error.message}`);
         }
       }
 
       await refreshActors();
       setEditingActor(null);
 
-      if (!options.restart) {
+      if (!options.restart && grokBotUrl === undefined) {
         const isRunning = Boolean(editingActor.running ?? editingActor.enabled ?? false);
         const restartRequired =
           isRunning &&
@@ -1147,7 +1169,7 @@ export function AppModals({
           id: editProfileSaveRef.current?.profile.id,
           name: name.trim(),
           runtime: editActorRuntime,
-          command: editActorCommand.trim(),
+          command: isWebModelRuntime(editActorRuntime) ? "" : editActorCommand.trim(),
           submit: String(editingActor.submit || "enter"),
           env: {},
           capability_defaults: {
@@ -1169,7 +1191,11 @@ export function AppModals({
           copied: editProfileSaveRef.current?.copied || false,
         };
       }
-      if (profileId && !editProfileSaveRef.current?.copied) {
+      if (
+        profileId &&
+        !isWebModelRuntime(editActorRuntime) &&
+        !editProfileSaveRef.current?.copied
+      ) {
         const copyResp = await api.copyActorPrivateEnvToProfile(
           profileId,
           selectedGroupId,
@@ -1183,6 +1209,7 @@ export function AppModals({
       }
       if (
         profileId &&
+        !isWebModelRuntime(editActorRuntime) &&
         secrets &&
         (secrets.clear || secrets.unsetKeys.length || Object.keys(secrets.setVars).length)
       ) {
@@ -1257,7 +1284,7 @@ export function AppModals({
     }
 
     let secretsSetVars: Record<string, string> = {};
-    if (!newActorUseProfile) {
+    if (!newActorUseProfile && !isWebModelRuntime(newActorRuntime)) {
       const parsedSecrets = parsePrivateEnvSetText(secretsText);
       if (!parsedSecrets.ok) {
         setAddActorError(parsedSecrets.error);
@@ -1269,11 +1296,12 @@ export function AppModals({
     setBusy("actor-add");
     setAddActorError("");
     try {
-      const commandToUse = newActorUseProfile
-        ? ""
-        : newActorUseDefaultCommand
+      const commandToUse =
+        newActorUseProfile || isWebModelRuntime(newActorRuntime)
           ? ""
-          : newActorCommand;
+          : newActorUseDefaultCommand
+            ? ""
+            : newActorCommand;
       const resp = await api.addActor(
         selectedGroupId,
         actorId,
@@ -1349,7 +1377,9 @@ export function AppModals({
 
   const handleSaveNewActorAsProfile = async () => {
     if (newActorUseProfile) return;
-    const parsed = parsePrivateEnvSetText(newActorSecretsSetText);
+    const parsed = parsePrivateEnvSetText(
+      isWebModelRuntime(newActorRuntime) ? "" : newActorSecretsSetText,
+    );
     if (!parsed.ok) {
       setAddActorError(parsed.error);
       return;
@@ -1360,7 +1390,10 @@ export function AppModals({
     if (!name || !name.trim()) return;
     setBusy("actor-profile-save");
     try {
-      const commandToUse = newActorUseDefaultCommand ? "" : newActorCommand.trim();
+      const commandToUse =
+        newActorUseDefaultCommand || isWebModelRuntime(newActorRuntime)
+          ? ""
+          : newActorCommand.trim();
       const resp = await api.upsertActorProfile(
         {
           id: newProfileSaveRef.current?.id,
@@ -1415,8 +1448,10 @@ export function AppModals({
     const profileRuntime = String(selectedProfile?.runtime || "").trim();
     const prefix = newActorUseProfile
       ? profileRuntime || "actor"
-      : newActorRuntime === "web_model"
-        ? "chatgpt-web"
+      : isWebModelRuntime(newActorRuntime)
+        ? newActorRuntime === "grok_web_model"
+          ? "grok-web"
+          : "chatgpt-web"
         : newActorRuntime;
     const existing = new Set(actors.map((a) => String(a.id || "")));
     for (let i = 1; i <= 999; i++) {
@@ -1425,14 +1460,10 @@ export function AppModals({
     }
     return `${prefix}-${Date.now()}`;
   })();
-  const currentGroupHasChatGptWebModelActor = actors.some((actor) =>
-    isStandardChatGptWebModelActor(actor),
-  );
-
   const canAddActor = (() => {
     if (busy === "actor-add") return false;
     if (newActorUseProfile) return Boolean(String(newActorProfileId || "").trim());
-    if (newActorRuntime === "web_model" && currentGroupHasChatGptWebModelActor) return false;
+    if (isWebModelRuntime(newActorRuntime)) return true;
     const rtInfo = runtimes.find((r) => r.name === newActorRuntime);
     const available = rtInfo?.available ?? false;
     if (!newActorUseDefaultCommand && !newActorCommand.trim()) return false;
@@ -1447,13 +1478,7 @@ export function AppModals({
     if (newActorUseProfile && !String(newActorProfileId || "").trim()) {
       return t("profileRequired");
     }
-    if (
-      !newActorUseProfile &&
-      newActorRuntime === "web_model" &&
-      currentGroupHasChatGptWebModelActor
-    ) {
-      return "This group already has the ChatGPT Web Model actor. Use Settings > ChatGPT Web Model to configure it.";
-    }
+    if (isWebModelRuntime(newActorRuntime)) return "";
     const rtInfo = runtimes.find((r) => r.name === newActorRuntime);
     const available = rtInfo?.available ?? false;
     if (!newActorUseDefaultCommand && !newActorCommand.trim()) {
@@ -2066,6 +2091,7 @@ export function AppModals({
 
       <ActorConfigModal
         mode="edit"
+        initialSection={editingActorSection}
         isOpen={!!editingActor}
         isDark={isDark}
         busy={busy}
@@ -2075,6 +2101,9 @@ export function AppModals({
         avatarUrl={editingActor?.avatar_url || undefined}
         hasCustomAvatar={!!editingActor?.has_custom_avatar}
         isRunning={!!(editingActor && (editingActor.running ?? editingActor.enabled ?? false))}
+        savedRuntime={editingActor?.runtime || "codex"}
+        savedActor={editingActor || undefined}
+        savedActorNotes={editActorNotesBaselineRef.current}
         runtimes={runtimes}
         runtime={editActorRuntime}
         onChangeRuntime={setEditActorRuntime}

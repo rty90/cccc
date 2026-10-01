@@ -52,7 +52,8 @@ import { useModalA11y } from "../../hooks/useModalA11y";
 import { AnimatedShinyText } from "../../registry/magicui/animated-shiny-text";
 import { copyTextToClipboard } from "../../utils/copy";
 import { VoiceActivityStreamCard } from "./voice-secretary/VoiceActivityStreamCard";
-import { VoiceSecretaryDocumentListPanel } from "./voice-secretary/VoiceSecretaryDocumentListPanel";
+import { downloadVoiceDocument } from "./voice-secretary/downloadVoiceDocument";
+import { VoiceDocumentLibrary as VoiceSecretaryDocumentListPanel } from "./voice-secretary/VoiceDocumentLibrary";
 import { VoiceSecretaryWorkspacePanel } from "./voice-secretary/VoiceSecretaryWorkspacePanel";
 import { useVoiceCaptureTargetDocumentSelection } from "./voice-secretary/useVoiceCaptureTargetDocumentSelection";
 import {
@@ -110,7 +111,6 @@ import {
   assistantVoiceTimestampMs,
   askFeedbackDisplayText,
   compactVoiceTranscriptSummaryText,
-  downloadMarkdownDocument,
   displayAskFeedbackStatus,
   findVoiceDocument,
   formatVoiceActivityFullTimeMs,
@@ -128,7 +128,6 @@ import {
   recordFromUnknown,
   resolveVoiceDocumentPath,
   visibleVoiceDocuments,
-  voiceDocumentDownloadFileName,
   voiceDocumentKey,
   voiceDocumentMatches,
   voiceDocumentPath,
@@ -195,6 +194,7 @@ import {
   voiceCaptureTransportMode,
 } from "./voice-secretary/voiceDictationRoute";
 import {
+  createDocumentContentLoadTracker,
   documentContentLoadingMatches,
   documentNeedsContentLoad,
 } from "./voice-secretary/documentContentLoad";
@@ -464,6 +464,7 @@ export function VoiceSecretaryComposerControl({
   const [documentEditing, setDocumentEditing] = useState(false);
   const [documentRemoteChanged, setDocumentRemoteChanged] = useState(false);
   const [documentContentLoadingPath, setDocumentContentLoadingPath] = useState("");
+  const documentContentLoadTracker = useRef(createDocumentContentLoadTracker());
   const [creatingDocument, setCreatingDocument] = useState(false);
   const [newDocumentTitleDraft, setNewDocumentTitleDraft] = useState("");
   const [documentInstruction, setDocumentInstruction] = useState("");
@@ -505,12 +506,11 @@ export function VoiceSecretaryComposerControl({
   const [activityClockMs, setActivityClockMs] = useState(() => Date.now());
   const [voiceReplyBubbleRequestId, setVoiceReplyBubbleRequestId] = useState("");
   const [copiedVoiceReplyRequestId, setCopiedVoiceReplyRequestId] = useState("");
-  const voiceAudioMeter = useVoiceAudioLevelMeter();
   const {
-    levels: voiceAudioLevels,
-    stopBrowserMeter,
+    getLevel: getVoiceAudioLevel,
+    reset: resetVoiceAudioLevel,
     updateFromSamples: updateVoiceAudioLevelsFromSamples,
-  } = voiceAudioMeter;
+  } = useVoiceAudioLevelMeter();
   const setRecordingStartingFlag = useCallback((next: boolean) => {
     recordingStartingRef.current = next;
     setRecordingStarting(next);
@@ -1138,12 +1138,12 @@ export function VoiceSecretaryComposerControl({
             setPendingAskRequestId("");
           }
         }
-        let nextDocuments = visibleVoiceDocuments(resp.result.documents || []).filter(
-          (document) => {
-            const docPath = voiceDocumentPath(document);
-            return !docPath || !archivedDocumentPathsRef.current.has(docPath);
-          },
-        );
+        let nextDocuments = visibleVoiceDocuments(resp.result.documents || []);
+        // This response passed the refresh-ownership check. Server-visible documents
+        // supersede local archive guards, including restores from another client.
+        for (const document of nextDocuments) {
+          archivedDocumentPathsRef.current.delete(voiceDocumentPath(document));
+        }
         clearRemovedVoiceDocumentReferences(
           clearVoiceDocumentReferences,
           gid,
@@ -1209,6 +1209,7 @@ export function VoiceSecretaryComposerControl({
               activeDocumentRevisionChanged ||
               documentNeedsContentLoad(nextActiveDocument))
           ) {
+            const contentLoad = documentContentLoadTracker.current.begin();
             setDocumentContentLoadingPath(nextViewedPath);
             try {
               const docResp = await fetchVoiceAssistantDocumentContent(gid, nextViewedPath);
@@ -1230,13 +1231,9 @@ export function VoiceSecretaryComposerControl({
                 setDocuments(nextDocuments);
               }
             } finally {
-              if (
-                shouldApplyVoiceAssistantRefresh(
-                  currentOwnership(),
-                  ownership.request,
-                  isCurrentGroup(gid),
-                )
-              ) {
+              // A superseded refresh still owns the indicator it raised unless a
+              // newer load took over; clearing is decided per load, not per refresh.
+              if (documentContentLoadTracker.current.end(contentLoad) && isCurrentGroup(gid)) {
                 setDocumentContentLoadingPath("");
               }
             }
@@ -1530,7 +1527,7 @@ export function VoiceSecretaryComposerControl({
       const cleanupBrowserSpeechMedia = browserSpeechMediaCleanupRef.current;
       browserSpeechMediaCleanupRef.current = null;
       if (cleanupBrowserSpeechMedia) cleanupBrowserSpeechMedia();
-      stopBrowserMeter();
+      resetVoiceAudioLevel();
       stopMediaStream(mediaStreamRef.current);
       mediaStreamRef.current = null;
       mediaChunksRef.current = [];
@@ -1544,6 +1541,8 @@ export function VoiceSecretaryComposerControl({
     setAssistant(null);
     setDocuments([]);
     archivedDocumentPathsRef.current.clear();
+    documentContentLoadTracker.current.reset();
+    setDocumentContentLoadingPath("");
     setViewedDocumentPath("");
     setCaptureTargetDocumentPath("");
     loadDocumentDraft(null);
@@ -1613,7 +1612,7 @@ export function VoiceSecretaryComposerControl({
     loadDocumentDraft,
     releaseVoiceRecordingGuards,
     selectedGroupId,
-    stopBrowserMeter,
+    resetVoiceAudioLevel,
   ]);
 
   useEffect(() => {
@@ -2360,7 +2359,7 @@ export function VoiceSecretaryComposerControl({
         recorder.onstop = null;
       }
       clearBrowserSpeechMediaHandlers();
-      stopBrowserMeter();
+      resetVoiceAudioLevel();
       stopMediaStream(mediaStreamRef.current);
       mediaStreamRef.current = null;
       mediaChunksRef.current = [];
@@ -2391,16 +2390,16 @@ export function VoiceSecretaryComposerControl({
       isActiveRecordingRun,
       releaseVoiceRecordingGuards,
       reportRecordingStopReason,
-      stopBrowserMeter,
+      resetVoiceAudioLevel,
     ],
   );
 
   const releaseLocalMicrophoneCapture = useCallback(() => {
     clearBrowserSpeechMediaHandlers();
-    stopBrowserMeter();
+    resetVoiceAudioLevel();
     stopMediaStream(mediaStreamRef.current);
     mediaStreamRef.current = null;
-  }, [clearBrowserSpeechMediaHandlers, stopBrowserMeter]);
+  }, [clearBrowserSpeechMediaHandlers, resetVoiceAudioLevel]);
 
   const finalizeBrowserRecordingRun = useCallback(
     async (runId: number, triggerKind: string) => {
@@ -2705,7 +2704,7 @@ export function VoiceSecretaryComposerControl({
     clearBrowserSpeechRestartTimer();
     clearBrowserSpeechStopFinalizeTimer();
     clearBrowserSpeechMediaHandlers();
-    stopBrowserMeter();
+    resetVoiceAudioLevel();
     abortBrowserSpeechRecognition(existingRecognition);
     stopMediaStream(mediaStreamRef.current);
     mediaStreamRef.current = null;
@@ -2783,7 +2782,7 @@ export function VoiceSecretaryComposerControl({
       clearBrowserSpeechRestartTimer();
       clearBrowserSpeechStopFinalizeTimer();
       clearBrowserSpeechMediaHandlers();
-      stopBrowserMeter();
+      resetVoiceAudioLevel();
       if (recognition && recognitionRef.current === recognition) recognitionRef.current = null;
       abortBrowserSpeechRecognition(recognition);
       stopMediaStream(mediaStreamRef.current);
@@ -3085,7 +3084,7 @@ export function VoiceSecretaryComposerControl({
     showError,
     t,
     updateLiveTranscriptPreview,
-    stopBrowserMeter,
+    resetVoiceAudioLevel,
   ]);
 
   const handleServiceStreamingFinal = useCallback(
@@ -4300,6 +4299,7 @@ export function VoiceSecretaryComposerControl({
       let nextDocument = document;
       if (documentNeedsContentLoad(document)) {
         const gid = String(selectedGroupId || "").trim();
+        const contentLoad = documentContentLoadTracker.current.begin();
         setDocumentContentLoadingPath(nextPath);
         try {
           const resp = gid ? await fetchVoiceAssistantDocumentContent(gid, nextPath) : null;
@@ -4311,7 +4311,9 @@ export function VoiceSecretaryComposerControl({
             );
           }
         } finally {
-          if (isCurrentGroup(gid)) setDocumentContentLoadingPath("");
+          if (documentContentLoadTracker.current.end(contentLoad) && isCurrentGroup(gid)) {
+            setDocumentContentLoadingPath("");
+          }
         }
       }
       loadDocumentDraft(nextDocument);
@@ -4366,17 +4368,8 @@ export function VoiceSecretaryComposerControl({
     t,
   });
 
-  const downloadCurrentDocument = useCallback(() => {
-    if (!activeDocument) return;
-    const fileName = voiceDocumentDownloadFileName(activeDocument, documentDisplayTitle);
-    downloadMarkdownDocument(fileName, documentDraft);
-    showNotice({
-      message: t("voiceSecretaryDocumentDownloaded", {
-        fileName,
-        defaultValue: "Downloaded {{fileName}}.",
-      }),
-    });
-  }, [activeDocument, documentDisplayTitle, documentDraft, showNotice, t]);
+  const downloadCurrentDocument = () =>
+    downloadVoiceDocument(activeDocument, documentDisplayTitle, documentDraft, showNotice, t);
 
   const workspaceRecordLabel = recording
     ? t("voiceSecretaryStopAndSaveShort", { defaultValue: "Stop & save" })
@@ -4509,10 +4502,6 @@ export function VoiceSecretaryComposerControl({
   });
   const promptDraftReadyTitle = t("voiceSecretaryPromptDraftReadyShort", {
     defaultValue: "Prompt ready",
-  });
-  const documentsCountLabel = t("voiceSecretaryDocumentsCount", {
-    count: documents.length,
-    defaultValue: "{{count}} docs",
   });
   const askFeedbackStatusLabel = useCallback(
     (status: string) => {
@@ -4872,9 +4861,7 @@ export function VoiceSecretaryComposerControl({
         ? t("voiceSecretaryWorkspaceHintInstruction", {
             defaultValue: "Speech is sent as a request to Voice Secretary.",
           })
-        : t("voiceSecretaryWorkspaceHintDocument", {
-            defaultValue: "Speech is written into the default document.",
-          });
+        : `${t("voiceLibraryCount", { count: documents.length, defaultValue: "{{count}} documents" })} · ${t("voiceSecretaryDefaultDocumentLegend", { defaultValue: "default document receives new transcript" })}`;
   const assistantRowControlLabel = recording
     ? t("voiceSecretaryStopAndSave", { defaultValue: "Stop and save recording" })
     : !assistantEnabled
@@ -5415,14 +5402,22 @@ export function VoiceSecretaryComposerControl({
                 >
                   {workspaceVisibility.showDocumentList ? (
                     <VoiceSecretaryDocumentListPanel
+                      groupId={selectedGroupId}
+                      onRestored={(document) => {
+                        archivedDocumentPathsRef.current.delete(voiceDocumentPath(document));
+                        void refreshAssistant({ quiet: true });
+                      }}
+                      onRenamed={() => void refreshAssistant({ quiet: true })}
                       actionBusy={actionBusy}
+                      recording={recording}
+                      onArchiveDocument={(document) => void archiveDocument(document)}
+                      onDeleteDocument={(document) => void archiveDocument(document, true)}
                       activeDocumentPath={String(
                         activeDocumentWritePath || viewedDocumentPath || "",
                       ).trim()}
                       captureTargetDocumentPath={String(captureTargetDocumentPath || "").trim()}
                       creatingDocument={creatingDocument}
                       documents={documents}
-                      documentsCountLabel={documentsCountLabel}
                       isDark={isDark}
                       newDocumentTitleDraft={newDocumentTitleDraft}
                       t={t}
@@ -5467,9 +5462,14 @@ export function VoiceSecretaryComposerControl({
                       documentRemoteChanged={documentRemoteChanged}
                       isDark={isDark}
                       recording={recording}
-                      recordingAudioLevels={voiceAudioLevels}
+                      recordingAudioLevel={getVoiceAudioLevel}
                       t={t}
                       transcriptItems={visibleVoiceTranscriptItems}
+                      // Live text lives in the activity feed; the workspace only
+                      // shows it where that feed is hidden (small screens).
+                      livePreview={
+                        workspaceVisibility.showActivityFeed ? null : currentLiveTranscript
+                      }
                       view={voiceWorkspaceView}
                       onChangeView={setVoiceWorkspaceView}
                       onArchiveDocument={() => void archiveDocument(activeDocument)}

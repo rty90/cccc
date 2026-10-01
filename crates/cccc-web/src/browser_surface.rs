@@ -1,38 +1,43 @@
 mod frame;
 mod interaction;
 mod navigation;
+mod owner;
 mod page_recovery;
 mod profile_owner;
 mod prompt_submission;
 mod proxy;
 mod system_browser;
 
+#[cfg(test)]
+mod chrome_test_guard;
+#[cfg(test)]
+pub(crate) use chrome_test_guard::chrome_test_guard;
+
 pub use interaction::{serve_socket, serve_vnc_socket};
 pub(crate) use prompt_submission::{
     BOUND_CONVERSATION_ERROR_MARKER, PromptSubmissionOutcome, conversation_target_matches,
     conversation_url_for_target, is_chatgpt_url, normalized_chatgpt_conversation_url,
-    stored_verified_submission_evidence,
 };
 
 use anyhow::{Context, Result, bail};
 use cccc_contracts::utc_now;
 use chromiumoxide::Page;
-use chromiumoxide::browser::{Browser, BrowserConfig};
-use chromiumoxide::cdp::browser_protocol::network::CookieParam;
-use chromiumoxide::handler::viewport::Viewport;
-use futures_util::StreamExt;
+use chromiumoxide::browser::Browser;
+use chromiumoxide::cdp::browser_protocol::target::{
+    CloseTargetParams, CreateTargetParams, GetTargetsParams,
+};
 use futures_util::future::join_all;
 use navigation::goto_dom_content_loaded;
-use page_recovery::{close_internal_pages, is_internal_page};
-use profile_owner::ProfileLease;
-use proxy::BrowserProxy;
+use owner::BrowserOwner;
+mod pairing;
+use page_recovery::{candidate_page_url, close_internal_pages, is_internal_page};
+pub(crate) use pairing::PairingPage;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use system_browser::SystemBrowserLaunch;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 const BROWSER_EXIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
@@ -41,21 +46,34 @@ pub(crate) fn system_browser_path() -> Option<PathBuf> {
     system_browser::find_system_browser().map(|(path, _)| path)
 }
 
+// Browser ownership includes the provider: changing runtime must retire the old
+// window and its manual-close marker without changing the Actor's task identity.
+pub(crate) fn actor_identity(actor: &cccc_contracts::Actor) -> String {
+    format!(
+        "{}:{}",
+        actor.runtime.web_model_provider().unwrap_or(""),
+        cccc_core::actors::generation_identity(actor)
+    )
+}
+
 #[derive(Default)]
 pub struct BrowserSurfaces {
     pub(super) sessions: Mutex<HashMap<String, Session>>,
+    owners: Mutex<HashMap<PathBuf, Arc<RwLock<BrowserOwner>>>>,
     key_operations: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     profile_operations: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
     key_profiles: Mutex<HashMap<String, PathBuf>>,
     shutting_down: AtomicBool,
+    closed_pages: Mutex<HashMap<String, Option<String>>>,
 }
 
+#[derive(Clone)]
 pub(super) struct Session {
-    pub(super) browser: Browser,
+    owner: Arc<RwLock<BrowserOwner>>,
     pub(super) page: Page,
-    handler: JoinHandle<()>,
-    profile_lease: ProfileLease,
-    system_browser: Option<SystemBrowserLaunch>,
+    is_system_browser: bool,
+    shared_browser: bool,
+    viewer: Value,
     url: String,
     pub(super) width: u32,
     pub(super) height: u32,
@@ -82,6 +100,8 @@ struct OpenRequest<'a> {
     storage_state: Option<&'a Value>,
     reuse_existing: bool,
     mode: BrowserMode,
+    shared_browser: bool,
+    actor_identity: Option<&'a str>,
 }
 
 pub(super) fn validate_browser_surface_url(value: &str) -> Result<()> {
@@ -95,14 +115,10 @@ pub(super) fn validate_browser_surface_url(value: &str) -> Result<()> {
 impl BrowserSurfaces {
     pub async fn close_missing_groups(&self, active_groups: &HashSet<String>) -> Result<usize> {
         let keys = self
-            .sessions
-            .lock()
+            .known_keys()
             .await
-            .keys()
-            .filter_map(|key| {
-                let group_id = session_group_id(key)?;
-                (!active_groups.contains(group_id)).then(|| key.clone())
-            })
+            .into_iter()
+            .filter(|key| session_group_id(key).is_some_and(|id| !active_groups.contains(id)))
             .collect::<Vec<_>>();
         let mut closed = 0;
         for key in keys {
@@ -111,27 +127,69 @@ impl BrowserSurfaces {
         Ok(closed)
     }
 
-    pub async fn close_missing_actors(
-        &self,
-        active_actors: &HashMap<String, HashSet<String>>,
-    ) -> Result<usize> {
-        let keys = self
+    pub async fn close_missing_actors(&self, store: &cccc_core::GroupStore) -> Result<usize> {
+        // Snapshot registered Actor surfaces first. Unused Groups need no
+        // document reads, and a newly opened surface waits for the next pass.
+        let mut keys = self
             .sessions
             .lock()
             .await
-            .keys()
-            .filter(|key| {
-                session_actor(key).is_some_and(|(group_id, actor_id)| {
-                    !active_actors
-                        .get(group_id)
-                        .is_some_and(|actors| actors.contains(actor_id))
-                })
+            .iter()
+            .filter(|(key, _)| session_actor(key).is_some())
+            .map(|(key, s)| {
+                (
+                    key.clone(),
+                    Some(s.page.target_id().clone()),
+                    s.metadata["actor_identity"].as_str().map(str::to_owned),
+                )
             })
-            .cloned()
+            .collect::<Vec<_>>();
+        // Closing a window removes its session, but its pause intent still
+        // belongs to that Actor generation and must participate in cleanup.
+        keys.extend(
+            self.closed_pages
+                .lock()
+                .await
+                .iter()
+                .map(|(key, generation)| (key.clone(), None, generation.clone())),
+        );
+        let mut groups = HashMap::new();
+        let keys = keys
+            .into_iter()
+            .filter_map(|(key, target, generation)| {
+                let (group_id, actor_id) = session_actor(&key)?;
+                let group = groups
+                    .entry(group_id.to_owned())
+                    .or_insert_with(|| store.load(group_id).ok());
+                let valid = group.as_ref().is_some_and(|g| {
+                    g.actors.iter().any(|a| {
+                        a.id == actor_id
+                            && generation.as_ref().is_none_or(|old| {
+                                a.runtime.is_web_model() && actor_identity(a) == *old
+                            })
+                    })
+                });
+                (!valid).then_some((key, target, generation))
+            })
             .collect::<Vec<_>>();
         let mut closed = 0;
-        for key in keys {
-            closed += usize::from(self.close(&key).await?);
+        for (key, target, generation) in keys {
+            let operation = self.key_operation(&key).await;
+            let _guard = operation.lock().await;
+            // A replacement opened after the snapshot owns its own lifecycle.
+            let same_owner = if let Some(target) = target {
+                self.sessions
+                    .lock()
+                    .await
+                    .get(&key)
+                    .is_some_and(|s| s.page.target_id() == &target)
+            } else {
+                !self.sessions.lock().await.contains_key(&key)
+                    && self.closed_pages.lock().await.get(&key) == Some(&generation)
+            };
+            if same_owner {
+                closed += usize::from(self.close_key_locked(&key).await?);
+            }
         }
         Ok(closed)
     }
@@ -167,6 +225,8 @@ impl BrowserSurfaces {
             storage_state: None,
             reuse_existing: false,
             mode: BrowserMode::Headless,
+            shared_browser: false,
+            actor_identity: None,
         })
         .await
     }
@@ -189,11 +249,13 @@ impl BrowserSurfaces {
             storage_state: None,
             reuse_existing: true,
             mode: BrowserMode::Headless,
+            shared_browser: false,
+            actor_identity: None,
         })
         .await
     }
 
-    pub async fn ensure_open_system(
+    pub async fn ensure_open_shared_system(
         &self,
         key: &str,
         profile: &Path,
@@ -210,6 +272,57 @@ impl BrowserSurfaces {
             storage_state: None,
             reuse_existing: true,
             mode: BrowserMode::System { background: false },
+            shared_browser: true,
+            actor_identity: None,
+        })
+        .await?;
+        // Explicitly opening login should reveal its window, while Actor
+        // warmup and polling must never take desktop focus. Preserve an active
+        // sign-in flow; only an internal/blank page needs its entry URL restored.
+        let operation = self.key_operation(key).await;
+        let _guard = operation.lock().await;
+        let page = self
+            .sessions
+            .lock()
+            .await
+            .get(key)
+            .map(|s| s.page.clone())
+            .context("shared login window is not active")?;
+        page.bring_to_front()
+            .await
+            .context("show shared login window")?;
+        if is_internal_page(&page.url().await?.unwrap_or_default()) {
+            navigation::start_navigation(&page, url).await?;
+        }
+        let current_url = page.url().await?.unwrap_or_else(|| url.to_owned());
+        let mut sessions = self.sessions.lock().await;
+        let session = sessions
+            .get_mut(key)
+            .context("shared login window is not active")?;
+        session.url = current_url;
+        session.updated_at = utc_now();
+        Ok(state(session))
+    }
+
+    pub async fn ensure_open_shared_actor(
+        &self,
+        key: &str,
+        profile: &Path,
+        url: &str,
+        dimensions: (u32, u32),
+        generation: &str,
+    ) -> Result<Value> {
+        self.open_with(OpenRequest {
+            key,
+            profile,
+            url,
+            width: dimensions.0,
+            height: dimensions.1,
+            storage_state: None,
+            reuse_existing: true,
+            mode: BrowserMode::System { background: false },
+            shared_browser: true,
+            actor_identity: Some(generation),
         })
         .await
     }
@@ -233,6 +346,8 @@ impl BrowserSurfaces {
             storage_state,
             reuse_existing: false,
             mode: BrowserMode::Headless,
+            shared_browser: false,
+            actor_identity: None,
         })
         .await
     }
@@ -255,6 +370,8 @@ impl BrowserSurfaces {
             storage_state,
             reuse_existing: false,
             mode: BrowserMode::System { background: true },
+            shared_browser: false,
+            actor_identity: None,
         })
         .await
     }
@@ -269,6 +386,8 @@ impl BrowserSurfaces {
             storage_state,
             reuse_existing,
             mode,
+            shared_browser,
+            actor_identity,
         } = request;
         validate_browser_surface_url(url)?;
         if self.shutting_down.load(Ordering::Acquire) {
@@ -281,6 +400,7 @@ impl BrowserSurfaces {
         let operation = self.register_profile(key, &profile).await?;
         let _operation_guard = operation.lock().await;
         self.bind_profile(key, &profile).await?;
+        self.closed_pages.lock().await.remove(key);
         let result = self
             .open_registered(OpenRequest {
                 key,
@@ -291,15 +411,58 @@ impl BrowserSurfaces {
                 storage_state,
                 reuse_existing,
                 mode,
+                shared_browser,
+                actor_identity,
             })
             .await;
-        if result.is_err() {
-            self.release_inactive_profile(key, &profile).await;
+        // Process/profile registration is serialized; a slow page navigation
+        // must not hold the shared profile lock and block another Actor window.
+        drop(_operation_guard);
+        let (value, page) = match result {
+            Ok(value) => value,
+            Err(error) => {
+                self.release_inactive_profile(key, &profile).await;
+                return Err(error);
+            }
+        };
+        // Shared windows must be viewable and closable while the site loads.
+        // Login starts navigation in its caller; Actor delivery checks composer
+        // and target readiness separately before claiming or sending work.
+        if let Some(page) = page.filter(|_| !shared_browser || actor_identity.is_some()) {
+            let opened = async {
+                if shared_browser {
+                    navigation::start_navigation(&page, url)
+                        .await
+                        .context("open browser page")?;
+                } else {
+                    goto_dom_content_loaded(&page, url)
+                        .await
+                        .context("open browser page")?;
+                    let owner = self
+                        .sessions
+                        .lock()
+                        .await
+                        .get(key)
+                        .map(|s| Arc::clone(&s.owner))
+                        .context("browser surface changed")?;
+                    close_internal_pages(&owner.read().await.browser, &page).await?;
+                }
+                Ok::<(), anyhow::Error>(())
+            }
+            .await;
+            if let Err(error) = opened {
+                let _guard = operation.lock().await;
+                self.close_locked(key)
+                    .await
+                    .context("clean up failed browser page")?;
+                self.release_inactive_profile(key, &profile).await;
+                return Err(error);
+            }
         }
-        result
+        Ok(value)
     }
 
-    async fn open_registered(&self, request: OpenRequest<'_>) -> Result<Value> {
+    async fn open_registered(&self, request: OpenRequest<'_>) -> Result<(Value, Option<Page>)> {
         let OpenRequest {
             key,
             profile,
@@ -309,182 +472,201 @@ impl BrowserSurfaces {
             storage_state,
             reuse_existing,
             mode,
+            shared_browser,
+            actor_identity,
         } = request;
         if self.shutting_down.load(Ordering::Acquire) {
             bail!("browser surfaces are shutting down");
         }
         if reuse_existing {
-            let handler_finished = self
+            let existing = self
                 .sessions
                 .lock()
                 .await
                 .get(key)
-                .is_some_and(|session| session.handler.is_finished());
-            if handler_finished {
-                self.close_locked(key).await?;
-            } else if let Some(existing) = self.sessions.lock().await.get(key).map(state) {
-                return Ok(existing);
+                .map(|s| (Arc::clone(&s.owner), state(s), s.page.target_id().clone()));
+            if let Some((owner, state, target_id)) = existing {
+                let owner = owner.read().await;
+                if !owner.handler.is_finished()
+                    && actor_identity.is_none_or(|g| state["metadata"]["actor_identity"] == g)
+                {
+                    let targets = owner
+                        .browser
+                        .execute(GetTargetsParams::default())
+                        .await
+                        .context("inspect owned browser target")?;
+                    if targets
+                        .result
+                        .target_infos
+                        .iter()
+                        .any(|t| t.target_id == target_id)
+                    {
+                        return Ok((state, None));
+                    }
+                }
             }
         }
         self.close_locked(key).await?;
-        let mut profile_lease = ProfileLease::acquire(profile).await?;
-        let mut system_browser = match mode {
-            BrowserMode::Headless => None,
-            BrowserMode::System { background } => {
-                Some(SystemBrowserLaunch::prepare(width, height, background).await?)
+        let existing = self.owners.lock().await.get(profile).cloned();
+        let owner = if let Some(owner) = existing {
+            if !shared_browser || !owner.read().await.shared {
+                bail!(
+                    "browser profile is already managed by another surface: {}",
+                    profile.display()
+                );
             }
+            if owner.read().await.handler.is_finished() {
+                self.close_owner_locked(profile).await?;
+                None
+            } else {
+                Some(owner)
+            }
+        } else {
+            None
         };
-        let proxy_args = BrowserProxy::from_env()?
-            .map(|proxy| proxy.chromium_args())
-            .unwrap_or_default();
-        let launched = match &mut system_browser {
-            Some(system_browser) => system_browser.launch(profile, proxy_args).await,
+        let new_owner = owner.is_none();
+        let owner = match owner {
+            Some(owner) => owner,
             None => {
-                let mut config = BrowserConfig::builder()
-                    .user_data_dir(profile)
-                    .window_size(width, height)
-                    .viewport(Viewport {
+                let owner = Arc::new(RwLock::new(
+                    BrowserOwner::launch(
+                        profile,
                         width,
                         height,
-                        ..Viewport::default()
-                    })
-                    .new_headless_mode();
-                if !proxy_args.is_empty() {
-                    config = config.args(proxy_args);
-                }
-                let config = config.build().map_err(anyhow::Error::msg)?;
-                Browser::launch(config)
+                        mode,
+                        shared_browser,
+                        storage_state,
+                    )
+                    .await?,
+                ));
+                self.owners
+                    .lock()
                     .await
-                    .map(|(mut browser, handler)| {
-                        let pid = browser
-                            .get_mut_child()
-                            .and_then(|child| child.as_mut_inner().id())
-                            .unwrap_or_default();
-                        (browser, handler, pid)
-                    })
-                    .map_err(anyhow::Error::from)
+                    .insert(profile.to_owned(), Arc::clone(&owner));
+                owner
             }
         };
-        let (mut browser, mut handler, browser_pid) = match launched {
-            Ok(browser) => browser,
-            Err(error) => {
-                if let Some(system_browser) = &mut system_browser {
-                    system_browser.stop().await;
-                }
-                return Err(error);
-            }
-        };
-        let recorded = if system_browser.is_some() {
-            profile_lease.record_pid(browser_pid).await
-        } else {
-            profile_lease.record_browser(&mut browser).await
-        };
-        if let Err(error) = recorded {
-            let _ = browser.kill().await;
-            if let Some(system_browser) = &mut system_browser {
-                system_browser.stop().await;
-            }
-            return Err(error);
-        }
-        let mut task = tokio::spawn(async move {
-            while let Some(message) = handler.next().await {
-                if message.is_err() {
-                    break;
-                }
-            }
-        });
         let initialized = async {
-            if let Some(cookies) = storage_state
-                .and_then(|state| state.get("cookies"))
-                .cloned()
-            {
-                let cookies: Vec<CookieParam> =
-                    serde_json::from_value(cookies).context("decode saved browser cookies")?;
-                if !cookies.is_empty() {
-                    browser.set_cookies(cookies).await?;
-                }
-            }
-            let page = match reusable_page(&browser).await? {
-                Some(page) => page,
-                None => browser
-                    .new_page("about:blank")
+            let owner = owner.read().await;
+            if shared_browser {
+                let params = CreateTargetParams::builder()
+                    .url("about:blank")
+                    .new_window(true)
+                    .background(actor_identity.is_some())
+                    .build()
+                    .map_err(anyhow::Error::msg)?;
+                let page = owner
+                    .browser
+                    .new_page(params)
                     .await
-                    .context("create browser page")?,
-            };
-            goto_dom_content_loaded(&page, url)
-                .await
-                .context("open browser page")?;
-            close_internal_pages(&browser, &page).await?;
-            Ok::<Page, anyhow::Error>(page)
+                    .context("create shared browser window")?;
+                // Only the freshly launched owner has unowned startup pages.
+                // Later blank windows may belong to another Actor navigating.
+                if new_owner {
+                    close_internal_pages(&owner.browser, &page).await?;
+                }
+                let viewport = match frame::viewport_size(&page).await {
+                    Ok(viewport) => viewport,
+                    Err(error) => {
+                        let _ = page.close().await;
+                        return Err(error);
+                    }
+                };
+                Ok((page, viewport))
+            } else {
+                let page = match reusable_page(&owner.browser).await? {
+                    Some(page) => Ok(page),
+                    None => owner
+                        .browser
+                        .new_page("about:blank")
+                        .await
+                        .context("create browser page"),
+                }?;
+                Ok((page, (width, height)))
+            }
         }
         .await;
-        let page = match initialized {
+        let (page, (width, height)) = match initialized {
             Ok(page) => page,
             Err(error) => {
-                if let Err(cleanup_error) = stop_browser(&mut browser, &mut task).await {
-                    tracing::warn!(%cleanup_error, "failed to clean up browser after initialization error");
-                }
-                let _ = profile_lease.clear_owner();
-                if let Some(system_browser) = &mut system_browser {
-                    system_browser.stop().await;
+                if !shared_browser {
+                    self.close_owner_locked(profile).await?;
                 }
                 return Err(error);
             }
         };
         let now = utc_now();
-        let (strategy, metadata) = system_browser.as_ref().map_or_else(
-            || {
-                (
-                    "cdp_screencast".to_owned(),
-                    json!({"visibility":"headless","display_owned":false}),
-                )
-            },
-            |system_browser| {
-                (
-                    system_browser.strategy(),
-                    system_browser.metadata(browser_pid, profile),
-                )
-            },
-        );
+        let resource = owner.read().await;
+        let mut metadata = resource.metadata.clone();
+        if shared_browser {
+            metadata["shared_browser"] = json!(true);
+        }
+        if let Some(generation) = actor_identity {
+            metadata["actor_identity"] = json!(generation);
+        }
         let session = Session {
-            browser,
-            page,
-            handler: task,
-            profile_lease,
-            system_browser,
+            owner: Arc::clone(&owner),
+            page: page.clone(),
+            is_system_browser: resource.system_browser.is_some(),
+            shared_browser,
+            viewer: if actor_identity.is_some() {
+                json!({"kind":"screencast","vnc":{"available":false,"error":"actor_page_only"}})
+            } else {
+                resource.viewer.clone()
+            },
             url: url.into(),
             width,
             height,
             started_at: now.clone(),
             updated_at: now,
             seq: 0,
-            strategy,
+            strategy: resource.strategy.clone(),
             metadata,
-            recover_closed_page: matches!(mode, BrowserMode::Headless),
+            recover_closed_page: !shared_browser && matches!(mode, BrowserMode::Headless),
         };
-        let state = state(&session);
+        drop(resource);
+        // Register before navigation: failed or cancelled initialization still has
+        // an owner, and cleanup must not affect other Actor windows.
+        self.bind_profile(key, profile).await?;
         self.sessions.lock().await.insert(key.into(), session);
-        Ok(state)
+        Ok((
+            self.sessions.lock().await.get(key).map_or_else(idle, state),
+            Some(page),
+        ))
     }
 
     pub async fn info(&self, key: &str) -> Value {
-        let (handler_finished, user_closed_page) = {
-            let sessions = self.sessions.lock().await;
-            let Some(session) = sessions.get(key) else {
-                return idle();
+        let snapshot = self.sessions.lock().await.get(key).map(|s| {
+            (
+                Arc::clone(&s.owner),
+                s.page.target_id().clone(),
+                s.recover_closed_page,
+                s.metadata["actor_identity"].as_str().map(str::to_owned),
+            )
+        });
+        let Some((owner, target_id, recover_closed_page, generation)) = snapshot else {
+            return if self.closed_pages.lock().await.contains_key(key) {
+                closed()
+            } else {
+                idle()
             };
-            let handler_finished = session.handler.is_finished();
-            let user_closed_page =
-                if handler_finished || session.recover_closed_page {
-                    false
-                } else {
-                    let target_id = session.page.target_id();
-                    session.browser.pages().await.is_ok_and(|pages| {
-                        !pages.into_iter().any(|page| page.target_id() == target_id)
-                    })
-                };
-            (handler_finished, user_closed_page)
         };
+        let owner = owner.read().await;
+        let handler_finished = owner.handler.is_finished();
+        let user_closed_page = !handler_finished
+            && !recover_closed_page
+            && owner
+                .browser
+                .execute(GetTargetsParams::default())
+                .await
+                .is_ok_and(|targets| {
+                    !targets
+                        .result
+                        .target_infos
+                        .iter()
+                        .any(|target| target.target_id == target_id)
+                });
+        drop(owner);
         if handler_finished {
             let message = match self.close(key).await {
                 Ok(_) => "Browser surface process exited.".to_owned(),
@@ -493,8 +675,27 @@ impl BrowserSurfaces {
             return failed(&message);
         }
         if user_closed_page {
-            let _ = self.close(key).await;
-            return closed();
+            let operation = self.key_operation(key).await;
+            let _guard = operation.lock().await;
+            if self
+                .sessions
+                .lock()
+                .await
+                .get(key)
+                .is_some_and(|s| s.page.target_id() == &target_id)
+            {
+                if let Err(error) = self.close_key_locked(key).await {
+                    return failed(&format!("Closed browser surface cleanup failed: {error}"));
+                }
+                if session_actor(key).is_some() {
+                    self.closed_pages
+                        .lock()
+                        .await
+                        .insert(key.to_owned(), generation);
+                }
+                return closed();
+            }
+            // A replacement that opened during inspection has its own lifecycle.
         }
         self.sessions.lock().await.get(key).map_or_else(idle, state)
     }
@@ -540,33 +741,58 @@ impl BrowserSurfaces {
     }
 
     pub async fn page_available(&self, key: &str) -> bool {
-        let sessions = self.sessions.lock().await;
-        let Some(session) = sessions.get(key) else {
-            return false;
-        };
-        let target_id = session.page.target_id();
-        session
-            .browser
-            .pages()
-            .await
-            .is_ok_and(|pages| pages.into_iter().any(|page| page.target_id() == target_id))
-    }
-
-    pub async fn vnc_port(&self, key: &str) -> Result<u16> {
-        self.sessions
+        let snapshot = self
+            .sessions
             .lock()
             .await
             .get(key)
-            .and_then(|session| session.system_browser.as_ref())
-            .and_then(SystemBrowserLaunch::vnc_port)
+            .map(|s| (Arc::clone(&s.owner), s.page.target_id().clone()));
+        let Some((owner, target_id)) = snapshot else {
+            return false;
+        };
+        owner
+            .read()
+            .await
+            .browser
+            .execute(GetTargetsParams::default())
+            .await
+            .is_ok_and(|targets| {
+                targets
+                    .result
+                    .target_infos
+                    .iter()
+                    .any(|target| target.target_id == target_id)
+            })
+    }
+
+    pub async fn vnc_port(&self, key: &str) -> Result<u16> {
+        let owner = self
+            .sessions
+            .lock()
+            .await
+            .get(key)
+            .map(|s| Arc::clone(&s.owner))
+            .context("browser surface is not active")?;
+        owner
+            .read()
+            .await
+            .system_browser
+            .as_ref()
+            .and_then(system_browser::SystemBrowserLaunch::vnc_port)
             .context("VNC viewer is not available for this browser surface")
     }
 
     pub async fn close(&self, key: &str) -> Result<bool> {
         let key_operation = self.key_operation(key).await;
         let _key_operation_guard = key_operation.lock().await;
+        self.close_key_locked(key).await
+    }
+
+    // Caller holds the per-surface key operation lock.
+    async fn close_key_locked(&self, key: &str) -> Result<bool> {
+        let retired_marker = self.closed_pages.lock().await.remove(key).is_some();
         let Some((profile, operation)) = self.operation_for_key(key).await else {
-            return Ok(false);
+            return Ok(retired_marker);
         };
         let _operation_guard = operation.lock().await;
         if self.key_profiles.lock().await.get(key) != Some(&profile) {
@@ -577,24 +803,35 @@ impl BrowserSurfaces {
         if key_profiles.get(key) == Some(&profile) {
             key_profiles.remove(key);
         }
-        Ok(was_closed)
+        Ok(was_closed || retired_marker)
     }
 
     pub async fn shutdown_all(&self) -> Result<usize> {
         self.shutting_down.store(true, Ordering::Release);
-        let keys = self.known_keys().await;
-        let mut closed = 0;
-        let mut first_error = None;
-        let results = join_all(keys.into_iter().map(|key| async move {
-            let result = self.close(&key).await;
-            (key, result)
+        let mut profiles = self
+            .key_profiles
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<HashSet<_>>();
+        profiles.extend(self.owners.lock().await.keys().cloned());
+        let results = join_all(profiles.into_iter().map(|profile| async move {
+            let operation = self.profile_operations.lock().await.get(&profile).cloned();
+            let Some(operation) = operation else {
+                return Ok(0);
+            };
+            let _operation = operation.lock().await;
+            self.close_owner_locked(&profile).await
         }))
         .await;
-        for (key, result) in results {
+        let mut closed = 0;
+        let mut first_error = None;
+        for result in results {
             match result {
-                Ok(was_closed) => closed += usize::from(was_closed),
+                Ok(count) => closed += count,
                 Err(error) => {
-                    tracing::warn!(%error, %key, "failed to close browser surface during shutdown");
+                    tracing::warn!(%error, "failed to close browser owner during shutdown");
                     if first_error.is_none() {
                         first_error = Some(error);
                     }
@@ -607,19 +844,68 @@ impl BrowserSurfaces {
         Ok(closed)
     }
 
+    /// Caller holds the profile operation lock, shared by all its page owners.
+    async fn close_owner_locked(&self, profile: &Path) -> Result<usize> {
+        let owner = self.owners.lock().await.get(profile).cloned();
+        let Some(owner) = owner else {
+            return Ok(0);
+        };
+        owner.write().await.stop().await?;
+        let mut sessions = self.sessions.lock().await;
+        let before = sessions.len();
+        sessions.retain(|_, session| !Arc::ptr_eq(&session.owner, &owner));
+        let closed = before - sessions.len();
+        drop(sessions);
+        self.key_profiles
+            .lock()
+            .await
+            .retain(|_, path| path != profile);
+        self.owners.lock().await.remove(profile);
+        Ok(closed)
+    }
+
     async fn close_locked(&self, key: &str) -> Result<bool> {
-        let session = self.sessions.lock().await.remove(key);
-        let Some(mut session) = session else {
+        let snapshot = self
+            .sessions
+            .lock()
+            .await
+            .get(key)
+            .map(|s| (Arc::clone(&s.owner), s.page.clone(), s.shared_browser));
+        let Some((owner, page, shared)) = snapshot else {
             return Ok(false);
         };
-        if let Err(error) = stop_browser(&mut session.browser, &mut session.handler).await {
-            self.sessions.lock().await.insert(key.to_owned(), session);
-            return Err(error);
+        if !shared || owner.read().await.handler.is_finished() {
+            let profile = self
+                .key_profiles
+                .lock()
+                .await
+                .get(key)
+                .cloned()
+                .context("browser profile registration missing")?;
+            self.close_owner_locked(&profile).await?;
+        } else {
+            // Close the owned target through the browser: Page.close can reject
+            // a still-existing window while its renderer changes during navigation.
+            let owner = owner.read().await;
+            if let Err(error) = owner
+                .browser
+                .execute(CloseTargetParams::new(page.target_id().clone()))
+                .await
+            {
+                // A user may already have closed this target. Completion is
+                // established by its absence in a live browser, not error text.
+                let targets = owner.browser.execute(GetTargetsParams::default()).await?;
+                if targets
+                    .result
+                    .target_infos
+                    .iter()
+                    .any(|target| &target.target_id == page.target_id())
+                {
+                    return Err(error.into());
+                }
+            }
+            self.sessions.lock().await.remove(key);
         }
-        if let Some(system_browser) = &mut session.system_browser {
-            system_browser.stop().await;
-        }
-        session.profile_lease.clear_owner()?;
         Ok(true)
     }
 
@@ -690,13 +976,16 @@ impl BrowserSurfaces {
             .cloned()
             .collect::<HashSet<_>>();
         keys.extend(self.sessions.lock().await.keys().cloned());
+        keys.extend(self.closed_pages.lock().await.keys().cloned());
         keys
     }
 }
 
 async fn reusable_page(browser: &Browser) -> Result<Option<Page>> {
     for page in browser.pages().await? {
-        let url = page.url().await?.unwrap_or_default();
+        let Some(url) = candidate_page_url(browser, &page).await? else {
+            continue;
+        };
         if is_internal_page(&url) {
             return Ok(Some(page));
         }
@@ -770,17 +1059,13 @@ fn authuser_from_url(raw: &str) -> usize {
 }
 
 fn state(session: &Session) -> Value {
-    let viewer = session.system_browser.as_ref().map_or_else(
-        || json!({"kind":"screencast","vnc":{"available":false,"error":"unsupported_surface"}}),
-        SystemBrowserLaunch::viewer,
-    );
     json!({
         "active":true,"state":"ready","message":"Browser surface is ready.","strategy":session.strategy,
         "url":session.url,"width":session.width,"height":session.height,
         "started_at":session.started_at,"updated_at":session.updated_at,
         "last_frame_seq":session.seq,"last_frame_at":session.updated_at,"controller_attached":false,
         "metadata":session.metadata,
-        "viewer":viewer
+        "viewer":session.viewer
     })
 }
 

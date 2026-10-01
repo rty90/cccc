@@ -1,6 +1,7 @@
 use cccc_client::DaemonClient;
 use cccc_core::{GroupDoc, HomeLayout};
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::ToolCallError;
@@ -12,20 +13,77 @@ pub async fn call(
     name: &str,
     args: Map<String, Value>,
 ) -> Result<Value, ToolCallError> {
+    let file_action = match name {
+        "cccc_file" => {
+            if [
+                "to",
+                "text",
+                "mode",
+                "insight",
+                "dst_group_id",
+                "dst_instance_id",
+                "idempotency_key",
+            ]
+            .iter()
+            .any(|key| args.contains_key(*key))
+            {
+                return Err("cccc_file does not accept delivery arguments; use cccc_file_send to send an attachment".into());
+            }
+            let action = match args.get("action") {
+                None => "read",
+                Some(Value::String(action)) => action.as_str(),
+                Some(_) => return Err("file action must be read, info or blob_path".into()),
+            };
+            if !matches!(action, "read" | "info" | "blob_path") {
+                return Err(
+                    "cccc_file only reads files; use cccc_file_send to send an attachment".into(),
+                );
+            }
+            Some(action)
+        }
+        "cccc_file_send" => {
+            if args.contains_key("action") {
+                return Err("cccc_file_send sends an attachment and does not accept action; use cccc_file for reads".into());
+            }
+            Some("send")
+        }
+        _ => None,
+    };
     let root = scope(client, &args).await?;
     let payload = match name {
-        "cccc_repo" | "cccc_repo_edit" => crate::repo::call(&root, action(&args), &args)?,
-        "cccc_shell" => one_shot(&root, command(&args)?, timeout(&args)).await?,
+        "cccc_repo" | "cccc_repo_edit" => {
+            let operation = action(&args).to_owned();
+            let tool = name.to_owned();
+            tokio::task::spawn_blocking(move || {
+                crate::repo::call_tool(&root, &tool, &operation, &args)
+            })
+            .await
+            .map_err(|error| format!("repository task failed: {error}"))??
+        }
+        "cccc_shell" => shell(&root, &args).await?,
         "cccc_git" => git(&root, &args).await?,
-        "cccc_exec_command" => crate::local_sessions::start(home, &root, &args)?,
-        "cccc_write_stdin" => crate::local_sessions::write(home, &args)?,
+        "cccc_exec_command" => crate::local_sessions::start(home, &root, &args).await?,
+        "cccc_write_stdin" => crate::local_sessions::write(home, &args).await?,
         "cccc_code_exec" => crate::code_mode::start(home, client, &root, &args).await?,
         "cccc_code_wait" => crate::code_mode::wait(home, client, &args).await?,
         "cccc_apply_patch" => apply_patch(&root, &args).await?,
-        "cccc_file" => file(home, client, &root, &args).await?,
+        "cccc_file" | "cccc_file_send" => {
+            return file(
+                home,
+                client,
+                &root,
+                &args,
+                file_action.expect("file action"),
+            )
+            .await;
+        }
         _ => return Err(format!("unsupported local tool: {name}").into()),
     };
-    Ok(tool_result(payload))
+    Ok(if matches!(name, "cccc_code_exec" | "cccc_code_wait") {
+        crate::code_mode::tool_result(payload)
+    } else {
+        tool_result(payload)
+    })
 }
 
 async fn scope(client: &DaemonClient, args: &Map<String, Value>) -> Result<PathBuf, ToolCallError> {
@@ -52,11 +110,30 @@ async fn one_shot(root: &Path, cmd: Vec<String>, seconds: u64) -> Result<Value, 
     let (program, arguments) = cmd.split_first().ok_or("command is required")?;
     let mut command = std::process::Command::new(program);
     command.args(arguments).current_dir(root);
+    capture(&mut command, seconds, 2_000_000).await
+}
+
+async fn shell(root: &Path, args: &Map<String, Value>) -> Result<Value, String> {
+    let cmd = command(args)?;
+    let (program, arguments) = cmd.split_first().ok_or("command is required")?;
+    let mut process = std::process::Command::new(program);
+    process
+        .args(arguments)
+        .current_dir(command_cwd(root, args)?)
+        .envs(command_env(args)?);
+    capture(&mut process, timeout(args), output_limit(args)).await
+}
+
+async fn capture(
+    command: &mut std::process::Command,
+    seconds: u64,
+    limit: usize,
+) -> Result<Value, String> {
     let output = cccc_runtime::capture_command(
-        &mut command,
+        command,
         None,
         std::time::Duration::from_secs(seconds),
-        2_000_000,
+        limit,
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -153,13 +230,14 @@ fn append_git_paths(
     Ok(())
 }
 
-async fn apply_patch(root: &Path, args: &Map<String, Value>) -> Result<Value, String> {
+pub(super) async fn apply_patch(root: &Path, args: &Map<String, Value>) -> Result<Value, String> {
     let patch = args
         .get("patch")
+        .or_else(|| args.get("input"))
         .and_then(Value::as_str)
         .ok_or("patch is required")?;
     if patch.trim_start().starts_with("*** Begin Patch") {
-        let changed = apply_codex_patch(root, patch)?;
+        let changed = crate::local_patch::apply(root, patch)?;
         return Ok(json!({"applied":true,"files":changed}));
     }
     let mut command = std::process::Command::new("git");
@@ -178,133 +256,13 @@ async fn apply_patch(root: &Path, args: &Map<String, Value>) -> Result<Value, St
     Ok(json!({"applied":true}))
 }
 
-enum PatchChange {
-    Write(PathBuf, Vec<u8>),
-    Delete(PathBuf),
-}
-
-fn apply_codex_patch(root: &Path, patch: &str) -> Result<Vec<String>, String> {
-    let lines = patch.lines().collect::<Vec<_>>();
-    if lines.first().copied() != Some("*** Begin Patch")
-        || lines.last().copied() != Some("*** End Patch")
-    {
-        return Err(
-            "Codex patch must start with *** Begin Patch and end with *** End Patch".into(),
-        );
-    }
-    let mut index = 1;
-    let mut changes = Vec::new();
-    let mut names = Vec::new();
-    while index + 1 < lines.len() {
-        let header = lines[index];
-        let (kind, raw_path) = if let Some(path) = header.strip_prefix("*** Add File: ") {
-            ("add", path)
-        } else if let Some(path) = header.strip_prefix("*** Update File: ") {
-            ("update", path)
-        } else if let Some(path) = header.strip_prefix("*** Delete File: ") {
-            ("delete", path)
-        } else {
-            return Err(format!("invalid Codex patch section: {header}"));
-        };
-        if raw_path.trim().is_empty() {
-            return Err("patch path is required".into());
-        }
-        index += 1;
-        let start = index;
-        while index + 1 < lines.len() && !lines[index].starts_with("*** ") {
-            index += 1;
-        }
-        let body = &lines[start..index];
-        let path = crate::repo::resolve(root, raw_path, kind == "add")?;
-        match kind {
-            "add" => {
-                if path.exists() {
-                    return Err(format!("file already exists: {raw_path}"));
-                }
-                let mut content = body
-                    .iter()
-                    .map(|line| {
-                        line.strip_prefix('+')
-                            .ok_or_else(|| "added file lines must start with +".to_owned())
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-                    .join("\n");
-                if !body.is_empty() {
-                    content.push('\n');
-                }
-                changes.push(PatchChange::Write(path, content.into_bytes()));
-            }
-            "delete" => changes.push(PatchChange::Delete(path)),
-            "update" => {
-                let current = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
-                let updated = apply_hunks(current, body)?;
-                changes.push(PatchChange::Write(path, updated.into_bytes()));
-            }
-            _ => unreachable!(),
-        }
-        names.push(raw_path.to_owned());
-    }
-    for change in changes {
-        match change {
-            PatchChange::Write(path, data) => {
-                cccc_core::fs::atomic_write(&path, &data).map_err(|error| error.to_string())?
-            }
-            PatchChange::Delete(path) => {
-                std::fs::remove_file(path).map_err(|error| error.to_string())?
-            }
-        }
-    }
-    Ok(names)
-}
-
-fn apply_hunks(mut current: String, body: &[&str]) -> Result<String, String> {
-    let mut index = 0;
-    while index < body.len() {
-        if !body[index].starts_with("@@") {
-            return Err("update patch requires @@ hunk headers".into());
-        }
-        index += 1;
-        let start = index;
-        while index < body.len() && !body[index].starts_with("@@") {
-            index += 1;
-        }
-        let mut old = Vec::new();
-        let mut new = Vec::new();
-        for line in &body[start..index] {
-            if line.starts_with("\\ No newline") {
-                continue;
-            }
-            let (marker, content) = line.split_at(line.len().min(1));
-            match marker {
-                " " => {
-                    old.push(content);
-                    new.push(content);
-                }
-                "-" => old.push(content),
-                "+" => new.push(content),
-                _ => return Err("hunk lines must start with space, +, or -".into()),
-            }
-        }
-        let old = old.join("\n");
-        let new = new.join("\n");
-        if old.is_empty() {
-            return Err("update hunk needs context or removed lines".into());
-        }
-        if current.matches(&old).count() != 1 {
-            return Err("patch hunk context must match exactly once".into());
-        }
-        current = current.replacen(&old, &new, 1);
-    }
-    Ok(current)
-}
-
 async fn file(
     home: &HomeLayout,
     client: &DaemonClient,
     root: &Path,
     args: &Map<String, Value>,
+    action: &str,
 ) -> Result<Value, ToolCallError> {
-    let action = action(args);
     let raw = first_non_blank(args, &["path", "rel_path"]).ok_or("path is required")?;
     if args.contains_key("dst_instance_id") {
         if action != "send" {
@@ -326,7 +284,9 @@ async fn file(
         crate::argument_normalization::normalize_recipients(&mut request);
         crate::mapping::connect_destination(&mut request)?;
         let result = daemon(client, "connect_send_files", request).await?;
-        return Ok(json!({"accepted":true,"queued":result.get("queued"),"result":result}));
+        return Ok(tool_result(
+            json!({"accepted":true,"queued":result.get("queued"),"result":result}),
+        ));
     }
     let path = if raw.starts_with("state/blobs/") {
         let group_id = args
@@ -349,6 +309,7 @@ async fn file(
         request.remove("mode");
         request.insert("message_mode".into(), Value::String(message_mode));
         crate::argument_normalization::normalize_message_author(&mut request);
+        crate::argument_normalization::normalize_recipients(&mut request);
         if request
             .get("dst_group_id")
             .and_then(Value::as_str)
@@ -363,13 +324,20 @@ async fn file(
             .and_then(|attachments| attachments.first())
             .cloned()
             .unwrap_or(Value::Null);
-        return Ok(json!({"sent":true,"attachment":attachment,"result":result}));
+        return Ok(tool_result(
+            json!({"sent":true,"attachment":attachment,"result":result}),
+        ));
     }
     if action == "blob_path" || action == "info" {
-        return Ok(json!({"path":path,"bytes":path.metadata().map(|meta|meta.len()).unwrap_or(0)}));
+        return Ok(tool_result(
+            json!({"path":path,"bytes":path.metadata().map(|meta|meta.len()).unwrap_or(0)}),
+        ));
     }
-    let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
-    Ok(json!({"path":path,"content":String::from_utf8_lossy(&bytes),"bytes":bytes.len()}))
+    let args = args.clone();
+    tokio::task::spawn_blocking(move || crate::file_read::read(&path, &args))
+        .await
+        .map_err(|error| format!("file read task failed: {error}"))?
+        .map_err(Into::into)
 }
 
 pub(super) fn command(args: &Map<String, Value>) -> Result<Vec<String>, String> {
@@ -382,6 +350,46 @@ pub(super) fn command(args: &Map<String, Value>) -> Result<Vec<String>, String> 
     }
     let raw = first_non_blank(args, &["cmd", "command"]).ok_or("cmd is required")?;
     shell_words::split(raw).map_err(|error| error.to_string())
+}
+
+pub(super) fn command_cwd(root: &Path, args: &Map<String, Value>) -> Result<PathBuf, String> {
+    if ["cwd", "workdir"]
+        .iter()
+        .any(|key| args.get(*key).is_some_and(|value| !value.is_string()))
+    {
+        return Err("cwd and workdir must be relative directory strings".into());
+    }
+    let cwd = first_non_blank(args, &["cwd", "workdir"]).unwrap_or(".");
+    let path = crate::repo::resolve(root, cwd, false)?;
+    if !path.is_dir() {
+        return Err("cwd must be a directory inside the active scope".into());
+    }
+    Ok(path)
+}
+
+pub(super) fn command_env(args: &Map<String, Value>) -> Result<BTreeMap<String, String>, String> {
+    let Some(env) = args.get("env") else {
+        return Ok(BTreeMap::new());
+    };
+    let env = env
+        .as_object()
+        .ok_or("env must be an object of string values")?;
+    env.iter()
+        .map(|(key, value)| {
+            let value = value.as_str().ok_or("env values must be strings")?;
+            if key.is_empty() || key.contains(['=', '\0']) || value.contains('\0') {
+                return Err("env contains an invalid variable name or value".into());
+            }
+            Ok((key.clone(), value.to_owned()))
+        })
+        .collect()
+}
+
+fn output_limit(args: &Map<String, Value>) -> usize {
+    args.get("max_output_bytes")
+        .and_then(Value::as_u64)
+        .unwrap_or(200_000)
+        .clamp(1, 1_000_000) as usize
 }
 
 fn first_non_blank<'a>(args: &'a Map<String, Value>, names: &[&str]) -> Option<&'a str> {
@@ -412,14 +420,150 @@ fn timeout(args: &Map<String, Value>) -> u64 {
     args.get("timeout_s")
         .or_else(|| args.get("timeout_seconds"))
         .and_then(Value::as_u64)
-        .unwrap_or(30)
+        .unwrap_or(60)
         .clamp(1, 600)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_codex_patch, command, file_message_mode, timeout};
+    use super::{command, file_message_mode, timeout};
+    use crate::local_patch::apply as apply_codex_patch;
     use serde_json::json;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_honors_cwd_environment_and_output_limit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cwd = temp.path().join("subdir");
+        std::fs::create_dir(&cwd).expect("fixture operation");
+        let args = json!({"command":["sh","-c","printf '%s\\n%s' \"$PWD\" \"$CCCC_TOOL_CONTRACT_VALUE\""],"cwd":"subdir","env":{"CCCC_TOOL_CONTRACT_VALUE":"fixture-value"}});
+        let result = super::shell(temp.path(), args.as_object().expect("arguments"))
+            .await
+            .expect("fixture operation");
+        assert_eq!(result["exit_code"], 0);
+        assert_eq!(
+            result["stdout"],
+            format!(
+                "{}\nfixture-value",
+                cwd.canonicalize()
+                    .expect("canonical fixture directory")
+                    .display()
+            )
+        );
+        let args = json!({"command":["sh","-c","printf 0123456789; printf failure >&2; exit 7"],"max_output_bytes":4});
+        let result = super::shell(temp.path(), args.as_object().expect("arguments"))
+            .await
+            .expect("fixture operation");
+        assert_eq!(result["exit_code"], 7);
+        assert_eq!(result["stdout"], "0123");
+        assert_eq!(result["stderr"], "fail");
+        assert_eq!(result["stdout_truncated"], true);
+        assert_eq!(result["stderr_truncated"], true);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_interprets_operators_only_when_explicitly_requested() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let args = json!({"command":"printf '%s ' 'a|b' '&&' '$HOME'"});
+        let result = super::shell(temp.path(), args.as_object().expect("arguments"))
+            .await
+            .expect("fixture operation");
+        assert_eq!(result["stdout"], "a|b && $HOME ");
+        let args = json!({"command":"sh -c 'printf first && printf second | cat > result.txt'"});
+        let result = super::shell(temp.path(), args.as_object().expect("arguments"))
+            .await
+            .expect("fixture operation");
+        assert_eq!(result["exit_code"], 0);
+        assert_eq!(result["stdout"], "first");
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("result.txt")).expect("fixture operation"),
+            "second"
+        );
+    }
+
+    #[test]
+    fn command_options_keep_workspace_boundaries_and_schema_defaults() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cwd = temp.path().join("subdir");
+        std::fs::create_dir(&cwd).expect("fixture operation");
+        std::fs::write(temp.path().join("file"), "data").expect("fixture operation");
+        for path in ["../", "file", "missing"] {
+            assert!(
+                super::command_cwd(
+                    temp.path(),
+                    json!({"cwd":path}).as_object().expect("arguments")
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            super::command_cwd(
+                temp.path(),
+                json!({"cwd":temp.path()}).as_object().expect("arguments")
+            )
+            .is_err()
+        );
+        assert!(
+            super::command_cwd(
+                temp.path(),
+                json!({"cwd":123}).as_object().expect("arguments")
+            )
+            .is_err()
+        );
+        assert_eq!(
+            super::command_cwd(
+                temp.path(),
+                json!({"workdir":"subdir"}).as_object().expect("arguments")
+            )
+            .expect("fixture operation"),
+            cwd.canonicalize().expect("canonical fixture directory")
+        );
+        let defaults = serde_json::Map::new();
+        assert_eq!(super::timeout(&defaults), 60);
+        assert_eq!(super::output_limit(&defaults), 200_000);
+        assert_eq!(
+            super::output_limit(
+                json!({"max_output_bytes":999999999})
+                    .as_object()
+                    .expect("arguments")
+            ),
+            1_000_000
+        );
+        assert!(
+            super::command_env(
+                json!({"env":{"PRIVATE_VALUE":123}})
+                    .as_object()
+                    .expect("arguments")
+            )
+            .is_err()
+        );
+        assert!(
+            !super::command_env(
+                json!({"env":{"BAD=NAME":"sensitive"}})
+                    .as_object()
+                    .expect("arguments")
+            )
+            .expect_err("invalid environment")
+            .contains("sensitive")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_cwd_rejects_symlink_escape() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("tempdir");
+        std::os::unix::fs::symlink(outside.path(), temp.path().join("escape"))
+            .expect("fixture operation");
+        assert!(
+            super::command_cwd(
+                temp.path(),
+                json!({"cwd":"escape"}).as_object().expect("arguments")
+            )
+            .is_err()
+        );
+    }
 
     #[cfg(unix)]
     #[tokio::test]

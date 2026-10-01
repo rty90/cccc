@@ -9,6 +9,8 @@ mod session;
 mod supervisor;
 #[cfg(test)]
 mod supervisor_managed_tests;
+mod workspace_trust;
+mod workspace_trust_recovery;
 
 #[cfg(test)]
 pub(crate) use managed_reader::verify_claude_reader_release;
@@ -26,7 +28,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, OnceLock};
 
 pub use supervisor::{
-    kill_all_requests, running, start, status, stop, stop_all, stop_group, submit_batch, supports,
+    detach_after_viewer_exit, ensure_viewer, kill_all_requests, running, start, status, stop,
+    stop_all, stop_group, submit_batch, supports,
 };
 
 pub(super) fn uses_managed_session(actor: &cccc_contracts::Actor) -> bool {
@@ -50,12 +53,22 @@ struct ActiveTurn {
     turn_id: String,
 }
 
+/// Everything needed to re-open the viewer attachment (`claude attach` or
+/// the remote TUI) after a detached attach exit.
+#[derive(Debug, Clone)]
+struct ViewerLaunch {
+    command: Vec<String>,
+    env: std::collections::BTreeMap<String, String>,
+    cwd: std::path::PathBuf,
+}
+
 struct Session {
     home: HomeLayout,
     group_id: String,
     actor_id: String,
     managed: std::sync::Arc<super::codex_voice_analyst::AnalystSession>,
     has_terminal: AtomicBool,
+    viewer: Mutex<Option<ViewerLaunch>>,
     status: Mutex<HeadlessStatus>,
     stopped: AtomicBool,
     stop_lock: Mutex<()>,

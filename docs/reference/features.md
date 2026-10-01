@@ -187,6 +187,28 @@ Ledger (complete memory)
 5. The returned Inbox batch is already marked read
 ```
 
+## Shared File Memory
+
+`cccc_memory` reads and writes the Group's local Markdown memory and searches it
+by lexical relevance. Use `get` to inspect the source behind a search result.
+The local backend does not perform embedding search; the accepted `vector_weight`
+argument does not affect its ranking.
+
+The optional `cccc_memory_admin` helpers retain their existing names and response
+formats. Their current limits matter when choosing an operation:
+
+- `index_sync`, with either `scan` or `rebuild`, reports file and nonempty-line
+  counts. It does not build a persistent index or start a file watcher. Searches
+  read the current Markdown files directly.
+- `context_check` uses a character-based token estimate, not the selected
+  Runtime's tokenizer or context limit.
+- `compact` returns a bounded excerpt by default; it can omit facts later in the
+  supplied history. Use `return_prompt=true` to obtain a summarization prompt for
+  the calling model. It does not call a model or compact the Runtime's session.
+
+Group coordination state, repository documents and external NotebookLM bindings
+retain their separate purposes. Using local memory does not require NotebookLM.
+
 ## Automation
 
 Automation in CCCC combines built-in automation and user-defined rules.
@@ -352,6 +374,7 @@ Recommended options:
 | hermes | `hermes` | Hermes Agent |
 | kimi | `kimi` | Kimi Code |
 | opencode | `opencode` | OpenCode |
+| grok_web_model | Grok Bot conversation | Shared Grok login and connector, per-Actor Bot URL and per-call routing credential; no pairing handshake |
 | web_model | ChatGPT Web conversation | ChatGPT Web conversation with CCCC MCP access; optional experimental GPT Pro delivery attaches a tiny blank PNG but does not select the model or guarantee connector availability |
 | custom | Any command | Any command |
 
@@ -378,7 +401,7 @@ cccc setup --runtime antigravity  # Prompt-assisted setup inside Antigravity
 cccc setup --runtime custom
 ```
 
-`web_model` does not use `cccc setup`; create the single `ChatGPT Web Model` actor from the CCCC Web group, then use Web Settings to sign in to ChatGPT, copy its remote MCP URL, and bind one specific ChatGPT conversation.
+`web_model` does not use `cccc setup`; create a `ChatGPT Web Model` Actor from the CCCC Web group, then use Web Settings to sign in to ChatGPT, copy its remote MCP URL, and bind one specific ChatGPT conversation for that Actor. For Grok, select `Grok Bot Web Model`, configure the shared Grok connector and save each Actor’s Bot URL; see [Grok Bot setup](/guide/grok-web-model-runtime).
 
 ### Runtime Detection
 
